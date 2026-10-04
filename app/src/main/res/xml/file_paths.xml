@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Metrics CSVs written by the engine: <external files dir>/metrics/ -->
+    <external-files-path name="metrics" path="metrics/" />
+    <!-- Workspace files shared from the viewer: <internal files dir>/workspace/ -->
+    <files-path name="workspace" path="workspace/" />
+</paths>

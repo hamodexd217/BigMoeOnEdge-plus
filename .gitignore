@@ -1,60 +1,7 @@
-# Build output
-/build*/
-/out/
-cmake-build-*/
-
-# OpenCL headers + ICD loader, fetched by scripts/fetch-opencl-android.ps1 for the optional
-# GPU build. Third-party sources we do not vendor: a build prerequisite, not our code.
-/third_party/opencl-sdk/
-
-# Models and large artifacts (never commit weights)
-*.gguf
-*.bin
-*.apk
-
-# Local test scratch (downloaded models/APKs, container build scripts/logs)
-/.models/
-/.apk/
-/.bench/
-# Dated bench working dirs (raw CSV/log/metrics before curation into docs/bench-data/)
-/.bench-*/
-*.safetensors
-/*.log
-# Scratch notes and raw run samples at the root. Curated CSVs live in docs/bench-data/.
-/*.csv
-/NEXT-SESSION-PROMPT.md
-
-# Android
-examples/android/.gradle/
-examples/android/build/
-examples/android/app/build/
-examples/android/local.properties
-examples/android/.idea/
-examples/android/app/src/main/jniLibs/**/*.so
-examples/android/captures/
-
-# IDE / editor
-.vscode/
+build/
+.gradle/
 .idea/
-*.swp
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-
-# Android release signing — secrets, never commit (repo is written to be opened)
-*.jks
-*.keystore
-keystore.properties
-
-# Agent session state and its worktrees. Ignored belt-and-braces rather than relying on a
-# machine-local exclude: a clone elsewhere would otherwise show a second checkout, build output
-# and .so binaries as untracked, which is exactly what the never-'git add -A' rule exists to
-# survive.
-.claude/
+local.properties
+*.iml
+.cxx/
+*.apk

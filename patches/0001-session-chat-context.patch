@@ -1,0 +1,157 @@
+diff --git a/app/src/main/cpp/core/include/bmoe/session.h b/app/src/main/cpp/core/include/bmoe/session.h
+index 17d7f22..0b65ee1 100644
+--- a/app/src/main/cpp/core/include/bmoe/session.h
++++ b/app/src/main/cpp/core/include/bmoe/session.h
+@@ -85,11 +85,25 @@ enum class ThinkControl {
+ // Stable lowercase name ("template", "prefill", "none") for logs and the telemetry protocol.
+ const char * think_control_name(ThinkControl c);
+ 
++// One prior conversation turn handed to a clear_kv=true generate() (see GenerateRequest::history).
++// PATCH (BigMoeOnEdgeExtended, patches/0001-session-chat-context.patch).
++struct ChatTurn {
++    std::string role;    // "user" | "assistant" | "system"
++    std::string content;
++};
++
+ // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
+ // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
+ struct GenerateRequest {
+     std::string prompt;
++    // Tokens to generate. PATCH: n_predict <= 0 means "as many as still fit in n_ctx after the prompt".
+     int n_predict = 32;
++    // PATCH: only honoured in chat mode (SessionConfig::chatml) on a clear_kv=true request. Seeds the
++    // engine-held conversation before `prompt` is appended as the newest user turn: `system_prompt`
++    // (if non-empty) becomes the first message, then `history` in order. Ignored when clear_kv=false —
++    // a continued conversation already holds its own system prompt and turns. Empty = old behaviour.
++    std::string system_prompt;
++    std::vector<ChatTurn> history;
+     bool think = true;
+     bool clear_kv = true;
+     // Populate TokenMetrics::text / ::reasoning on every token. Building them means parsing the
+diff --git a/app/src/main/cpp/core/src/engine/session.cpp b/app/src/main/cpp/core/src/engine/session.cpp
+index 4454ffd..625f8a7 100644
+--- a/app/src/main/cpp/core/src/engine/session.cpp
++++ b/app/src/main/cpp/core/src/engine/session.cpp
+@@ -1311,8 +1311,28 @@ RunResult Session::generate(const GenerateRequest & req,
+     bool history_pushed = false;   // did we append this turn's user message to chat_history?
+     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
+     common_chat_parser_params parse_params;
++    // PATCH: remember how long the engine-held conversation was before this call seeded/extended it, so
++    // a failed template application can restore exactly that.
++    const size_t history_base = im.chat_history.size();
+     if (chat_on) {
+         try {
++            if (req.clear_kv) {
++                // PATCH: seed the fresh conversation (chat_history was cleared above) with the caller's
++                // system prompt and prior turns. Nothing is decoded here; the prefill below covers it.
++                if (!req.system_prompt.empty()) {
++                    common_chat_msg sys_msg;
++                    sys_msg.role = "system";
++                    sys_msg.content = req.system_prompt;
++                    im.chat_history.push_back(sys_msg);
++                }
++                for (const ChatTurn & t : req.history) {
++                    if (t.content.empty()) continue;
++                    common_chat_msg m;
++                    m.role = (t.role == "assistant" || t.role == "system") ? t.role : "user";
++                    m.content = t.content;
++                    im.chat_history.push_back(m);
++                }
++            }
+             common_chat_msg user_msg;
+             user_msg.role = "user";
+             user_msg.content = req.prompt;
+@@ -1330,10 +1350,8 @@ RunResult Session::generate(const GenerateRequest & req,
+             parse_params = detail::build_parse_params(cp);
+         } catch (const std::exception & e) {
+             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
+-            if (history_pushed) {
+-                im.chat_history.pop_back();
+-                history_pushed = false;
+-            }
++            im.chat_history.resize(history_base); // PATCH: also drops seeded system/history turns
++            history_pushed = false;
+             chat_on = false;
+         }
+     }
+@@ -1346,11 +1364,24 @@ RunResult Session::generate(const GenerateRequest & req,
+         n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
+                                   true, true);
+     }
+-    if (n_prompt < 1) return fail("empty prompt after tokenization");
++    // PATCH: a failure here used to leave this turn's user message in chat_history with nothing in the KV,
++    // so a retry appended it a second time. Undo the push before failing.
++    auto fail_undo = [&](std::string msg) {
++        if (history_pushed) {
++            im.chat_history.pop_back();
++            history_pushed = false;
++        }
++        return fail(std::move(msg));
++    };
++    if (n_prompt < 1) return fail_undo("empty prompt after tokenization");
+     tokens.resize(n_prompt);
+-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx)
+-        return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
+-                    "); open the session with a larger n_ctx");
++    // PATCH: n_predict <= 0 = "fill the remaining context" (the app's "unlimited"). The same +8 slack as
++    // the explicit check below.
++    int n_predict = req.n_predict;
++    if (n_predict <= 0) n_predict = im.cfg.n_ctx - n_prompt - 8;
++    if (n_predict < 1 || n_prompt + n_predict + 8 > im.cfg.n_ctx)
++        return fail_undo("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
++                         "); open the session with a larger n_ctx");
+ 
+     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
+     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
+@@ -1409,8 +1440,13 @@ RunResult Session::generate(const GenerateRequest & req,
+     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
+     auto rollback_turn = [&]() {
+         if (chat_on) {
+-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) im.clear_memory(ctx);
+-            im.kv_tokens.resize(n_common);
++            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
++                im.clear_memory(ctx);
++                // PATCH: the KV is empty now, so kv_tokens must not keep claiming a reusable prefix.
++                im.kv_tokens.clear();
++            } else {
++                im.kv_tokens.resize(n_common);
++            }
+             if (history_pushed) {
+                 im.chat_history.pop_back();
+                 history_pushed = false;
+@@ -1616,7 +1652,7 @@ RunResult Session::generate(const GenerateRequest & req,
+     // would have read.
+     llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
+ 
+-    while (n_gen < req.n_predict) {
++    while (n_gen < n_predict) {
+         if (llama_vocab_is_eog(im.vocab, tok)) break;
+ 
+         // ── draft ──
+@@ -1625,7 +1661,7 @@ RunResult Session::generate(const GenerateRequest & req,
+         // goes in BEFORE drafting, so no source is ever asked for tokens with nowhere to go.
+         int n_draft = 0;
+         double draft_s = 0.0;                       // this group's drafting + catch-up (see below)
+-        const int room = req.n_predict - n_gen - 1; // tokens still wanted after `tok` itself
++        const int room = n_predict - n_gen - 1; // tokens still wanted after `tok` itself
+         if (spec_on && room > 0) {
+             const auto d0 = clock_t_::now();
+             const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
+@@ -1792,7 +1828,7 @@ RunResult Session::generate(const GenerateRequest & req,
+             prev_ra_issue_ns = ri;
+             prev_ra_wd_ns = rw;
+         }
+-        for (size_t e = 0; e < confirmed.size() && n_gen < req.n_predict; ++e) {
++        for (size_t e = 0; e < confirmed.size() && n_gen < n_predict; ++e) {
+             const llama_token out = confirmed[e];
+             char piece[256];
+             int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
+@@ -1804,7 +1840,7 @@ RunResult Session::generate(const GenerateRequest & req,
+ 
+             TokenMetrics m;
+             m.step = n_gen;
+-            m.steps = req.n_predict;
++            m.steps = n_predict;
+             m.mtp_batch = (int) confirmed.size();
+             m.loop_overhead_ms = e == 0 ? overhead * 1000.0 : 0.0;
+             // Charged to the group's first row like every other group cost. This is a SLICE of
