@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal stub added during packaging (not from Gemini). BigMoeTheme
+     (the real Compose theme) governs actual in-app colors; this XML theme
+     only needs to exist to satisfy AndroidManifest.xml's android:theme
+     reference for the launch/splash background before Compose takes over. -->
+<resources>
+    <style name="Theme.OnEdge" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

@@ -77,3 +77,32 @@ The real NPU APK is built in two steps by `.github/workflows/android-npu.yml`:
 2. Gradle is run with `-PbmoePrebuiltNative=true`. That mode verifies the required JNI payload before the build and packages the prebuilt native engine unchanged.
 
 The app's NPU switch is enabled only when the loaded `libonedge-engine.so` reports `BMOE_HAVE_HEXAGON`. On a normal CPU-only APK the switch remains unavailable rather than pretending the device is using the NPU.
+
+## Message actions, artifacts and copy (2026-10-05)
+
+* Long-press a **user** message: Edit, Copy. Long-press an **assistant** message: Copy. Assistant messages also carry a
+  Copy chip. Copy always puts the complete stored message on the clipboard (no telemetry, labels or renderer fences).
+* **Edit** replaces the user message in place, removes everything stored after it (answers, tool results, hidden file
+  context), and runs the normal `GenerationManager -> AgentController -> EngineController` pipeline from the history
+  before it. See `core/ConversationEdit.kt` and `ChatViewModel.editUserMessage`.
+* Fenced code is parsed in one place (`parser/CodeFences.kt`) for both the renderer and artifact detection. Language
+  rules live in `parser/ArtifactLanguages.kt` (priority: fence tag, file name extension, stored metadata).
+  HTML/SVG/Mermaid keep their live preview; every other language opens as a read-only code artifact and is never executed.
+* Code blocks copy only the raw code. ```prompt / ```template / ```instructions blocks and `---` delimited blocks get a
+  Copy button for their whole content.
+
+## Archives and artifacts update (2026-10-06)
+
+* **Attachments:** besides text/code files, the Files option now accepts ZIP / JAR, TAR, GZ / TAR.GZ and the zipped
+  document formats DOCX, XLSX, PPTX, ODT/ODS/ODP and EPUB. `workspace/ArchiveText.kt` turns them into prompt text (file
+  list + the text of readable files; documents are extracted as plain text). Nothing is written to disk, unsafe entry
+  paths are skipped, and every read is bounded (1 MB per entry, 24 MB in total, 5000 entries). PDF, 7z and RAR are not
+  supported (they need libraries the project does not bundle).
+* **Artifacts viewer:** JavaScript files get a Run button (offline sandbox WebView, no network or file access, 10 s
+  limit; it only runs when pressed). Markdown files open rendered, with a toggle to the source. HTML/SVG/Mermaid keep
+  their live preview. Python and the other languages open as highlighted, copyable code: running them needs an
+  interpreter the app does not contain.
+* **Attachment size:** documents up to 256 MB can be attached (`attachments/AttachmentLimits.kt`). Anything over 8 MB
+  shows a warning that preparing it and the answer may be slow. A plain text file over 8 MB is saved whole, but only its
+  first 8 MB is read into memory for the model (stated in the context); archives are streamed with their own bounds.
+
