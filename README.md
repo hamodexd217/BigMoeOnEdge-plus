@@ -5,7 +5,7 @@
 <h1 align="center">BigMoeOnEdge+</h1>
 
 <p align="center">
-  An Android chat app for running local GGUF models on-device, with a focus on Mixture-of-Experts models larger than the phone's RAM.
+  An Android chat app for running local GGUF models on-device, especially large Mixture-of-Experts models.
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 
 BigMoeOnEdge+ is an Android chat application built on the **BigMoeOnEdge** native inference engine (version 0.28.0).
 
-The engine runs Mixture-of-Experts (MoE) models on the phone by streaming expert weights from storage, which is what makes models larger than the device's RAM possible. This app wraps that engine in a complete chat experience: persistent conversations, reasoning display, web search, tools, attachments, multimodal input, artifacts, a workspace, and generation telemetry.
+The engine is designed for Mixture-of-Experts models whose weights are read from flash storage during generation, which makes models larger than the device's RAM practical to run. The app wraps that engine in a complete chat experience: persistent conversations, reasoning display, web search, tools, attachments, multimodal input, artifacts, a workspace, and generation telemetry.
 
 Dense GGUF models are supported through the normal loading path.
 
@@ -68,8 +68,8 @@ The model manager loads GGUF models and `mmproj` projector files, and detects wh
 | Artifacts | HTML, SVG, Mermaid, Markdown, and highlighted source code |
 | Workspace | Browse, open, edit, save, copy, share, and download generated files |
 | Chat controls | Edit and copy messages; copy raw code blocks |
-| Telemetry | Per-message statistics such as tokens/s, prefill time, and cache hits |
-| Settings | Context, sampling, expert cache, media, and tool controls |
+| Telemetry | Per-message statistics such as tokens/s, prefill, and cache information |
+| Settings | Context, sampling, expert cache, I/O and compute overlap, media, and tool controls |
 | Wide screens | Persistent chat-history panel |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
 
@@ -91,7 +91,7 @@ There is no single "BigMoeOnEdge+ speed" number.
 
 Generation speed depends on the model, quantization, context size, storage speed, cache settings, device hardware, and thermal conditions. Web search and tool use add latency on top of generation.
 
-**Expert streaming trade-off:** streaming experts from storage is what lets large MoE models run, but it also makes storage speed a main limit on throughput. The engine can overlap I/O with computation, but that requires the Helldez fork of llama.cpp. The vendored llama.cpp in this repository is the stock upstream snapshot, so with it the engine runs with overlap disabled and throughput is lower. See [Native engine](#native-engine).
+**I/O and compute overlap:** the Settings screen has an *I/O and compute overlap* switch. When enabled, the engine issues the next weight reads while the current layer is computing, so flash latency is hidden behind the work. Its effect depends on the model and device, so compare tokens/s with the switch on and off on your own hardware.
 
 Some feature tests intentionally use a smaller model so they finish faster. Those tests show that a feature works. They do not represent the performance of a large model.
 
@@ -103,7 +103,7 @@ The latest release includes an installable Android APK:
 
 Current release: **[BigMoeOnEdge+ v0.2.0](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/tag/0.2.0)**
 
-> The app version (v0.2.0) and the engine version (BigMoeOnEdge 0.28.0) are versioned separately.
+The app version (v0.2.0) and the engine version (BigMoeOnEdge 0.28.0) are versioned separately.
 
 ## Requirements
 
@@ -127,6 +127,8 @@ Native code is built in **Release mode even for debug APKs**, because an unoptim
 
 ## Build
 
+Clone the repository:
+
 ```bash
 git clone https://github.com/hamodexd217/BigMoeOnEdge-plus.git
 cd BigMoeOnEdge-plus
@@ -138,7 +140,7 @@ Build the default ARM64 debug APK:
 ./gradlew assembleDebug
 ```
 
-Build for ARM64 and x86_64 (the x86_64 build is for emulators):
+Build for ARM64 and x86_64:
 
 ```bash
 ./gradlew assembleDebug -PbmoeAbis=arm64-v8a,x86_64
@@ -163,11 +165,11 @@ Run instrumentation tests on a connected device or emulator:
 3. Select the model or projector.
 4. Load it.
 
-The app copies models into app-private storage, because the native engine needs a real filesystem path. For debug builds, you can also push models with `adb` into the app's model directory and refresh the Models screen.
+Models are copied into app-private storage, because the native engine needs a real filesystem path. For debug builds, you can also push models with `adb` into the app's model directory and refresh the Models screen.
 
 ## Multimodal models
 
-Vision-capable models use an `mmproj` projector. The app can import the model and projector separately, discover projector candidates, and pick the right one when loading.
+Vision-capable models use an `mmproj` projector. The app can import the model and projector separately, discover projector candidates, and select the correct one when loading.
 
 Image and video support depends on the exact model, projector, and device. Video is handled as sampled frames, not continuous video understanding.
 
@@ -207,7 +209,7 @@ Conversations persist through Room. Supported features include:
 - DOCX, XLSX, PPTX, and other supported document formats
 - File navigation and workspace operations
 
-Attachment processing enforces size limits so very large files do not silently use excessive memory.
+Attachment processing uses size limits, so very large files do not silently consume excessive memory.
 
 ## Native engine
 
@@ -218,11 +220,7 @@ Native dependencies are vendored rather than pulled in as git submodules.
 - `EngineNativeBridge.kt`: JNI bridge to the engine.
 - `patches/`: project-specific native changes in re-applicable patch form.
 
-**Overlap:** upstream BigMoeOnEdge pins the Helldez fork of llama.cpp. With the stock llama.cpp used here, the engine works, but I/O–compute overlap is unavailable and the bridge disables it automatically.
-
-**Storage:** the engine reads expert weights with `O_DIRECT`, so model files must live on a real filesystem path. The app's import flow takes care of this.
-
-The optional Hexagon/NPU path is separate from the default CPU build. It needs the Snapdragon toolchain, and the app enables the NPU switch only when the loaded engine library reports Hexagon support.
+The optional Hexagon/NPU path is separate from the default CPU build and requires the Snapdragon toolchain.
 
 ## Project structure
 
@@ -254,17 +252,16 @@ The app has been built through GitHub Actions and tested on real Android hardwar
 
 Development testing covered model loading and generation, Room conversations, web search, reasoning, tools, text and code attachments, artifacts, code blocks, vision and video flows, model and projector loading, chat persistence, and workspace operations.
 
-[`docs/STATUS.md`](docs/STATUS.md) has the full test checklist, the implementation notes, and what still needs validation on real devices.
+[`docs/STATUS.md`](docs/STATUS.md) has the full test checklist, implementation notes, and what still needs validation on real devices.
 
 ## Known limitations
 
 BigMoeOnEdge+ is under active development, and behavior depends on the model and device.
 
 - Inference speed varies a lot between devices and models.
-- With the stock llama.cpp in this repository, I/O–compute overlap is disabled.
 - Web search requires a network connection and may be slow with large local models.
 - Multimodal behavior depends on the exact model and `mmproj` combination.
-- Image and video runtime still needs validation on more devices (see `docs/STATUS.md`).
+- Image and video support still needs validation on more devices (see `docs/STATUS.md`).
 - Some engine and device combinations need more real-device testing.
 - Video input uses sampled frames, not continuous video understanding.
 - Voice input is not part of this project.
@@ -274,7 +271,7 @@ BigMoeOnEdge+ is under active development, and behavior depends on the model and
 
 BigMoeOnEdge+ builds on:
 
-- [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge) (Apache-2.0)
+- [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - Jetpack Compose, Room, DataStore, and the Android ecosystem
 
