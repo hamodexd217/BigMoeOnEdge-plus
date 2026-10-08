@@ -27,7 +27,8 @@
 
 > BigMoeOnEdge+ is a modified/enhanced fork of [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge).
 
-
+> **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
+> 
 ## What is BigMoeOnEdge+?
 
 BigMoeOnEdge+ is an Android chat application built on the **BigMoeOnEdge** native inference engine (version 0.28.0).
