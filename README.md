@@ -5,7 +5,7 @@
 <h1 align="center">BigMoeOnEdge+</h1>
 
 <p align="center">
-  A feature-rich Android client for running local LLMs — especially large Mixture-of-Experts models — on-device.
+  An Android chat app for running local GGUF models on-device, with a focus on Mixture-of-Experts models larger than the phone's RAM.
 </p>
 
 <p align="center">
@@ -26,21 +26,23 @@
 
 ## What is BigMoeOnEdge+?
 
-**BigMoeOnEdge+** is an Android chat application built around the **BigMoeOnEdge** native inference engine.
+BigMoeOnEdge+ is an Android chat application built on the **BigMoeOnEdge** native inference engine (version 0.28.0).
 
-The goal is to make running local models on Android feel more like a complete AI application instead of a minimal model runner.
+The engine runs Mixture-of-Experts (MoE) models on the phone by streaming expert weights from storage, which is what makes models larger than the device's RAM possible. This app wraps that engine in a complete chat experience: persistent conversations, reasoning display, web search, tools, attachments, multimodal input, artifacts, a workspace, and generation telemetry.
 
-It combines local inference with persistent conversations, reasoning, web search, tools, attachments, multimodal input, artifacts, workspace features, and generation telemetry.
-
-The project is based on **BigMoeOnEdge 0.28.0**, with additional Android-side features and project-specific engine patches.
+Dense GGUF models are supported through the normal loading path.
 
 ## Demo
 
 A quick look at the artifact workflow:
 
+
+
 ![Artifacts demo](docs/assets/demo-artifacts.gif)
 
-Additional screenshots and demo media are available in [`docs/assets`](docs/assets).
+
+
+More screenshots and demo media are in [`docs/assets`](docs/assets).
 
 ## Screenshots
 
@@ -48,32 +50,32 @@ Additional screenshots and demo media are available in [`docs/assets`](docs/asse
   <img src="docs/assets/models.png" alt="BigMoeOnEdge+ model manager" width="900">
 </p>
 
-The model manager supports GGUF models and `mmproj` files, with automatic detection for Mixture-of-Experts and regular dense models.
+The model manager loads GGUF models and `mmproj` projector files, and detects whether a model is Mixture-of-Experts or dense.
 
 ## Highlights
 
-| Area | BigMoeOnEdge+ |
+| Area | Details |
 | --- | --- |
 | Local inference | GGUF models through the native BigMoeOnEdge engine |
-| Model support | Mixture-of-Experts and dense models with automatic detection |
-| Conversations | Persistent Room-backed chats |
-| Generation | Live token streaming and stop control |
+| Model support | Mixture-of-Experts and dense models, with automatic detection |
+| Conversations | Persistent Room-backed chats, with per-chat drafts |
+| Generation | Live token streaming and a stop control |
 | Reasoning | Streaming "Thinking" / reasoning display |
 | Web | Web search integrated into the chat workflow |
-| Tools | File, code, web and utility tools with approval flow |
-| Attachments | Text, code, archives, documents, images and video |
+| Tools | File, code, web, and utility tools behind an approval flow |
+| Attachments | Text, code, archives, documents, images, and video |
 | Vision | `mmproj` support for multimodal models |
-| Artifacts | HTML, SVG, Mermaid, Markdown and highlighted source-code artifacts |
-| Workspace | Browse, open, edit, save, copy, share and download generated files |
-| Chat controls | Edit/copy messages and copy raw code blocks |
-| Telemetry | Generation statistics such as tokens/s, prefill and cache information |
-| Settings | Context, sampling, expert-cache, media and tool controls |
+| Artifacts | HTML, SVG, Mermaid, Markdown, and highlighted source code |
+| Workspace | Browse, open, edit, save, copy, share, and download generated files |
+| Chat controls | Edit and copy messages; copy raw code blocks |
+| Telemetry | Per-message statistics such as tokens/s, prefill time, and cache hits |
+| Settings | Context, sampling, expert cache, media, and tool controls |
 | Wide screens | Persistent chat-history panel |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
 
 ## Model support
 
-BigMoeOnEdge+ loads `.gguf` models through the Models screen.
+Load `.gguf` models from the Models screen.
 
 Models used during development include:
 
@@ -81,29 +83,27 @@ Models used during development include:
 - Qwen3.5 9B Q5
 - Qwen3.6 35B-A3B Q4 MTP
 
-The application is not limited to these models. MoE models are detected automatically, while regular dense GGUF models can use the normal loading path.
+The app is not limited to these. MoE models are detected automatically, and regular dense GGUF models use the standard loading path. For multimodal models, import the `mmproj` projector separately.
 
-For multimodal models, the required `mmproj` projector can be imported separately.
-
-### Performance notes
+## Performance notes
 
 There is no single "BigMoeOnEdge+ speed" number.
 
-Generation speed depends on the model, quantization, context size, storage speed, cache settings, device hardware, and thermal conditions. Tools and web search can add additional latency.
+Generation speed depends on the model, quantization, context size, storage speed, cache settings, device hardware, and thermal conditions. Web search and tool use add latency on top of generation.
 
-**Some feature tests intentionally use a smaller model to make the test finish faster.** Those tests demonstrate that the feature works and are **not intended to represent the performance of a large model**.
+**Expert streaming trade-off:** streaming experts from storage is what lets large MoE models run, but it also makes storage speed a main limit on throughput. The engine can overlap I/O with computation, but that requires the Helldez fork of llama.cpp. The vendored llama.cpp in this repository is the stock upstream snapshot, so with it the engine runs with overlap disabled and throughput is lower. See [Native engine](#native-engine).
 
-Web search, tool use, artifact generation, and complex reasoning can also take significantly longer than a normal short text generation — especially with large local models.
+Some feature tests intentionally use a smaller model so they finish faster. Those tests show that a feature works. They do not represent the performance of a large model.
 
 ## Download
 
-The latest release provides a ready-to-install Android APK:
+The latest release includes an installable Android APK:
 
 **[Download the latest APK](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest)**
 
-Current release:
+Current release: **[BigMoeOnEdge+ v0.2.0](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/tag/0.2.0)**
 
-**[BigMoeOnEdge+ v0.2.0](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/tag/0.2.0)**
+> The app version (v0.2.0) and the engine version (BigMoeOnEdge 0.28.0) are versioned separately.
 
 ## Requirements
 
@@ -111,8 +111,8 @@ Current release:
 
 - Android 10 or newer
 - Enough RAM and storage for the selected model
-- A compatible model and `mmproj` for vision/video use
-- Network access for web search
+- A compatible model and `mmproj` file for vision or video input
+- A network connection for web search
 
 ### Building from source
 
@@ -121,44 +121,40 @@ Current release:
 - JDK 17
 - Android NDK
 - CMake 3.22.1
-- Internet access for the initial Gradle dependency sync
+- Internet access for the first Gradle dependency sync
 
-The native engine is built in **Release mode even for debug APKs** because an unoptimized native build is impractical for real inference.
+Native code is built in **Release mode even for debug APKs**, because an unoptimized native build is too slow for real inference.
 
 ## Build
-
-Clone the repository:
 
 ```bash
 git clone https://github.com/hamodexd217/BigMoeOnEdge-plus.git
 cd BigMoeOnEdge-plus
 ```
 
-Build the normal ARM64 APK:
+Build the default ARM64 debug APK:
 
 ```bash
 ./gradlew assembleDebug
 ```
 
-For ARM64 + x86_64:
+Build for ARM64 and x86_64 (the x86_64 build is for emulators):
 
 ```bash
 ./gradlew assembleDebug -PbmoeAbis=arm64-v8a,x86_64
 ```
 
-Run JVM tests:
+Run JVM unit tests:
 
 ```bash
 ./gradlew testDebugUnitTest
 ```
 
-Run Android instrumentation tests with a connected device or emulator:
+Run instrumentation tests on a connected device or emulator:
 
 ```bash
 ./gradlew connectedDebugAndroidTest
 ```
-
-The project is also built through **GitHub Actions**, and the application has been tested on real Android hardware during development.
 
 ## Loading models
 
@@ -167,78 +163,66 @@ The project is also built through **GitHub Actions**, and the application has be
 3. Select the model or projector.
 4. Load it.
 
-Models are copied into app-private storage because the native engine requires a real filesystem path.
-
-For debug builds, models can also be pushed with `adb` into the app's model directory and then refreshed from the Models screen.
+The app copies models into app-private storage, because the native engine needs a real filesystem path. For debug builds, you can also push models with `adb` into the app's model directory and refresh the Models screen.
 
 ## Multimodal models
 
-Vision-capable models use an `mmproj` projector.
+Vision-capable models use an `mmproj` projector. The app can import the model and projector separately, discover projector candidates, and pick the right one when loading.
 
-The app supports importing the model and projector separately, discovering projector candidates, and selecting the correct projector during loading.
-
-Image and video support depends on the exact model, projector, and device. Video input is handled as sampled visual frames rather than continuous native video understanding.
+Image and video support depends on the exact model, projector, and device. Video is handled as sampled frames, not continuous video understanding.
 
 ## Web search and tools
 
-Web search and tools are integrated into the normal chat workflow.
+Web search and tools run inside the normal chat workflow.
 
-Keep in mind:
-
-- Web features require network access.
-- Search and tool calls can take noticeable time.
+- Web features need network access.
+- Searches and tool calls can take noticeable time.
 - Tool execution can require additional model reasoning.
-- Large local models can make these operations considerably slower.
-- Some development tests use a smaller model simply to shorten the test cycle.
-
-This is intentional: the project aims to expose useful local-AI capabilities without pretending that large on-device inference is instant.
+- Large local models make these operations considerably slower.
 
 ## Artifacts and workspace
 
-Generated files and code can be handled as artifacts instead of being left as plain chat text.
+Generated files and code are handled as artifacts instead of plain chat text:
 
-Supported artifact behavior includes:
-
-- HTML / SVG / Mermaid previews
+- HTML, SVG, and Mermaid previews
 - Rendered Markdown
 - Highlighted source-code artifacts
 - Copyable code
-- Offline JavaScript execution when explicitly requested
+- Offline JavaScript execution, only when explicitly requested
 - Workspace browsing and file management
-- Saving, editing, sharing and downloading files
+- Saving, editing, sharing, and downloading files
 
-Common source formats such as Kotlin, Java, Python, C/C++, JavaScript/TypeScript, JSON, YAML, shell, Dockerfile and SQL are preserved as code artifacts.
-
-Languages that require an external interpreter, such as Python, are not executed by the app.
+Common source formats such as Kotlin, Java, Python, C/C++, JavaScript/TypeScript, JSON, YAML, shell, Dockerfile, and SQL are saved as code artifacts. Languages that need an external interpreter, such as Python, are not executed by the app.
 
 ## Chat and attachments
 
-BigMoeOnEdge+ supports persistent conversations through Room, along with:
+Conversations persist through Room. Supported features include:
 
-- Message editing
-- Message copying
-- Raw code-block copying
+- Editing and copying messages
+- Copying raw code blocks
 - Persistent per-chat drafts
 - Text and code attachments
 - Images and video
-- ZIP/JAR/TAR/GZ archives
-- DOCX/XLSX/PPTX and other supported document formats
+- ZIP, JAR, TAR, and GZ archives
+- DOCX, XLSX, PPTX, and other supported document formats
 - File navigation and workspace operations
 
-Attachment processing uses safety and size limits so very large files do not silently consume excessive memory.
+Attachment processing enforces size limits so very large files do not silently use excessive memory.
 
 ## Native engine
 
-The repository vendors its native dependencies rather than relying on a git submodule.
+Native dependencies are vendored rather than pulled in as git submodules.
 
-At a high level:
+- `app/src/main/cpp/core`: the vendored BigMoeOnEdge 0.28.0 engine, plus local patches.
+- `app/src/main/cpp/third_party/llama.cpp`: the vendored llama.cpp snapshot.
+- `EngineNativeBridge.kt`: JNI bridge to the engine.
+- `patches/`: project-specific native changes in re-applicable patch form.
 
-- `app/src/main/cpp/core` contains the vendored BigMoeOnEdge 0.28.0 engine plus local patches.
-- `app/src/main/cpp/third_party/llama.cpp` contains the vendored llama.cpp snapshot used by the project.
-- `EngineNativeBridge.kt` communicates with the native engine through JNI.
-- `patches/` contains project-specific native changes in re-applicable patch form.
+**Overlap:** upstream BigMoeOnEdge pins the Helldez fork of llama.cpp. With the stock llama.cpp used here, the engine works, but I/O–compute overlap is unavailable and the bridge disables it automatically.
 
-The optional Hexagon/NPU path is separate from the normal CPU build and is intended for environments where the required Snapdragon toolchain is available.
+**Storage:** the engine reads expert weights with `O_DIRECT`, so model files must live on a real filesystem path. The app's import flow takes care of this.
+
+The optional Hexagon/NPU path is separate from the default CPU build. It needs the Snapdragon toolchain, and the app enables the NPU switch only when the loaded engine library reports Hexagon support.
 
 ## Project structure
 
@@ -247,7 +231,7 @@ app/
   src/main/java/com/bigmoe/onedge/
     core/       engine, generation, model management, context
     parser/     markdown, code fences, artifact languages
-    tools/      web, file and utility tools
+    tools/      web, file, and utility tools
     data/       Room persistence and settings
     ui/         Compose UI
   src/main/cpp/
@@ -266,53 +250,39 @@ scripts/
 
 ## Testing and status
 
-The project has been built through GitHub Actions and tested on real Android hardware.
+The app has been built through GitHub Actions and tested on real Android hardware during development.
 
-Development testing covers areas including:
+Development testing covered model loading and generation, Room conversations, web search, reasoning, tools, text and code attachments, artifacts, code blocks, vision and video flows, model and projector loading, chat persistence, and workspace operations.
 
-- Model loading and generation
-- Persistent Room conversations
-- Web search
-- Thinking/reasoning
-- Tools
-- Text and code attachments
-- Artifacts
-- Code blocks
-- Vision and video flows
-- Model/projector loading
-- Chat persistence
-- Workspace operations
-
-The complete implementation notes, test checklist, and remaining known limitations are maintained in [`docs/STATUS.md`](docs/STATUS.md).
+[`docs/STATUS.md`](docs/STATUS.md) has the full test checklist, the implementation notes, and what still needs validation on real devices.
 
 ## Known limitations
 
-BigMoeOnEdge+ is an actively developed project, so some behavior still depends on the model and device.
+BigMoeOnEdge+ is under active development, and behavior depends on the model and device.
 
-- Inference performance varies heavily between devices and models.
-- Web search requires a network connection.
-- Web search and tools may take a long time with large local models.
-- Multimodal behavior depends on the exact model + `mmproj` combination.
+- Inference speed varies a lot between devices and models.
+- With the stock llama.cpp in this repository, I/O–compute overlap is disabled.
+- Web search requires a network connection and may be slow with large local models.
+- Multimodal behavior depends on the exact model and `mmproj` combination.
+- Image and video runtime still needs validation on more devices (see `docs/STATUS.md`).
+- Some engine and device combinations need more real-device testing.
+- Video input uses sampled frames, not continuous video understanding.
 - Voice input is not part of this project.
 - Grammar-constrained tool calls are not part of this project.
-- Some engine/device combinations may need additional real-device validation.
-- Video input uses sampled frames rather than continuous video understanding.
 
 ## Credits
 
-BigMoeOnEdge+ builds on work from:
+BigMoeOnEdge+ builds on:
 
-- [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge)
+- [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge) (Apache-2.0)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
-- Jetpack Compose, Room, DataStore and the Android ecosystem
+- Jetpack Compose, Room, DataStore, and the Android ecosystem
 
-The native engine and vendored components retain their respective licenses and notices.
+The native engine and vendored components keep their own licenses and notices.
 
 ## License
 
-BigMoeOnEdge+ is licensed under the **Apache License 2.0**.
-
-See [`LICENSE`](LICENSE).
+BigMoeOnEdge+ is licensed under the **Apache License 2.0**. See [`LICENSE`](LICENSE).
 
 ---
 
