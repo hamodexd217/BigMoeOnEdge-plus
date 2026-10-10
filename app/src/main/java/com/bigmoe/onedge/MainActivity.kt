@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        (application as OnEdgeApplication).container.handleApiServerIntent(intent)
         if (intent.hasExtra(EXTRA_OPEN_SESSION_ID)) recreate()
     }
 
@@ -41,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
         val appContainer = (application as OnEdgeApplication).container
         val viewModelFactory = AppViewModelFactory(appContainer)
+        if (savedInstanceState == null) appContainer.handleApiServerIntent(intent)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             // Android 13+: ask only when the user has explicitly opened the app. The foreground
             // service itself is started only for an actual generation.

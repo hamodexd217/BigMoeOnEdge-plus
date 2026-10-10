@@ -21,6 +21,11 @@ val bmoeCiCmakeArguments: List<String> = if (
     emptyList()
 }
 
+// Optional CPU target for the native engine, e.g. -PbmoeArmArch=armv8.2-a+dotprod+fp16+i8mm. Newer cores (Cortex-X3/X4,
+// A715/A720 and later) run the int8 matrix kernels much faster with i8mm, which mostly speeds up prompt processing.
+// A build made with a feature the phone lacks crashes on load (SIGILL), so the default stays the safe baseline.
+val bmoeArmArch: String? = providers.gradleProperty("bmoeArmArch").orNull?.trim()?.takeIf { it.isNotEmpty() }
+
 val bmoeAbis: List<String> = (providers.gradleProperty("bmoeAbis").orNull ?: "arm64-v8a")
     .split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
@@ -50,7 +55,9 @@ android {
                         "-DANDROID_STL=c++_shared",
                         "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                         "-DBMOE_ENABLE_MULTIMODAL=" + (if (bmoeMultimodal) "ON" else "OFF")
-                    ).plus(bmoeCiCmakeArguments).toTypedArray()
+                    ).plus(bmoeCiCmakeArguments)
+                        .plus(if (bmoeArmArch != null) listOf("-DBMOE_ARM_ARCH=$bmoeArmArch") else emptyList())
+                        .toTypedArray()
                 )
             }
         }
@@ -62,8 +69,13 @@ android {
 
     buildTypes {
         debug {
+            // A debuggable app runs with ART's debug compilation, CheckJNI (every JNI call is validated, including
+            // the per-token callback and the image/array copies) and the unoptimised Compose paths: the UI and the
+            // JNI traffic are measurably slower. The CI ships the debug build type, so it is NOT debuggable by
+            // default; pass -PbmoeDebuggable=true when attaching a debugger.
+            isDebuggable = providers.gradleProperty("bmoeDebuggable").orNull == "true"
             // The engine is compute bound; an unoptimised native build is unusably slow, so
-            // build CMake in Release mode even for the debug APK (Kotlin stays debuggable).
+            // build CMake in Release mode even for the debug APK.
             externalNativeBuild {
                 cmake {
                     arguments("-DCMAKE_BUILD_TYPE=Release")

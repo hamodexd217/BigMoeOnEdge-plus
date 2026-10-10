@@ -9,6 +9,7 @@ pristine 0.28.0 with `patch -p1`, and both patches were verified with `patch --d
 | 0001-session-chat-context | `GenerateRequest::system_prompt`, `history`, `n_predict <= 0` fills the remaining context, error-path history rollback, and KV-token cleanup when a rollback clears the whole KV | lets the app restore saved chats, supports the UI's unlimited-generation setting, and fixes retry/cancel state corruption paths |
 | 0002-ggml-cpu-expert-ready-hook | existing llama.cpp CPU expert-ready hook | this is a llama.cpp-side patch, not an engine-core port; the vendored llama.cpp already contains the required expert-ready integration, so 0002 is **not** re-applied as part of the 0.28 core merge |
 | 0003-multimodal | `mmproj_path`, image request data, mtmd image preprocessing/eval path, multimodal CMake link, and vision capability plumbing in the engine API | preserves this app's real image support while taking upstream 0.28 as the engine base |
+| 0004-session-tools-sampling | `GenerateRequest::chat_messages_json / chat_tools_json / chat_tool_choice / stop / sampling_override`, `RunResult::tool_calls / stop_reason / n_prompt_total / n_reused`: stateless OpenAI-format chat turns with tools in the jinja template, parsed tool calls, stop strings, per-request sampling, KV prefix reuse across requests, and a prompt-preserving rollback on cancel | the local API server (docs/API_SERVER.md). Additive: `generate()` behaves exactly as before when `chat_messages_json` is empty |
 
 ## Upstream 0.25 → 0.28 changes ported
 
@@ -29,6 +30,7 @@ pristine 0.28.0 with `patch -p1`, and both patches were verified with `patch --d
 # from the repository root, on a pristine BigMoeOnEdge 0.28.0 checkout
 patch -p1 < patches/0001-session-chat-context.patch
 patch -p1 < patches/0003-multimodal.patch
+patch -p1 < patches/0004-session-tools-sampling.patch
 ```
 
 The patches intentionally do **not** replace or patch `third_party/llama.cpp`; that vendored tree is managed separately.

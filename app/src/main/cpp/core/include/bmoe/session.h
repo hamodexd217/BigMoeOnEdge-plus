@@ -119,6 +119,27 @@ struct GenerateRequest {
     // default output, and every benchmark run) does not, and should turn it off. Default on so an
     // embedder that does not know about this flag keeps the old behaviour.
     bool render_text = true;
+
+    // ---- Stateless chat mode (patch 0004; used by the local API server) -------------------------
+    // Non-empty = an OpenAI-format messages array (roles system/user/assistant/tool, assistant
+    // `tool_calls`, tool `tool_call_id`). It REPLACES system_prompt/history/prompt and clear_kv is
+    // ignored: the KV is not cleared, the rendered prompt's longest common token prefix with what the
+    // KV already holds is reused, and only the rest is prefilled. If nothing matches (or the memory
+    // cannot drop a tail, e.g. some SWA/recurrent models) that is simply a full prefill. A turn that is
+    // cancelled after its prefill keeps the prompt in the KV so a retry does not pay for it again.
+    // Needs chat mode and no images. n_predict is clamped to the room left in the context (it is an
+    // error only when the prompt itself does not fit).
+    std::string chat_messages_json;
+    std::string chat_tools_json;   // OpenAI `tools` array, "" = none
+    std::string chat_tool_choice;  // "", "auto", "required" or "none"
+    // Stop strings, matched against the ANSWER text (never the reasoning). Text before the first match
+    // is delivered, the match itself and everything after it are not; text that could still turn into
+    // a match is held back until it cannot. Stateless chat mode only.
+    std::vector<std::string> stop;
+    // Per-request sampling. When false the session's own sampler (SamplingConfig at open()) is used.
+    // When true: temp <= 0 is greedy, otherwise a top-k/top-p/temperature chain seeded with `sampling.seed`.
+    bool sampling_override = false;
+    SamplingConfig sampling;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token

@@ -222,7 +222,7 @@ fun ChatScreen(
                             item(key = "live_bubble") {
                                 if (uiState.liveText.isEmpty() && uiState.liveReasoning.isEmpty()) {
                                     LiveStatusRow(
-                                        uiState.liveStatus ?: "Thinking…",
+                                        uiState.liveStatus ?: "Reading…",
                                         formatStats(
                                             null, null, uiState.generationTokens, null,
                                             uiState.generationElapsedMs, uiState.contextUsed, uiState.contextTotal

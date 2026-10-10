@@ -36,6 +36,39 @@ interface NativeGenerationCallback {
     )
 }
 
+/**
+ * Receives events from native-bridge.cpp's nativeGenerateChat() (the local API server's path). Same threading and
+ * UTF-8 rules as [NativeGenerationCallback]. The parameter order of [onFinished] is the JNI signature
+ * "(ZZ[B[B[B[[B[B[BIIIIDDD)V" in native-bridge.cpp; do not reorder.
+ */
+interface NativeChatCallback {
+    /** Once per confirmed token. Deltas may both be empty. Return false to cancel. */
+    fun onToken(answerDelta: ByteArray, reasoningDelta: ByteArray): Boolean
+
+    /**
+     * Always called exactly once, last. [toolCalls] is flat: id0, name0, arguments0, id1, ... ([id] may be empty).
+     * [stopReason] is "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" (empty on failure).
+     * [nPromptTotal] is the rendered prompt length, [nReused] how much of it was already in the KV.
+     */
+    fun onFinished(
+        ok: Boolean,
+        cancelled: Boolean,
+        error: ByteArray,
+        answer: ByteArray,
+        reasoning: ByteArray,
+        toolCalls: Array<ByteArray>,
+        stopReason: ByteArray,
+        stopSequence: ByteArray,
+        nGenerated: Int,
+        nPromptTotal: Int,
+        nReused: Int,
+        nPast: Int,
+        tokensPerSecond: Double,
+        prefillSeconds: Double,
+        cacheHitPct: Double
+    )
+}
+
 /** The JNI surface. Function names are bound to native-bridge.cpp by name; do not rename. */
 class EngineNativeBridge {
 
@@ -75,6 +108,27 @@ class EngineNativeBridge {
         imageDims: IntArray,
         imageData: Array<ByteArray>,
         callback: NativeGenerationCallback
+    ): Boolean
+
+    /**
+     * Blocking, stateless chat generation (patch 0004). [messagesJson] is an OpenAI-format messages array,
+     * [toolsJson] an OpenAI `tools` array or empty, [toolChoice] "", "auto", "required" or "none". The engine reuses
+     * whatever KV prefix the previous request left behind. [maxTokens] <= 0 = as much as the context allows.
+     * When [overrideSampling] is false, [temperature]/[topP]/[topK]/[seed] are ignored (the session's own sampler is used).
+     */
+    external fun nativeGenerateChat(
+        messagesJson: ByteArray,
+        toolsJson: ByteArray,
+        toolChoice: ByteArray,
+        stop: Array<ByteArray>,
+        maxTokens: Int,
+        think: Boolean,
+        overrideSampling: Boolean,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        seed: Int,
+        callback: NativeChatCallback
     ): Boolean
 
     external fun nativeDecide(

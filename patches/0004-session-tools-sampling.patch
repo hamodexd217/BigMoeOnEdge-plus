@@ -1,0 +1,357 @@
+diff --git a/app/src/main/cpp/core/include/bmoe/runtime.h b/app/src/main/cpp/core/include/bmoe/runtime.h
+index 116241e..a97f4a5 100644
+--- a/app/src/main/cpp/core/include/bmoe/runtime.h
++++ b/app/src/main/cpp/core/include/bmoe/runtime.h
+@@ -14,6 +14,7 @@
+ 
+ #include <functional>
+ #include <string>
++#include <vector>
+ 
+ namespace bmoe {
+ 
+@@ -21,6 +22,13 @@ class IRouteTraceSink;
+ class IComputeTraceSink;
+ class IIoTraceSink;
+ 
++// One tool call the model made, as parsed by llama.cpp's chat parser (stateless chat requests only).
++struct ChatToolCall {
++    std::string id;        // may be empty: not every template emits ids
++    std::string name;
++    std::string arguments; // JSON text
++};
++
+ struct RunResult {
+     bool ok = false;
+     bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
+@@ -30,6 +38,13 @@ struct RunResult {
+     // Empty otherwise (chat off, non-reasoning model, harmony no-think). Display-only; the answer
+     // in generated_text already has it stripped. See TokenMetrics::reasoning.
+     std::string reasoning_text;
++    // Stateless chat requests only (GenerateRequest::chat_messages_json); all empty/zero otherwise.
++    std::vector<ChatToolCall> tool_calls;
++    // "end_turn" | "max_tokens" | "stop_sequence" | "tool_use".
++    std::string stop_reason;
++    std::string stop_sequence; // the stop string that ended the turn, when stop_reason == "stop_sequence"
++    int n_prompt_total = 0;    // tokens in the rendered prompt
++    int n_reused = 0;          // of those, how many were already in the KV and were not prefilled again
+     RunSummary summary;
+     explicit operator bool() const { return ok; }
+ };
+diff --git a/app/src/main/cpp/core/include/bmoe/session.h b/app/src/main/cpp/core/include/bmoe/session.h
+index eef8e1e..0b7167b 100644
+--- a/app/src/main/cpp/core/include/bmoe/session.h
++++ b/app/src/main/cpp/core/include/bmoe/session.h
+@@ -119,6 +119,27 @@ struct GenerateRequest {
+     // default output, and every benchmark run) does not, and should turn it off. Default on so an
+     // embedder that does not know about this flag keeps the old behaviour.
+     bool render_text = true;
++
++    // ---- Stateless chat mode (patch 0004; used by the local API server) -------------------------
++    // Non-empty = an OpenAI-format messages array (roles system/user/assistant/tool, assistant
++    // `tool_calls`, tool `tool_call_id`). It REPLACES system_prompt/history/prompt and clear_kv is
++    // ignored: the KV is not cleared, the rendered prompt's longest common token prefix with what the
++    // KV already holds is reused, and only the rest is prefilled. If nothing matches (or the memory
++    // cannot drop a tail, e.g. some SWA/recurrent models) that is simply a full prefill. A turn that is
++    // cancelled after its prefill keeps the prompt in the KV so a retry does not pay for it again.
++    // Needs chat mode and no images. n_predict is clamped to the room left in the context (it is an
++    // error only when the prompt itself does not fit).
++    std::string chat_messages_json;
++    std::string chat_tools_json;   // OpenAI `tools` array, "" = none
++    std::string chat_tool_choice;  // "", "auto", "required" or "none"
++    // Stop strings, matched against the ANSWER text (never the reasoning). Text before the first match
++    // is delivered, the match itself and everything after it are not; text that could still turn into
++    // a match is held back until it cannot. Stateless chat mode only.
++    std::vector<std::string> stop;
++    // Per-request sampling. When false the session's own sampler (SamplingConfig at open()) is used.
++    // When true: temp <= 0 is greedy, otherwise a top-k/top-p/temperature chain seeded with `sampling.seed`.
++    bool sampling_override = false;
++    SamplingConfig sampling;
+ };
+ 
+ // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
+diff --git a/app/src/main/cpp/core/src/engine/session.cpp b/app/src/main/cpp/core/src/engine/session.cpp
+index 0662fa3..2668197 100644
+--- a/app/src/main/cpp/core/src/engine/session.cpp
++++ b/app/src/main/cpp/core/src/engine/session.cpp
+@@ -146,6 +146,48 @@ double secs(clock_t_::time_point a, clock_t_::time_point b) {
+ // ubatch so it is never the wider of the two.
+ constexpr int mtp_draft_ubatch = 32;
+ 
++// Stop-string scan over the answer text (stateless chat requests). `visible` is how much of `text` may
++// be shown: everything before the earliest full match; and, unless `final_pass`, minus the longest tail
++// that is still a proper prefix of some stop string (it may yet become a match). `hit` is the index of the
++// stop string that matched, or -1. Monotone: text once visible stays visible as `text` grows, because a
++// prefix of a stop-prefix is itself a stop-prefix.
++struct StopScan {
++    size_t visible = 0;
++    int hit = -1;
++};
++StopScan scan_stops(const std::string & text, const std::vector<std::string> & stops, bool final_pass) {
++    StopScan r;
++    r.visible = text.size();
++    size_t best = std::string::npos;
++    for (size_t i = 0; i < stops.size(); ++i) {
++        if (stops[i].empty()) continue;
++        const size_t p = text.find(stops[i]);
++        if (p != std::string::npos && p < best) {
++            best = p;
++            r.hit = (int) i;
++        }
++    }
++    if (best != std::string::npos) {
++        r.visible = best;
++        return r;
++    }
++    if (!final_pass) {
++        size_t hold = 0;
++        for (const std::string & st : stops) {
++            if (st.size() < 2) continue;
++            const size_t kmax = std::min(st.size() - 1, text.size());
++            for (size_t k = kmax; k > hold; --k) {
++                if (text.compare(text.size() - k, k, st, 0, k) == 0) {
++                    hold = k;
++                    break;
++                }
++            }
++        }
++        r.visible = text.size() - hold;
++    }
++    return r;
++}
++
+ llama_token argmax(const float * logits, int n_vocab) {
+     llama_token best = 0;
+     float best_v = logits[0];
+@@ -1390,6 +1432,28 @@ RunResult Session::generate(const GenerateRequest & req,
+         return res;
+     };
+ 
++    // Stateless chat mode (patch 0004): the whole conversation arrives as OpenAI-format JSON each time.
++    const bool stateless = !req.chat_messages_json.empty();
++    if (stateless && !im.chat_on) return fail("chat API requests need chat mode (a model with a chat template)");
++    if (stateless && !req.images.empty()) return fail("images are not supported on the chat API path");
++
++    // Per-request sampling (patch 0004). `smpl_use` is what the decode loop draws from: the session's own
++    // chain by default, a request-scoped one when overridden (freed on every exit path), or null = greedy.
++    std::unique_ptr<llama_sampler, void (*)(llama_sampler *)> smpl_req(nullptr, llama_sampler_free);
++    llama_sampler * smpl_use = im.smpl;
++    if (req.sampling_override) {
++        if (req.sampling.temp > 0.0f) {
++            smpl_req.reset(llama_sampler_chain_init(llama_sampler_chain_default_params()));
++            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_top_k(req.sampling.top_k));
++            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_top_p(req.sampling.top_p, /*min_keep*/ 1));
++            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_temp(req.sampling.temp));
++            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_dist(req.sampling.seed));
++            smpl_use = smpl_req.get();
++        } else {
++            smpl_use = nullptr;
++        }
++    }
++
+     const bool image_turn = !req.images.empty();
+     if (image_turn) {
+ #ifdef BMOE_HAVE_MTMD
+@@ -1414,7 +1478,11 @@ RunResult Session::generate(const GenerateRequest & req,
+ 
+     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
+     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
+-    if (req.clear_kv) {
++    if (stateless) {
++        // The KV is deliberately kept (prefix reuse below). The engine-held chat_history belongs to the
++        // app's own conversation protocol and is meaningless to this request, so drop it.
++        im.chat_history.clear();
++    } else if (req.clear_kv) {
+         im.clear_memory(ctx);
+         // The draft context tracks the target's positions and must be dropped with it, or the first
+         // draft of the new conversation is conditioned on the previous one.
+@@ -1436,7 +1504,29 @@ RunResult Session::generate(const GenerateRequest & req,
+     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
+     common_chat_parser_params parse_params;
+     const size_t history_base = im.chat_history.size();
+-    if (chat_on) {
++    if (stateless) {
++        try {
++            std::vector<common_chat_msg> msgs =
++                common_chat_msgs_parse_oaicompat(common_json::parse(req.chat_messages_json));
++            const bool have_tools = !req.chat_tools_json.empty();
++            common_chat_templates_inputs inputs;
++            // With tools the "closed reasoning span" prefill cannot be used: a prefilled turn is not run
++            // through the parser, and the parser is what finds the tool calls. Such a model then reasons
++            // despite think=false; the reasoning is still split out of the answer.
++            prefilled_answer = detail::build_turn_inputs(inputs, std::move(msgs), req.think,
++                                                         have_tools ? ThinkControl::Template : im.think_ctl);
++            if (have_tools) inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(req.chat_tools_json));
++            if (!req.chat_tool_choice.empty())
++                inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(req.chat_tool_choice);
++            inputs.parallel_tool_calls = true;
++            common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
++            prompt = cp.prompt;
++            parse_params = detail::build_parse_params(cp);
++        } catch (const std::exception & e) {
++            // No raw-prompt fallback here: there is no single "prompt" to fall back to.
++            return fail(std::string("chat request could not be rendered with this model's template: ") + e.what());
++        }
++    } else if (chat_on) {
+         try {
+             if (req.clear_kv) {
+                 if (!req.system_prompt.empty()) {
+@@ -1570,6 +1660,8 @@ RunResult Session::generate(const GenerateRequest & req,
+ #endif
+     int n_predict = req.n_predict;
+     if (n_predict <= 0) n_predict = im.cfg.n_ctx - n_prompt_eff - 8;
++    // API clients ask for max_tokens far beyond what is left (Claude Code sends 32000+): cap it to the room.
++    else if (stateless && n_prompt_eff + n_predict + 8 > im.cfg.n_ctx) n_predict = im.cfg.n_ctx - n_prompt_eff - 8;
+     if (n_predict < 1 || n_prompt_eff + n_predict + 8 > im.cfg.n_ctx)
+         return fail_undo("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
+                          "); open the session with a larger n_ctx");
+@@ -1627,15 +1719,20 @@ RunResult Session::generate(const GenerateRequest & req,
+             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+     }
+ 
++    // Where a rollback leaves the KV. Normally the state before this turn (n_common). A stateless chat
++    // turn that was cancelled AFTER its prefill keeps the prompt (set right after the prefill below): the
++    // prompt is exactly what a client's retry will send again, and re-prefilling it is the expensive part.
++    size_t rollback_keep = n_common;
++
+     // Roll this turn back to the state before it started: drop the KV added this turn, forget the
+     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
+     auto rollback_turn = [&]() {
+         if (chat_on) {
+-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
++            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) rollback_keep, -1)) {
+                 im.clear_memory(ctx);
+                 im.kv_tokens.clear();
+             } else {
+-                im.kv_tokens.resize(n_common);
++                im.kv_tokens.resize(std::min(rollback_keep, im.kv_tokens.size()));
+             }
+             if (history_pushed) {
+                 im.chat_history.pop_back();
+@@ -1647,7 +1744,7 @@ RunResult Session::generate(const GenerateRequest & req,
+         // Whatever the target rolled back to, the draft context follows: a cancelled turn that left
+         // the two at different positions would fail the NEXT turn, not this one.
+         if (im.ctx_dft) {
+-            const llama_pos keep = chat_on ? (llama_pos) n_common : 0;
++            const llama_pos keep = chat_on ? (llama_pos) rollback_keep : 0;
+             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1))
+                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+         }
+@@ -1784,6 +1881,9 @@ RunResult Session::generate(const GenerateRequest & req,
+     if (chat_on && !image_turn)
+         for (int i = (int) n_common; i < n_prompt; ++i)
+             im.kv_tokens.push_back(tokens[i]);
++    // Prefill is done: a cancel from here on keeps the prompt. Not with an MTP draft context: its own KV is not
++    // guaranteed to cover the whole prompt at this point, so a cancelled turn rolls back to the old state instead.
++    if (stateless && !im.ctx_dft) rollback_keep = (size_t) n_prompt;
+     // Announced only once the prompt is in both contexts: begin() checks how far the draft context
+     // has actually got, so calling it before prefill would warn about a gap that is about to close.
+     if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
+@@ -1862,10 +1962,16 @@ RunResult Session::generate(const GenerateRequest & req,
+     // to the resident reference the gates check); with a sampling chain, draw from the context's
+     // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
+     // would have read.
+-    llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
++    llama_token tok = smpl_use ? llama_sampler_sample(smpl_use, ctx, -1) : argmax(logits, im.n_vocab);
+ 
++    bool stop_hit = false;     // a stateless-chat stop string matched
++    std::string stop_seq;
++    bool natural_end = false;  // the model ended the turn itself (end-of-generation token)
+     while (n_gen < n_predict) {
+-        if (llama_vocab_is_eog(im.vocab, tok)) break;
++        if (llama_vocab_is_eog(im.vocab, tok)) {
++            natural_end = true;
++            break;
++        }
+ 
+         // ── draft ──
+         // The source proposes a continuation of `tok`, capped at the caller's remaining budget: a
+@@ -2063,10 +2169,20 @@ RunResult Session::generate(const GenerateRequest & req,
+             m.piece = delta;
+             // Only when someone will read it: the parser cannot resume, so this re-parses everything
+             // generated so far on every token, and off the chat path it is a full copy of the same.
+-            if (req.render_text) {
++            if (req.render_text || stateless) {
+                 ShownView sv = shown_view(gen, /*partial*/ true);
+                 m.text = std::move(sv.content);
+                 m.reasoning = std::move(sv.reasoning);
++                if (stateless && !req.stop.empty()) {
++                    // Stop strings act on the answer only. Hold back a possible partial match; on a full
++                    // match show only what precedes it and end the turn after this token.
++                    const StopScan sc = scan_stops(m.text, req.stop, /*final_pass*/ false);
++                    m.text.resize(sc.visible);
++                    if (sc.hit >= 0) {
++                        stop_hit = true;
++                        stop_seq = req.stop[(size_t) sc.hit];
++                    }
++                }
+             }
+             if (e == 0)
+                 tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr);
+@@ -2074,16 +2190,21 @@ RunResult Session::generate(const GenerateRequest & req,
+                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
+             if (on_token) on_token(m);
+             if (sink) sink->on_token(m);
++            if (stop_hit) break;
+         }
+ 
+-        if (eog_hit) break;
++        if (stop_hit) break;
++        if (eog_hit) {
++            natural_end = true;
++            break;
++        }
+         // The accepted group is now KV-resident, and the logits at the first unverified position
+         // hold the target's own continuation — the next token, arrived at for free. Off the
+         // speculative path the row index stays -1, exactly as before: one token, one row.
+         n_past += 1 + n_acc;
+         const int32_t row = wide ? n_acc : -1;
+         logits = llama_get_logits_ith(ctx, row);
+-        tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(logits, im.n_vocab);
++        tok = smpl_use ? llama_sampler_sample(smpl_use, ctx, row) : argmax(logits, im.n_vocab);
+     }
+ 
+     // Speculation can leave the KV ahead of what the caller received: an accepted end-of-generation
+@@ -2227,11 +2348,41 @@ RunResult Session::generate(const GenerateRequest & req,
+         res.generated_text = gen;
+     }
+ 
++    res.n_prompt_total = image_turn ? n_prompt_eff : n_prompt;
++    res.n_reused = (int) n_common;
++    if (stateless) {
++        if (final_parsed) {
++            for (const common_chat_tool_call & tc : final_msg.tool_calls)
++                res.tool_calls.push_back(ChatToolCall{tc.id, tc.name, tc.arguments});
++        }
++        // A stop string that only became complete in the final (non-partial) parse still counts.
++        if (!stop_hit && !req.stop.empty()) {
++            const StopScan fin = scan_stops(res.generated_text, req.stop, /*final_pass*/ true);
++            if (fin.hit >= 0) {
++                stop_hit = true;
++                stop_seq = req.stop[(size_t) fin.hit];
++            }
++        }
++        if (stop_hit) {
++            const StopScan fin = scan_stops(res.generated_text, req.stop, /*final_pass*/ true);
++            res.generated_text.resize(fin.visible);
++            res.stop_sequence = stop_seq;
++        }
++        if (!res.tool_calls.empty())
++            res.stop_reason = "tool_use";
++        else if (stop_hit)
++            res.stop_reason = "stop_sequence";
++        else if (natural_end)
++            res.stop_reason = "end_turn";
++        else
++            res.stop_reason = n_gen >= n_predict ? "max_tokens" : "end_turn";
++    }
++
+     if (res.cancelled) {
+         // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
+         // is left exactly as it was before this prompt and stays continuable.
+         rollback_turn();
+-    } else if (chat_on) {
++    } else if (chat_on && !stateless) {
+         // Commit the assistant turn to the running conversation. Parsing separates a thinking
+         // model's reasoning from the answer; the next turn re-renders history from these messages.
+         // Reuses the parse above. A prefilled turn has no turn header in the stream to parse — the

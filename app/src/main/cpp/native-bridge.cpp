@@ -465,6 +465,141 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerate(
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// Stateless chat generation (patch 0004; the local API server). Same blocking/callback contract as
+// nativeGenerate, but the whole conversation arrives as OpenAI-format JSON, the KV prefix is reused
+// from the previous request, and the result also carries parsed tool calls and a stop reason.
+// nativeGenerate above is deliberately untouched.
+// ---------------------------------------------------------------------------------------------
+JNIEXPORT jboolean JNICALL
+Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerateChat(
+    JNIEnv * env, jobject /* thiz */,
+    jbyteArray j_messages_json, jbyteArray j_tools_json, jbyteArray j_tool_choice,
+    jobjectArray j_stop, jint max_tokens, jboolean think,
+    jboolean override_sampling, jfloat temperature, jfloat top_p, jint top_k, jint seed,
+    jobject callback)
+{
+    if (callback == nullptr) return JNI_FALSE;
+
+    jclass cb_cls = env->GetObjectClass(callback);
+    jmethodID on_token_mid = env->GetMethodID(cb_cls, "onToken", "([B[B)Z");
+    jmethodID on_finished_mid = env->GetMethodID(cb_cls, "onFinished", "(ZZ[B[B[B[[B[B[BIIIIDDD)V");
+    if (on_token_mid == nullptr || on_finished_mid == nullptr) {
+        LOGE("chat callback is missing onToken/onFinished");
+        return JNI_FALSE;
+    }
+    jclass byte_arr_cls = env->FindClass("[B");
+
+    auto finish = [&](bool ok, bool cancelled, const std::string & error, const std::string & answer,
+                      const std::string & reasoning, const std::vector<bmoe::ChatToolCall> & calls,
+                      const std::string & stop_reason, const std::string & stop_sequence, int n_gen,
+                      int n_prompt_total, int n_reused, int n_past, double tps, double prefill_s,
+                      double cache_hit) {
+        jbyteArray j_err = to_bytes(env, error);
+        jbyteArray j_ans = to_bytes(env, answer);
+        jbyteArray j_rea = to_bytes(env, reasoning);
+        jbyteArray j_sr = to_bytes(env, stop_reason);
+        jbyteArray j_ss = to_bytes(env, stop_sequence);
+        // Tool calls travel as a flat [id0, name0, arguments0, id1, ...] array of UTF-8 byte arrays.
+        jobjectArray j_calls = env->NewObjectArray(static_cast<jsize>(calls.size() * 3u), byte_arr_cls, nullptr);
+        for (size_t i = 0; i < calls.size(); ++i) {
+            const std::string * f[3] = {&calls[i].id, &calls[i].name, &calls[i].arguments};
+            for (size_t k = 0; k < 3; ++k) {
+                jbyteArray b = to_bytes(env, *f[k]);
+                env->SetObjectArrayElement(j_calls, static_cast<jsize>(i * 3u + k), b);
+                env->DeleteLocalRef(b);
+            }
+        }
+        env->CallVoidMethod(callback, on_finished_mid, static_cast<jboolean>(ok), static_cast<jboolean>(cancelled),
+                            j_err, j_ans, j_rea, j_calls, j_sr, j_ss, static_cast<jint>(n_gen),
+                            static_cast<jint>(n_prompt_total), static_cast<jint>(n_reused), static_cast<jint>(n_past),
+                            static_cast<jdouble>(tps), static_cast<jdouble>(prefill_s), static_cast<jdouble>(cache_hit));
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(j_err);
+        env->DeleteLocalRef(j_ans);
+        env->DeleteLocalRef(j_rea);
+        env->DeleteLocalRef(j_calls);
+        env->DeleteLocalRef(j_sr);
+        env->DeleteLocalRef(j_ss);
+    };
+
+    std::shared_ptr<bmoe::Session> session = current_session();
+    if (!session) {
+        finish(false, false, "No model is loaded", "", "", {}, "", "", 0, 0, 0, 0, 0.0, 0.0, -1.0);
+        return JNI_TRUE;
+    }
+
+    bmoe::GenerateRequest req;
+    req.chat_messages_json = from_bytes(env, j_messages_json);
+    req.chat_tools_json = from_bytes(env, j_tools_json);
+    req.chat_tool_choice = from_bytes(env, j_tool_choice);
+    if (req.chat_messages_json.empty()) {
+        finish(false, false, "empty messages", "", "", {}, "", "", 0, 0, 0, 0, 0.0, 0.0, -1.0);
+        return JNI_TRUE;
+    }
+    req.n_predict = max_tokens > 0 ? static_cast<int>(max_tokens) : 0;
+    req.think = (think == JNI_TRUE);
+    req.clear_kv = false; // ignored in stateless mode; stated for clarity
+    req.render_text = true;
+    if (j_stop != nullptr) {
+        const jsize n = env->GetArrayLength(j_stop);
+        for (jsize i = 0; i < n; ++i) {
+            auto b = static_cast<jbyteArray>(env->GetObjectArrayElement(j_stop, i));
+            std::string st = from_bytes(env, b);
+            env->DeleteLocalRef(b);
+            if (!st.empty()) req.stop.push_back(std::move(st));
+        }
+    }
+    req.sampling_override = (override_sampling == JNI_TRUE);
+    if (req.sampling_override) {
+        req.sampling.temp = static_cast<float>(temperature);
+        req.sampling.top_p = static_cast<float>(top_p);
+        req.sampling.top_k = static_cast<int>(top_k);
+        req.sampling.seed = static_cast<uint32_t>(seed); // -1 -> LLAMA_DEFAULT_SEED (random)
+    }
+
+    std::string sent_answer;
+    std::string sent_reasoning;
+    bool callback_failed = false;
+
+    auto on_token = [&](const bmoe::TokenMetrics & m) {
+        if (callback_failed) return;
+        std::string answer_delta, reasoning_delta;
+        next_delta(sent_answer, m.text, answer_delta);
+        next_delta(sent_reasoning, m.reasoning, reasoning_delta);
+        jbyteArray j_a = to_bytes(env, answer_delta);
+        jbyteArray j_r = to_bytes(env, reasoning_delta);
+        const jboolean keep_going = env->CallBooleanMethod(callback, on_token_mid, j_a, j_r);
+        env->DeleteLocalRef(j_a);
+        env->DeleteLocalRef(j_r);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            callback_failed = true;
+            session->cancel();
+            return;
+        }
+        if (!keep_going) session->cancel();
+    };
+
+    bmoe::RunResult result;
+    {
+        std::lock_guard<std::mutex> gen_lk(g_generate_mu);
+        result = session->generate(req, on_token, g_csv_sink.get());
+    }
+
+    if (!result.ok) {
+        LOGE("Session::generate (chat) failed: %s", result.error.c_str());
+        finish(false, false, result.error.empty() ? std::string("generate failed (no message)") : result.error, "", "",
+               {}, "", "", 0, 0, 0, 0, 0.0, 0.0, -1.0);
+        return JNI_TRUE;
+    }
+    const bmoe::RunSummary & sm = result.summary;
+    finish(true, result.cancelled, "", result.generated_text, result.reasoning_text, result.tool_calls,
+           result.stop_reason, result.stop_sequence, sm.n_generated, result.n_prompt_total, result.n_reused, sm.n_past,
+           sm.tokens_per_second, sm.prefill_seconds, sm.cache_hit_pct);
+    return JNI_TRUE;
+}
+
 static std::string json_escape(const std::string & s) {
     std::string out;
     out.reserve(s.size() + 8);

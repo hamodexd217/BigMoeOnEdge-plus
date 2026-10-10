@@ -39,7 +39,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -202,7 +202,7 @@ private fun PanelSessionRow(
                             label = "chat_generation_alpha"
                         )
                         CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp).alpha(alpha),
+                            modifier = Modifier.size(16.dp).graphicsLayer { this.alpha = alpha }, // draw-phase read: no recomposition per frame
                             strokeWidth = 2.dp
                         )
                     }

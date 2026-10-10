@@ -26,6 +26,19 @@ interface EngineBackend {
         callback: NativeGenerationCallback
     )
 
+    /**
+     * Blocking, stateless chat generation for the local API server; see [NativeChatCallback]. The default reports
+     * "unsupported" so existing backends (and test fakes) need no change.
+     */
+    fun generateChat(request: ChatGenRequest, callback: NativeChatCallback) {
+        callback.onFinished(
+            ok = false, cancelled = false, error = encodeUtf8("This backend has no chat API support."),
+            answer = ByteArray(0), reasoning = ByteArray(0), toolCalls = emptyArray(), stopReason = ByteArray(0),
+            stopSequence = ByteArray(0), nGenerated = 0, nPromptTotal = 0, nReused = 0, nPast = 0,
+            tokensPerSecond = 0.0, prefillSeconds = 0.0, cacheHitPct = -1.0
+        )
+    }
+
     /** Thread-safe; makes a running generate() return promptly. */
     /** Blocking multiple-choice decision; returns a probability distribution over [choices]. */
     fun decide(request: DecisionRequest): DecisionResult
@@ -82,6 +95,24 @@ class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBacken
             think = think,
             imageDims = IntArray(images.size * 2) { i -> if (i % 2 == 0) images[i / 2].width else images[i / 2].height },
             imageData = Array(images.size) { images[it].rgb },
+            callback = callback
+        )
+    }
+
+    override fun generateChat(request: ChatGenRequest, callback: NativeChatCallback) {
+        val s = request.sampling
+        bridge.nativeGenerateChat(
+            messagesJson = encodeUtf8(request.messagesJson),
+            toolsJson = encodeUtf8(request.toolsJson),
+            toolChoice = encodeUtf8(request.toolChoice),
+            stop = Array(request.stop.size) { encodeUtf8(request.stop[it]) },
+            maxTokens = request.maxTokens,
+            think = request.think,
+            overrideSampling = s != null,
+            temperature = s?.temperature ?: 0f,
+            topP = s?.topP ?: 1f,
+            topK = s?.topK ?: 0,
+            seed = s?.seed ?: -1,
             callback = callback
         )
     }

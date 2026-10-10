@@ -15,10 +15,12 @@ class GenerationForegroundService : Service() {
     private var observeJob: Job? = null
     private var lastNotificationAt = 0L
     private var lastNotifiedTokens = -1
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val id = intent?.getStringExtra(EXTRA_SESSION_ID).orEmpty()
         startForeground(NOTIFICATION_ID, notification("Generating…", id))
+        acquireWakeLock()
         if (observeJob?.isActive != true) {
             val manager = (application as com.bigmoe.onedge.OnEdgeApplication).container.generationManager
             observeJob = scope.launch {
@@ -65,13 +67,36 @@ class GenerationForegroundService : Service() {
         }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         .build()
 
-    override fun onDestroy() { observeJob?.cancel(); scope.cancel(); super.onDestroy() }
+    /**
+     * A foreground service keeps the process alive but NOT the CPU: once the screen is off and nothing holds a wake
+     * lock the device suspends and every thread, including the generation, is frozen until it wakes again. A partial
+     * wake lock for the length of the generation is what makes "generation continues in the background" true.
+     * The timeout is only a safety net against a lock that is never released.
+     */
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BigMoeOnEdge:generation").apply {
+                setReferenceCounted(false)
+                acquire(WAKE_LOCK_MAX_MS)
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        wakeLock = null
+    }
+
+    override fun onDestroy() { observeJob?.cancel(); scope.cancel(); releaseWakeLock(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         const val EXTRA_SESSION_ID = "session_id"
         const val CHANNEL_ID = "generation"
         const val NOTIFICATION_ID = 4107
+        private const val WAKE_LOCK_MAX_MS = 6L * 60 * 60 * 1000
         fun start(context: Context, sessionId: String) {
             ensureChannel(context)
             val i = Intent(context, GenerationForegroundService::class.java).putExtra(EXTRA_SESSION_ID, sessionId)

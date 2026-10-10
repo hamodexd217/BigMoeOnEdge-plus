@@ -54,7 +54,7 @@ class AttachmentManager(
             val input = resolver.openInputStream(uri) ?: throw AttachmentException("Could not open $name")
             input.use { src ->
                 target.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024)
+                    val buf = ByteArray(256 * 1024) // large attachments (up to 256 MB) copy in fewer, bigger reads
                     var total = 0L
                     while (true) {
                         val n = src.read(buf)

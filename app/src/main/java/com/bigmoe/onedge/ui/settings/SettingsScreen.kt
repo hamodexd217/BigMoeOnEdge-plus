@@ -78,7 +78,8 @@ private object Choices {
     val ROUTE_AHEAD = listOf(0, 1, 2, 4)
     val DROP_COLD = listOf(0, 50, 75, 100)
     val SUBSTITUTE = listOf(0, 10, 15, 20, 30)
-    val THREADS = listOf(2, 4, 6, 8)
+    // Odd counts matter on 1+4+3 phones (e.g. Snapdragon 8 Gen 2): 5 threads fill the five fast cores exactly.
+    val THREADS = listOf(1, 2, 3, 4, 5, 6, 7, 8)
     val NPREDICT = listOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, -1)
     val DRAFT = listOf(1, 2, 3, 4, 5)
     val MTP_P_MIN = listOf(0, 40, 60, 80)
@@ -554,6 +555,10 @@ private fun SettingsContent(
 
         Section("Capabilities")
         Hint("Implemented: file attachments and reading, workspace/artifacts, file/code/utility/web tools, image/video attachment plumbing with mmproj support, thinking and web toggles. Voice input is not part of this project.")
+        Divider()
+
+        // ------------------------------------------------------------ local API server (last, collapsed by default)
+        ApiServerSection(settings = settings, readyInfo = readyInfo, viewModel = viewModel)
         Spacer(Modifier.height(120.dp)) // clear of the floating navigation bar
     }
 
@@ -584,18 +589,18 @@ private fun shareLatestCsv(context: android.content.Context) {
 }
 
 @Composable
-private fun Section(text: String) {
+internal fun Section(text: String) {
     Text(text = text, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
     Spacer(Modifier.height(8.dp))
 }
 
 @Composable
-private fun Hint(text: String) {
+internal fun Hint(text: String) {
     Text(text = text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
-private fun Divider() {
+internal fun Divider() {
     Spacer(Modifier.height(20.dp))
     HorizontalDivider()
     Spacer(Modifier.height(20.dp))
@@ -623,7 +628,7 @@ private fun ExperimentalHeader(expanded: Boolean, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun SwitchRow(
+internal fun SwitchRow(
     label: String,
     description: String,
     checked: Boolean,
@@ -641,7 +646,7 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun <T> ChoiceSetting(
+internal fun <T> ChoiceSetting(
     label: String,
     options: List<Pair<T, String>>,
     selected: T,

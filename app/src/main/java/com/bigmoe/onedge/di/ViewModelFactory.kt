@@ -30,7 +30,8 @@ class AppViewModelFactory(
                 HistoryViewModel(repository = container.chatRepository, composerStore = container.chatComposerDataStore, generationManager = container.generationManager) as T
             modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(
                 dataStore = container.settingsDataStore,
-                engineController = container.engineController
+                engineController = container.engineController,
+                apiServer = container.apiServerController
             ) as T
             modelClass.isAssignableFrom(ModelViewModel::class.java) -> ModelViewModel(
                 modelManager = container.modelManager,

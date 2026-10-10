@@ -14,12 +14,20 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
 class IRouteTraceSink;
 class IComputeTraceSink;
 class IIoTraceSink;
+
+// One tool call the model made, as parsed by llama.cpp's chat parser (stateless chat requests only).
+struct ChatToolCall {
+    std::string id;        // may be empty: not every template emits ids
+    std::string name;
+    std::string arguments; // JSON text
+};
 
 struct RunResult {
     bool ok = false;
@@ -30,6 +38,13 @@ struct RunResult {
     // Empty otherwise (chat off, non-reasoning model, harmony no-think). Display-only; the answer
     // in generated_text already has it stripped. See TokenMetrics::reasoning.
     std::string reasoning_text;
+    // Stateless chat requests only (GenerateRequest::chat_messages_json); all empty/zero otherwise.
+    std::vector<ChatToolCall> tool_calls;
+    // "end_turn" | "max_tokens" | "stop_sequence" | "tool_use".
+    std::string stop_reason;
+    std::string stop_sequence; // the stop string that ended the turn, when stop_reason == "stop_sequence"
+    int n_prompt_total = 0;    // tokens in the rendered prompt
+    int n_reused = 0;          // of those, how many were already in the KV and were not prefilled again
     RunSummary summary;
     explicit operator bool() const { return ok; }
 };

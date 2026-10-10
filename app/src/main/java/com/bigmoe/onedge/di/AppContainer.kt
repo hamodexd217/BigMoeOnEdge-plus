@@ -143,6 +143,21 @@ class AppContainer(private val context: Context) {
         return info.totalMem
     }
 
+    val apiServerController: com.bigmoe.onedge.server.ApiServerController by lazy {
+        com.bigmoe.onedge.server.ApiServerController(context.applicationContext, settingsDataStore)
+    }
+
+    /** adb test hook, see [com.bigmoe.onedge.server.ApiServerIntentHook]. No-op unless the intent carries its extras. */
+    fun handleApiServerIntent(intent: android.content.Intent?) {
+        if (intent?.hasExtra(com.bigmoe.onedge.server.ApiServerIntentHook.EXTRA_ACTION) != true) return
+        appScope.launch { com.bigmoe.onedge.server.ApiServerIntentHook.handle(intent, apiServerController, settingsDataStore) }
+    }
+
+    /** Called once from Application.onCreate: brings the local API server back if it was left enabled. */
+    fun startApiServerIfEnabled() {
+        appScope.launch { apiServerController.startIfEnabled() }
+    }
+
     /** Called once from Application.onCreate: honours "load the last model on app start". */
     fun autoLoadLastModelIfEnabled() {
         appScope.launch {

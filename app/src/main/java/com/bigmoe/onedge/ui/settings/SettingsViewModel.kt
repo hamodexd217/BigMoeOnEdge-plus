@@ -20,7 +20,8 @@ import kotlinx.coroutines.launch
 
 class SettingsViewModel(
     private val dataStore: EngineSettingsDataStore,
-    private val engineController: EngineController
+    private val engineController: EngineController,
+    private val apiServer: com.bigmoe.onedge.server.ApiServerController
 ) : ViewModel() {
 
     /** null until the first DataStore read finished, so the screen never seeds text fields with defaults. */
@@ -76,6 +77,15 @@ class SettingsViewModel(
     fun updateMetricsCsv(v: Boolean) = launch { dataStore.updateMetricsCsv(v) }
     fun updateNpuPrefill(v: Boolean) = launch { dataStore.updateNpuPrefill(v) }
     fun updateNpuLoaders(v: Int) = launch { dataStore.updateNpuLoaders(v) }
+
+    // ---- local API server ----
+    fun setServerEnabled(v: Boolean) = launch { apiServer.setEnabled(v) }
+    fun updateServerPort(v: Int) = launch { dataStore.updateServerPort(v) }
+    fun regenerateServerKey() = launch { apiServer.regenerateKey() }
+    fun updateServerRequireKey(v: Boolean) = launch { dataStore.updateServerRequireKey(v) }
+    fun updateServerBindAll(v: Boolean) = launch { dataStore.updateServerBindAll(v) }
+    fun updateServerForceSettings(v: Boolean) = launch { dataStore.updateServerForceSettings(v) }
+    fun updateServerQueueTimeoutSec(v: Int) = launch { dataStore.updateServerQueueTimeoutSec(v) }
 
     // ---- appearance ----
     fun selectTheme(id: String) = launch { dataStore.updateThemeId(id) }

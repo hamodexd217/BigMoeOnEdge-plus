@@ -12,5 +12,6 @@ class OnEdgeApplication : Application() {
         super.onCreate()
         container = AppContainer(this)
         container.autoLoadLastModelIfEnabled()
+        container.startApiServerIfEnabled()
     }
 }

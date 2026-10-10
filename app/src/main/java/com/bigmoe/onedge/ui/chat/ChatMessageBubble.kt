@@ -45,8 +45,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -128,7 +128,9 @@ fun ChatMessageBubble(
                             modifier = Modifier
                                 .padding(top = 4.dp)
                                 .size(width = 8.dp, height = 18.dp)
-                                .alpha(cursorAlpha)
+                                // Read in the draw phase: .alpha(cursorAlpha) read the animated value during composition,
+                                // so the whole bubble content recomposed on every animation frame while streaming.
+                                .graphicsLayer { this.alpha = cursorAlpha }
                                 .background(textColor)
                         )
                     }

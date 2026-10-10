@@ -198,47 +198,49 @@ object ArchiveText {
         } catch (e: Exception) {
             throw ArchiveException("$name is not a readable ZIP file: ${e.message ?: e.javaClass.simpleName}")
         }
-        zip.use { z ->
-            val entries = ArrayList<ZipEntry>()
-            val en = z.entries()
-            while (en.hasMoreElements() && entries.size < MAX_ENTRIES) entries.add(en.nextElement())
-            val more = en.hasMoreElements()
-            val names = entries.map { it.name }.toSet()
-            val office = detectOffice(names)
-            if (office != null && office != Office.EPUB) {
-                val text = when (office) {
-                    Office.DOCX -> docxText(z)
-                    Office.PPTX -> pptxText(z, names)
-                    Office.XLSX -> xlsxText(z, names)
-                    else -> odfText(z)
-                }
-                if (text.isNotBlank()) {
-                    val body = if (text.length > MAX_OUTPUT_CHARS) text.take(MAX_OUTPUT_CHARS) + "\n[… cut: the document text is longer than the limit]" else text
-                    val header = "Document: $name (${office.label})\n\n"
-                    return Result(header + body, office.label, 1, 1)
-                }
-                // No text found (a scanned or empty document): fall through and list the parts instead.
+        return zip.use { z -> readZip(z, name) }
+    }
+
+    private fun readZip(z: ZipFile, name: String): Result {
+        val entries = ArrayList<ZipEntry>()
+        val en = z.entries()
+        while (en.hasMoreElements() && entries.size < MAX_ENTRIES) entries.add(en.nextElement())
+        val more = en.hasMoreElements()
+        val names = entries.map { it.name }.toSet()
+        val office = detectOffice(names)
+        if (office != null && office != Office.EPUB) {
+            val text = when (office) {
+                Office.DOCX -> docxText(z)
+                Office.PPTX -> pptxText(z, names)
+                Office.XLSX -> xlsxText(z, names)
+                else -> odfText(z)
             }
-            val c = Collector()
-            try {
-                for (entry in entries) {
-                    if (entry.isDirectory) continue
-                    handleFile(c, entry.name, entry.size) { limit -> z.getInputStream(entry).use { readBounded(it, limit.toLong(), limit) } }
-                }
-            } catch (e: StreamLimit) {
-                c.note = "Reading stopped: the archive is larger than the read limit."
+            if (text.isNotBlank()) {
+                val body = if (text.length > MAX_OUTPUT_CHARS) text.take(MAX_OUTPUT_CHARS) + "\n[… cut: the document text is longer than the limit]" else text
+                val header = "Document: $name (${office.label})\n\n"
+                return Result(header + body, office.label, 1, 1)
             }
-            if (office == Office.EPUB) {
-                // Book chapters are XHTML: give the model the words, not the markup.
-                val converted = c.sections.map { (p, t) ->
-                    val ext = FileKinds.extension(p)
-                    if (ext == "xhtml" || ext == "html" || ext == "htm") p to HtmlText.extract(t).text else p to t
-                }
-                c.sections.clear()
-                c.sections.addAll(converted)
-            }
-            return assemble(name, office?.label ?: "ZIP", c, more)
+            // No text found (a scanned or empty document): fall through and list the parts instead.
         }
+        val c = Collector()
+        try {
+            for (entry in entries) {
+                if (entry.isDirectory) continue
+                handleFile(c, entry.name, entry.size) { limit -> z.getInputStream(entry).use { readBounded(it, limit.toLong(), limit) } }
+            }
+        } catch (e: StreamLimit) {
+            c.note = "Reading stopped: the archive is larger than the read limit."
+        }
+        if (office == Office.EPUB) {
+            // Book chapters are XHTML: give the model the words, not the markup.
+            val converted = c.sections.map { (p, t) ->
+                val ext = FileKinds.extension(p)
+                if (ext == "xhtml" || ext == "html" || ext == "htm") p to HtmlText.extract(t).text else p to t
+            }
+            c.sections.clear()
+            c.sections.addAll(converted)
+        }
+        return assemble(name, office?.label ?: "ZIP", c, more)
     }
 
     private fun readEntryText(z: ZipFile, entryName: String): String? {
@@ -403,33 +405,34 @@ object ArchiveText {
             fileStream.close()
             throw e
         }
-        input.use { raw ->
-            val bin = BufferedInputStream(raw)
-            bin.mark(1024)
-            val head = readHead(bin, 512)
-            bin.reset()
-            val c = Collector()
-            if (isTarMagic(head)) {
-                readTar(bin, c)
-                return assemble(name, "TAR.GZ", c, c.entryCount >= MAX_ENTRIES)
-            }
-            val inner = name.substringBeforeLast('.', name).ifEmpty { "content" }
-            try {
-                handleFile(c, inner, -1) { limit -> readBounded(bin, limit.toLong(), limit) }
-            } catch (e: StreamLimit) {
-                c.note = "Reading stopped: the data is larger than the read limit."
-            }
-            return assemble(name, "GZIP", c, false)
-        }
+        return input.use { raw -> readGzip(raw, name) }
     }
 
-    private fun fromTarFile(file: File, name: String): Result {
+    private fun readGzip(raw: InputStream, name: String): Result {
+        val bin = BufferedInputStream(raw)
+        bin.mark(1024)
+        val head = readHead(bin, 512)
+        bin.reset()
+        val c = Collector()
+        if (isTarMagic(head)) {
+            readTar(bin, c)
+            return assemble(name, "TAR.GZ", c, c.entryCount >= MAX_ENTRIES)
+        }
+        val inner = name.substringBeforeLast('.', name).ifEmpty { "content" }
+        try {
+            handleFile(c, inner, -1) { limit -> readBounded(bin, limit.toLong(), limit) }
+        } catch (e: StreamLimit) {
+            c.note = "Reading stopped: the data is larger than the read limit."
+        }
+        return assemble(name, "GZIP", c, false)
+    }
+
+    private fun fromTarFile(file: File, name: String): Result =
         LimitedInput(BufferedInputStream(FileInputStream(file)), MAX_STREAM_BYTES).use { input ->
             val c = Collector()
             readTar(input, c)
-            return assemble(name, "TAR", c, c.entryCount >= MAX_ENTRIES)
+            assemble(name, "TAR", c, c.entryCount >= MAX_ENTRIES)
         }
-    }
 
     private fun readTar(input: InputStream, c: Collector) {
         val header = ByteArray(512)

@@ -1,293 +1,128 @@
-<p align="center">
-  <img src="docs/assets/logo.png" alt="BigMoeOnEdge+" width="240">
-</p>
+# BigMoeOnEdge+ (BigMoeOnEdgeExtended)
 
-<h1 align="center">BigMoeOnEdge+</h1>
+Android chat app (Kotlin, Jetpack Compose, Room, DataStore) that runs large Mixture-of-Experts LLMs on the
+phone through [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge) (Apache-2.0), which streams experts from
+flash. The app talks to the engine through JNI (`EngineNativeBridge.kt` ↔ `app/src/main/cpp/native-bridge.cpp`)
+using the engine's public `bmoe::Session` API.
 
-<p align="center">
-  An Android chat app for running local GGUF models on-device, especially large Mixture-of-Experts models.
-</p>
+**Read `docs/STATUS.md` first**: it lists what was actually verified in the sandbox and what still needs a real Android device.
+The sandbox has no Android SDK/NDK and cannot resolve Gradle dependencies, but pure Kotlin host smoke tests and native C++
+syntax checks were run.
 
-<p align="center">
-  <a href="https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest">Download</a>
-  ·
-  <a href="https://github.com/hamodexd217/BigMoeOnEdge-plus/issues">Issues</a>
-  ·
-  <a href="docs/STATUS.md">Project status</a>
-</p>
+## Features
+Saved conversations (Room) · live token streaming · stop button · model picker/import/load with pre-flight checks ·
+reasoning ("thinking") block · web search · file/code/web tools with approval · workspace and persistent artifacts ·
+attachments (text/code/image/video) · multimodal mmproj support · Markdown/code blocks with syntax highlighting ·
+artifact preview (HTML/SVG/Mermaid, sandboxed WebView) · settings for context, sampling, expert cache, dense-weights mode,
+threads, tool switches, and media sizing · per-message engine telemetry (tokens/s, prefill, cache hit).
+Known limitations: voice input and grammar-constrained tool calls are not part of this project; image/video runtime still needs
+device validation (see STATUS.md). The 0.28 pass also adds Choose-from-options (`--decide`), optional Hexagon/NPU prefill
+and loader controls, automatic MoE / regular-model detection, utility tools, persistent per-chat drafts, and a permanent 344dp chat-history
+panel on wide screens. Photo/video picking uses the system gallery picker with an `ACTION_GET_CONTENT` fallback and copies
+selected media into app-private storage immediately, so no `READ_MEDIA_*` permission is needed.
 
-<p align="center">
-  <a href="https://github.com/hamodexd217/BigMoeOnEdge-plus/releases"><img src="https://img.shields.io/github/v/release/hamodexd217/BigMoeOnEdge-plus?display_name=tag" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/hamodexd217/BigMoeOnEdge-plus" alt="License"></a>
-  <a href="https://github.com/hamodexd217/BigMoeOnEdge-plus/stargazers"><img src="https://img.shields.io/github/stars/hamodexd217/BigMoeOnEdge-plus" alt="GitHub stars"></a>
-</p>
+Code artifacts are not HTML-only: the artifact pipeline preserves common languages such as Kotlin, Java, Python, C/C++,
+JavaScript/TypeScript, JSON, YAML, shell, Dockerfile, SQL and others when saving generated code.
 
----
-# BigMoeOnEdge+ (BigMoeOnEdge Plus / BigMoeOnEdge-plus)
-
-> BigMoeOnEdge+ is a modified/enhanced fork of [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge).
-
-> **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
-> 
-## What is BigMoeOnEdge+?
-
-BigMoeOnEdge+ is an Android chat application built on the **BigMoeOnEdge** native inference engine (version 0.28.0).
-
-The engine is designed for Mixture-of-Experts models whose weights are read from flash storage during generation, which makes models larger than the device's RAM practical to run. The app wraps that engine in a complete chat experience: persistent conversations, reasoning display, web search, tools, attachments, multimodal input, artifacts, a workspace, and generation telemetry.
-
-Dense GGUF models are supported through the normal loading path.
-
-## Demo
-
-A quick look at the artifact workflow:
-
-
-
-![Artifacts demo](docs/assets/demo-artifacts.gif)
-
-
-
-More screenshots and demo media are in [`docs/assets`](docs/assets).
-
-## Screenshots
-
-<p align="center">
-  <img src="docs/assets/models.png" alt="BigMoeOnEdge+ model manager" width="900">
-</p>
-
-The model manager loads GGUF models and `mmproj` projector files, and detects whether a model is Mixture-of-Experts or dense.
-
-## Highlights
-
-| Area | Details |
-| --- | --- |
-| Local inference | GGUF models through the native BigMoeOnEdge engine |
-| Model support | Mixture-of-Experts and dense models, with automatic detection |
-| Conversations | Persistent Room-backed chats, with per-chat drafts |
-| Generation | Live token streaming and a stop control |
-| Reasoning | Streaming "Thinking" / reasoning display |
-| Web | Web search integrated into the chat workflow |
-| Tools | File, code, web, and utility tools behind an approval flow |
-| Attachments | Text, code, archives, documents, images, and video |
-| Vision | `mmproj` support for multimodal models |
-| Artifacts | HTML, SVG, Mermaid, Markdown, and highlighted source code |
-| Workspace | Browse, open, edit, save, copy, share, and download generated files |
-| Chat controls | Edit and copy messages; copy raw code blocks |
-| Telemetry | Per-message statistics such as tokens/s, prefill, and cache information |
-| Settings | Context, sampling, expert cache, I/O and compute overlap, media, and tool controls |
-| Wide screens | Persistent chat-history panel |
-| Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
-
-## Model support
-
-Load `.gguf` models from the Models screen.
-
-Models used during development include:
-
-- Qwen3.5 4B Q4
-- Qwen3.5 9B Q5
-- Qwen3.6 35B-A3B Q4 MTP
-
-The app is not limited to these. MoE models are detected automatically, and regular dense GGUF models use the standard loading path. For multimodal models, import the `mmproj` projector separately.
-
-## Performance notes
-
-There is no single "BigMoeOnEdge+ speed" number.
-
-Generation speed depends on the model, quantization, context size, storage speed, cache settings, device hardware, and thermal conditions. Web search and tool use add latency on top of generation.
-
-**I/O and compute overlap:** the Settings screen has an *I/O and compute overlap* switch. When enabled, the engine issues the next weight reads while the current layer is computing, so flash latency is hidden behind the work. Its effect depends on the model and device, so compare tokens/s with the switch on and off on your own hardware.
-
-Some feature tests intentionally use a smaller model so they finish faster. Those tests show that a feature works. They do not represent the performance of a large model.
-
-## Download
-
-The latest release includes an installable Android APK:
-
-**[Download the latest APK](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest)**
-
-Current release: **[BigMoeOnEdge+ v0.2.0](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/tag/0.2.0)**
-
-The app version (v0.2.0) and the engine version (BigMoeOnEdge 0.28.0) are versioned separately.
-
-## Requirements
-
-### Running the app
-
-- Android 10 or newer
-- Enough RAM and storage for the selected model
-- A compatible model and `mmproj` file for vision or video input
-- A network connection for web search
-
-### Building from source
-
-- Android Studio (Koala or newer)
-- Android SDK 35
-- JDK 17
-- Android NDK
-- CMake 3.22.1
-- Internet access for the first Gradle dependency sync
-
-Native code is built in **Release mode even for debug APKs**, because an unoptimized native build is too slow for real inference.
 
 ## Build
-
-Clone the repository:
-
-```bash
-git clone https://github.com/hamodexd217/BigMoeOnEdge-plus.git
-cd BigMoeOnEdge-plus
-```
-
-Build the default ARM64 debug APK:
+Requirements: Android Studio (Koala+) with SDK 35, **NDK** and **CMake 3.22.1** (SDK Manager → SDK Tools), JDK 17,
+internet access for the first Gradle sync.
 
 ```bash
-./gradlew assembleDebug
+./gradlew assembleDebug              # arm64-v8a only (phones)
+./gradlew assembleDebug -PbmoeAbis=arm64-v8a,x86_64   # also an x86_64 emulator image
+./gradlew testDebugUnitTest          # JVM unit tests
+./gradlew connectedDebugAndroidTest  # Room tests, needs a device/emulator
 ```
+The first native build compiles all of llama.cpp + the engine and takes a while. The native build is forced to
+Release even for the debug APK (an unoptimised engine is unusably slow).
 
-Build for ARM64 and x86_64:
+## Layout
+* `app/src/main/java/com/bigmoe/onedge` — `core/` (engine controller, agent loop, context planner, model manager),
+  `parser/`, `tools/`, `data/`, `ui/`.
+* `app/src/main/cpp` — `native-bridge.cpp` (JNI), `core/` (**vendored BigMoeOnEdge 0.28.0 + local patches**),
+  `third_party/llama.cpp` (**vendored upstream snapshot**, see below).
+* `patches/` — changes made to the vendored engine, as re-appliable patches.
+* `docs/` — `STATUS.md`, `prompt-and-kv-design.md`, `tool-calling.md`, `model-loading.md`,
+  `multimodal-feasibility.md`, `bmoe_real_api_notes.md` (verified upstream API), `AUDIT.md` (phase-0 audit),
+  `HISTORY-old-readme.md` (the previous README, kept for reference).
+* `scripts/kt_lint.py` — offline sanity checker for the Kotlin sources (not a compiler).
+* `scripts/build-hexagon-android.sh` — optional upstream Hexagon/NPU toolchain recipe; normal Gradle builds keep it OFF.
 
-```bash
-./gradlew assembleDebug -PbmoeAbis=arm64-v8a,x86_64
-```
+## Native dependencies (important)
+No network was available while this was assembled, so upstream is **vendored, not a git submodule**:
+* `app/src/main/cpp/core` = BigMoeOnEdge v0.28.0 `core/`, then local patches `0001` (saved-chat context / unlimited
+  generation / rollback fixes) and `0003` (mtmd multimodal image path). Upstream 0.28 `thinking_control.cpp` and the
+  upstream `pos0` fix are retained; no old `thinking_end_tag` compatibility shim is carried forward.
+* `app/src/main/cpp/third_party/llama.cpp` = upstream ggml-org/llama.cpp (965f897, 2026-09-26). Upstream
+  BigMoeOnEdge pins the **Helldez fork** (`bmoe/expert-ready-hook`); with stock llama.cpp the engine works but
+  I/O–compute *overlap* is unavailable (the bridge turns it off automatically).
+The vendored llama.cpp tree is intentionally left untouched during the 0.28 engine port. The app keeps its existing
+965f897-era tree and only the engine above it is upgraded. No new CMake compatibility shim is needed for the 0.28 core
+against this llama.cpp snapshot.
 
-Run JVM unit tests:
+## Models
+Put a MoE `.gguf` on the device via the app (Models screen → Choose file) or
+`adb push model.gguf /data/data/<pkg>/files/models/` (debug builds: `run-as`). Files must live on a real
+filesystem path because the engine reads experts with `O_DIRECT`.
 
-```bash
-./gradlew testDebugUnitTest
-```
+## Optional Hexagon / NPU APK
 
-Run instrumentation tests on a connected device or emulator:
+The normal `assembleDebug` path stays CPU-only and requires no Qualcomm/Hexagon SDK. The NPU path is deliberately separate so a machine without the Snapdragon toolchain cannot accidentally ship an APK whose UI advertises an unavailable backend.
 
-```bash
-./gradlew connectedDebugAndroidTest
-```
+The real NPU APK is built in two steps by `.github/workflows/android-npu.yml`:
 
-## Loading models
+1. `scripts/build-hexagon-onedge-engine.sh` runs inside upstream's pinned Snapdragon toolchain image and builds the actual `libonedge-engine.so` with `GGML_HEXAGON=ON`, plus HTP DSP skels v73/v75/v79/v81.
+2. Gradle is run with `-PbmoePrebuiltNative=true`. That mode verifies the required JNI payload before the build and packages the prebuilt native engine unchanged.
 
-1. Open **Models**.
-2. Tap **Choose `.gguf` (model or mmproj)**.
-3. Select the model or projector.
-4. Load it.
+The app's NPU switch is enabled only when the loaded `libonedge-engine.so` reports `BMOE_HAVE_HEXAGON`. On a normal CPU-only APK the switch remains unavailable rather than pretending the device is using the NPU.
 
-Models are copied into app-private storage, because the native engine needs a real filesystem path. For debug builds, you can also push models with `adb` into the app's model directory and refresh the Models screen.
+## Message actions, artifacts and copy (2026-10-05)
 
-## Multimodal models
+* Long-press a **user** message: Edit, Copy. Long-press an **assistant** message: Copy. Assistant messages also carry a
+  Copy chip. Copy always puts the complete stored message on the clipboard (no telemetry, labels or renderer fences).
+* **Edit** replaces the user message in place, removes everything stored after it (answers, tool results, hidden file
+  context), and runs the normal `GenerationManager -> AgentController -> EngineController` pipeline from the history
+  before it. See `core/ConversationEdit.kt` and `ChatViewModel.editUserMessage`.
+* Fenced code is parsed in one place (`parser/CodeFences.kt`) for both the renderer and artifact detection. Language
+  rules live in `parser/ArtifactLanguages.kt` (priority: fence tag, file name extension, stored metadata).
+  HTML/SVG/Mermaid keep their live preview; every other language opens as a read-only code artifact and is never executed.
+* Code blocks copy only the raw code. ```prompt / ```template / ```instructions blocks and `---` delimited blocks get a
+  Copy button for their whole content.
 
-Vision-capable models use an `mmproj` projector. The app can import the model and projector separately, discover projector candidates, and select the correct one when loading.
+## Archives and artifacts update (2026-10-06)
 
-Image and video support depends on the exact model, projector, and device. Video is handled as sampled frames, not continuous video understanding.
+* **Attachments:** besides text/code files, the Files option now accepts ZIP / JAR, TAR, GZ / TAR.GZ and the zipped
+  document formats DOCX, XLSX, PPTX, ODT/ODS/ODP and EPUB. `workspace/ArchiveText.kt` turns them into prompt text (file
+  list + the text of readable files; documents are extracted as plain text). Nothing is written to disk, unsafe entry
+  paths are skipped, and every read is bounded (1 MB per entry, 24 MB in total, 5000 entries). PDF, 7z and RAR are not
+  supported (they need libraries the project does not bundle).
+* **Artifacts viewer:** JavaScript files get a Run button (offline sandbox WebView, no network or file access, 10 s
+  limit; it only runs when pressed). Markdown files open rendered, with a toggle to the source. HTML/SVG/Mermaid keep
+  their live preview. Python and the other languages open as highlighted, copyable code: running them needs an
+  interpreter the app does not contain.
+* **Attachment size:** documents up to 256 MB can be attached (`attachments/AttachmentLimits.kt`). Anything over 8 MB
+  shows a warning that preparing it and the answer may be slow. A plain text file over 8 MB is saved whole, but only its
+  first 8 MB is read into memory for the model (stated in the context); archives are streamed with their own bounds.
 
-## Web search and tools
+## Performance switch (2026-10-06)
 
-Web search and tools run inside the normal chat workflow.
+The native engine is built for the safe baseline `armv8.2-a+dotprod+fp16`. On phones with i8mm (Snapdragon 8 Gen 1 and
+newer, Snapdragon 7+ Gen 3, Dimensity 9000+, Tensor G3+) build with
+`./gradlew assembleRelease -PbmoeArmArch=armv8.2-a+dotprod+fp16+i8mm` to use the faster int8 matrix kernels (mostly
+prompt processing). A build that uses a feature the phone lacks crashes on load, so this is opt-in. Check the phone
+with `adb shell cat /proc/cpuinfo | grep Features` (look for `i8mm`).
 
-- Web features need network access.
-- Searches and tool calls can take noticeable time.
-- Tool execution can require additional model reasoning.
-- Large local models make these operations considerably slower.
+## Performance audit (2026-10-06)
 
-## Artifacts and workspace
+* The debug build type is no longer debuggable (it is what the CI ships): a debuggable app runs with CheckJNI and ART
+  debug compilation, which slows the UI and every JNI call. Use `-PbmoeDebuggable=true` to attach a debugger.
+* The streaming cursor and the chat-list generation indicator read their animation in the draw phase (`graphicsLayer`)
+  instead of during composition, so they no longer recompose their content on every frame.
+* `GenerationForegroundService` holds a partial wake lock while a generation runs (6 h safety timeout); without it the
+  device can suspend with the screen off and freeze the generation.
+* Large attachments are copied with 256 KB reads.
+* Left alone on purpose (measured/engineered already or too risky blind): the native decode loop, n-gram drafter,
+  UTF-8 delta streaming, DB indexes. Not done: R8 (needs JNI keep rules and a device test), CPU pinning / ADPF hints.
 
-Generated files and code are handled as artifacts instead of plain chat text:
-
-- HTML, SVG, and Mermaid previews
-- Rendered Markdown
-- Highlighted source-code artifacts
-- Copyable code
-- Offline JavaScript execution, only when explicitly requested
-- Workspace browsing and file management
-- Saving, editing, sharing, and downloading files
-
-Common source formats such as Kotlin, Java, Python, C/C++, JavaScript/TypeScript, JSON, YAML, shell, Dockerfile, and SQL are saved as code artifacts. Languages that need an external interpreter, such as Python, are not executed by the app.
-
-## Chat and attachments
-
-Conversations persist through Room. Supported features include:
-
-- Editing and copying messages
-- Copying raw code blocks
-- Persistent per-chat drafts
-- Text and code attachments
-- Images and video
-- ZIP, JAR, TAR, and GZ archives
-- DOCX, XLSX, PPTX, and other supported document formats
-- File navigation and workspace operations
-
-Attachment processing uses size limits, so very large files do not silently consume excessive memory.
-
-## Native engine
-
-Native dependencies are vendored rather than pulled in as git submodules.
-
-- `app/src/main/cpp/core`: the vendored BigMoeOnEdge 0.28.0 engine, plus local patches.
-- `app/src/main/cpp/third_party/llama.cpp`: the vendored llama.cpp snapshot.
-- `EngineNativeBridge.kt`: JNI bridge to the engine.
-- `patches/`: project-specific native changes in re-applicable patch form.
-
-The optional Hexagon/NPU path is separate from the default CPU build and requires the Snapdragon toolchain.
-
-## Project structure
-
-```text
-app/
-  src/main/java/com/bigmoe/onedge/
-    core/       engine, generation, model management, context
-    parser/     markdown, code fences, artifact languages
-    tools/      web, file, and utility tools
-    data/       Room persistence and settings
-    ui/         Compose UI
-  src/main/cpp/
-    core/       BigMoeOnEdge engine + local patches
-    third_party/llama.cpp
-docs/
-  STATUS.md
-  model-loading.md
-  tool-calling.md
-  multimodal-feasibility.md
-  ...
-patches/
-scripts/
-.github/workflows/
-```
-
-## Testing and status
-
-The app has been built through GitHub Actions and tested on real Android hardware during development.
-
-Development testing covered model loading and generation, Room conversations, web search, reasoning, tools, text and code attachments, artifacts, code blocks, vision and video flows, model and projector loading, chat persistence, and workspace operations.
-
-[`docs/STATUS.md`](docs/STATUS.md) has the full test checklist, implementation notes, and what still needs validation on real devices.
-
-## Known limitations
-
-BigMoeOnEdge+ is under active development, and behavior depends on the model and device.
-
-- Inference speed varies a lot between devices and models.
-- Web search requires a network connection and may be slow with large local models.
-- Multimodal behavior depends on the exact model and `mmproj` combination.
-- Image and video support still needs validation on more devices (see `docs/STATUS.md`).
-- Some engine and device combinations need more real-device testing.
-- Video input uses sampled frames, not continuous video understanding.
-- Voice input is not part of this project.
-- Grammar-constrained tool calls are not part of this project.
-
-## Credits
-
-BigMoeOnEdge+ builds on:
-
-- [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge)
-- [llama.cpp](https://github.com/ggml-org/llama.cpp)
-- Jetpack Compose, Room, DataStore, and the Android ecosystem
-
-The native engine and vendored components keep their own licenses and notices.
-
-## License
-
-BigMoeOnEdge+ is licensed under the **Apache License 2.0**. See [`LICENSE`](LICENSE).
-
----
-
-<p align="center">
-  Built for local AI on Android.
-</p>

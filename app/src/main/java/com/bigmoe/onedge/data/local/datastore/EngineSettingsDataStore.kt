@@ -88,8 +88,22 @@ data class EngineSettings(
     val customPalettesJson: String = "[]",
     val lastModelPath: String = "",
     val lastMmprojPath: String = "",
-    val autoLoadLastModel: Boolean = false
+    val autoLoadLastModel: Boolean = false,
+    // ---- local API server (docs/API_SERVER.md) ----
+    val serverEnabled: Boolean = false,
+    val serverPort: Int = DEFAULT_SERVER_PORT,
+    /** "" until the server is first started, which generates one. */
+    val serverApiKey: String = "",
+    /** Only honoured when the server listens on loopback; a server reachable from the network always needs the key. */
+    val serverRequireKey: Boolean = true,
+    /** false = 127.0.0.1 only (default); true = all interfaces. */
+    val serverBindAll: Boolean = false,
+    /** Override request sampling/thinking/max_tokens with the server's own values. */
+    val serverForceSettings: Boolean = false,
+    /** How long a request may wait in the queue before the server answers 529. */
+    val serverQueueTimeoutSec: Int = DEFAULT_SERVER_QUEUE_SEC
 ) {
+
     val cacheMode: CacheMode
         get() = when {
             cacheMb == CACHE_AUTO_MB -> CacheMode.AUTO
@@ -132,6 +146,9 @@ data class EngineSettings(
         npuLoaders = npuLoaders
     )
 }
+
+const val DEFAULT_SERVER_PORT = 8080
+const val DEFAULT_SERVER_QUEUE_SEC = 60
 
 /** True when a model loaded with [loaded] would behave differently after a reload with [settings]. */
 /** The streaming-or-ordinary mode is chosen automatically per model, so it never counts as a changed setting. */
@@ -185,6 +202,13 @@ class EngineSettingsDataStore(private val context: Context) {
         val CUSTOM_PALETTES = stringPreferencesKey("custom_palettes")
         val LAST_MODEL = stringPreferencesKey("last_model_path")
         val AUTO_LOAD = booleanPreferencesKey("auto_load_last_model")
+        val SERVER_ENABLED = booleanPreferencesKey("server_enabled")
+        val SERVER_PORT = intPreferencesKey("server_port")
+        val SERVER_API_KEY = stringPreferencesKey("server_api_key")
+        val SERVER_REQUIRE_KEY = booleanPreferencesKey("server_require_key")
+        val SERVER_BIND_ALL = booleanPreferencesKey("server_bind_all")
+        val SERVER_FORCE = booleanPreferencesKey("server_force_settings")
+        val SERVER_QUEUE_SEC = intPreferencesKey("server_queue_timeout_sec")
     }
 
     val settingsFlow: Flow<EngineSettings> = context.dataStore.data.map { p ->
@@ -233,7 +257,14 @@ class EngineSettingsDataStore(private val context: Context) {
             themeId = p[Keys.THEME_ID] ?: d.themeId,
             customPalettesJson = p[Keys.CUSTOM_PALETTES] ?: d.customPalettesJson,
             lastModelPath = p[Keys.LAST_MODEL] ?: d.lastModelPath,
-            autoLoadLastModel = p[Keys.AUTO_LOAD] ?: d.autoLoadLastModel
+            autoLoadLastModel = p[Keys.AUTO_LOAD] ?: d.autoLoadLastModel,
+            serverEnabled = p[Keys.SERVER_ENABLED] ?: d.serverEnabled,
+            serverPort = p[Keys.SERVER_PORT] ?: d.serverPort,
+            serverApiKey = p[Keys.SERVER_API_KEY] ?: d.serverApiKey,
+            serverRequireKey = p[Keys.SERVER_REQUIRE_KEY] ?: d.serverRequireKey,
+            serverBindAll = p[Keys.SERVER_BIND_ALL] ?: d.serverBindAll,
+            serverForceSettings = p[Keys.SERVER_FORCE] ?: d.serverForceSettings,
+            serverQueueTimeoutSec = p[Keys.SERVER_QUEUE_SEC] ?: d.serverQueueTimeoutSec
         )
     }
 
@@ -290,6 +321,15 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateCustomPalettesJson(v: String) = set(Keys.CUSTOM_PALETTES, v)
     suspend fun updateLastModelPath(v: String) = set(Keys.LAST_MODEL, v)
     suspend fun updateAutoLoadLastModel(v: Boolean) = set(Keys.AUTO_LOAD, v)
+
+    // ---- local API server ----
+    suspend fun updateServerEnabled(v: Boolean) = set(Keys.SERVER_ENABLED, v)
+    suspend fun updateServerPort(v: Int) = set(Keys.SERVER_PORT, v.coerceIn(1024, 65535))
+    suspend fun updateServerApiKey(v: String) = set(Keys.SERVER_API_KEY, v.trim())
+    suspend fun updateServerRequireKey(v: Boolean) = set(Keys.SERVER_REQUIRE_KEY, v)
+    suspend fun updateServerBindAll(v: Boolean) = set(Keys.SERVER_BIND_ALL, v)
+    suspend fun updateServerForceSettings(v: Boolean) = set(Keys.SERVER_FORCE, v)
+    suspend fun updateServerQueueTimeoutSec(v: Int) = set(Keys.SERVER_QUEUE_SEC, v.coerceIn(1, 600))
 }
 
 private inline fun <reified E : Enum<E>> enumOrDefault(name: String?, default: E): E =

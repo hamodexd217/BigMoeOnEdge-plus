@@ -14,6 +14,18 @@ data class ScriptedTurn(
     val blockUntilStopped: Boolean = false
 )
 
+/** One scripted stateless chat generation (the API path). */
+data class ScriptedChat(
+    val answerTokens: List<String> = emptyList(),
+    val reasoning: String = "",
+    val toolCalls: List<ChatToolCall> = emptyList(),
+    val stopReason: String = "end_turn",
+    val ok: Boolean = true,
+    val error: String = "",
+    /** If set, generateChat() blocks until stop() is called, after emitting the tokens, and reports cancelled. */
+    val blockUntilStopped: Boolean = false
+)
+
 data class RecordedCall(
     val system: String,
     val history: List<ChatTurn>,
@@ -79,6 +91,37 @@ class FakeEngineBackend(
             nGenerated = turn.stats.nGenerated, nPrompt = turn.stats.nPrompt, nPast = turn.stats.nPast,
             tokensPerSecond = turn.stats.tokensPerSecond, prefillSeconds = turn.stats.prefillSeconds,
             cacheHitPct = turn.stats.cacheHitPct
+        )
+    }
+
+    val chatScript = ArrayDeque<ScriptedChat>()
+    val chatCalls = ArrayList<ChatGenRequest>()
+    val chatStarted = CountDownLatch(1)
+
+    override fun generateChat(request: ChatGenRequest, callback: NativeChatCallback) {
+        chatCalls.add(request)
+        val turn = chatScript.removeFirstOrNull() ?: ScriptedChat(ok = false, error = "chat script exhausted")
+        chatStarted.countDown()
+        val answer = StringBuilder()
+        var stopped = false
+        for (t in turn.answerTokens) {
+            answer.append(t)
+            if (!callback.onToken(t.toByteArray(Charsets.UTF_8), ByteArray(0))) { stopped = true; break }
+        }
+        if (turn.blockUntilStopped && !stopped) stopLatch.await(10, TimeUnit.SECONDS)
+        val cancelled = stopped || turn.blockUntilStopped
+        val flat = ArrayList<ByteArray>()
+        for (c in turn.toolCalls) {
+            flat.add(c.id.toByteArray(Charsets.UTF_8))
+            flat.add(c.name.toByteArray(Charsets.UTF_8))
+            flat.add(c.arguments.toByteArray(Charsets.UTF_8))
+        }
+        callback.onFinished(
+            ok = turn.ok, cancelled = cancelled, error = turn.error.toByteArray(Charsets.UTF_8),
+            answer = answer.toString().toByteArray(Charsets.UTF_8), reasoning = turn.reasoning.toByteArray(Charsets.UTF_8),
+            toolCalls = flat.toTypedArray(), stopReason = turn.stopReason.toByteArray(Charsets.UTF_8),
+            stopSequence = ByteArray(0), nGenerated = 5, nPromptTotal = 100, nReused = 60, nPast = 105,
+            tokensPerSecond = 4.0, prefillSeconds = 1.0, cacheHitPct = -1.0
         )
     }
 
