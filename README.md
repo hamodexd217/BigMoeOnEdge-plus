@@ -54,7 +54,7 @@ More screenshots and demo media are in [`docs/assets`](docs/assets).
 ## Screenshots
 
 <p align="center">
-  <img src="docs/assets/models.png" alt="BigMoeOnEdge+ model manager" width="900">
+  <img src="docs/assets/models.jpg" alt="BigMoeOnEdge+ model manager" width="900">
 </p>
 
 The model manager loads GGUF models and `mmproj` projector files, and detects whether a model is Mixture-of-Experts or dense.
