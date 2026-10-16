@@ -113,8 +113,13 @@ bool next_delta(std::string & sent, const std::string & cur, std::string & delta
     const size_t safe = utf8_complete_len(cur);
     if (safe <= sent.size()) return false;
     if (std::memcmp(cur.data(), sent.data(), sent.size()) != 0) return false;
-    delta.assign(cur, sent.size(), safe - sent.size());
-    sent.assign(cur, 0, safe);
+    const size_t start = sent.size();
+    const size_t added = safe - start;
+    delta.assign(cur.data() + start, added);
+    // `cur` has already been proven to extend the exact bytes sent to Kotlin. Append only
+    // the new suffix; assigning the whole cumulative answer here copied O(answer length) bytes
+    // for every token even though the old prefix can no longer change once this check passes.
+    sent.append(cur.data() + start, added);
     return true;
 }
 

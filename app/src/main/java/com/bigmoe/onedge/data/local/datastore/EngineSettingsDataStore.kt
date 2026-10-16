@@ -63,7 +63,9 @@ data class EngineSettings(
     val mtpPMinPct: Int = 0,
     /** Explicitly opt into a separate MTP draft GGUF; target-model expert streaming stays enabled for MoE. */
     val separateMtpDraftEnabled: Boolean = false,
-    val metricsCsv: Boolean = true,
+    // Optional diagnostics perform per-token formatting and memory snapshots; keep the
+    // interactive decode path lean unless the user explicitly enables Metrics CSV.
+    val metricsCsv: Boolean = false,
     /** Enable optional Hexagon/NPU prefill; off by default so CPU-only APKs remain normal. */
     val npuPrefill: Boolean = false,
     val npuLoaders: Int = 8,

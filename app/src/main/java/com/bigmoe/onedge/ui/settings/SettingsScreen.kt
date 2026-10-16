@@ -589,7 +589,7 @@ private fun SettingsContent(
         Section("Diagnostics")
         SwitchRow(
             "Metrics CSV",
-            "One CSV per session: per-token timings, faults, cache budget and where memory sat. Takes effect the next time a model is loaded.",
+            "Optional per-token timings, faults, cache and memory snapshots. Adds profiling and file-I/O work, so leave off for normal use and enable when diagnosing a run. Takes effect the next time a model is loaded.",
             settings.metricsCsv
         ) { viewModel.updateMetricsCsv(it) }
         OutlinedButton(onClick = { shareLatestCsv(context) }) { Text("Share latest metrics CSV") }

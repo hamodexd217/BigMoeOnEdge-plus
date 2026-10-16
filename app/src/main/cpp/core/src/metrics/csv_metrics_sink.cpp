@@ -1,5 +1,6 @@
 #include "bmoe/metrics.h"
 
+#include <cstddef>
 #include <cstdio>
 
 namespace bmoe {
@@ -65,7 +66,9 @@ public:
                      m.rss_file_mib, m.swap_mib, m.mem_available_mib, m.mem_free_mib, m.swap_free_mib,
                      m.loop_overhead_ms, m.mtp_batch, m.mtp_draft_ms, m.drain_ms, m.adopt_ms, m.ra_issue_ms,
                      m.ra_wd_ms);
-        std::fflush(f_);
+        // Per-token fflush makes diagnostics part of the decode loop's inter-token cost.
+        // Keep the file reasonably current without forcing a syscall for every row.
+        if (++pending_rows_ >= flush_interval) flush();
     }
     void on_summary(const RunSummary & s) override {
         // Run-level trailer parsed by scripts/bench-analyze.py as whitespace-separated key=value
@@ -108,10 +111,18 @@ public:
             s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds, s.row_table_mib,
             s.row_resident_mib, s.row_rows, s.row_slab_reads, s.row_read_mib, s.row_evictions, s.row_io_errors,
             s.n_ctx_used, s.n_prompt_total, s.n_reused, s.n_prefill_eval, s.kv_reuse);
-        std::fflush(f_);
+        flush(); // completed runs must leave a complete, immediately readable CSV
     }
 
 private:
+    static constexpr std::size_t flush_interval = 16;
+    std::size_t pending_rows_ = 0;
+
+    void flush() {
+        if (f_) std::fflush(f_);
+        pending_rows_ = 0;
+    }
+
     // Deferred so the preamble can land above it: the column header is only correct once we know
     // whether anything is going to describe the run first.
     void write_header() {

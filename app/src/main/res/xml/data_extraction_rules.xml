@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Minimal stub added during packaging (not from Gemini) - standard
-     Android Studio template content referenced by AndroidManifest.xml
-     but never generated during the chat session. Adjust as needed. -->
-<data-extraction-rules>
-    <cloud-backup>
-        <exclude domain="database" path="onedge_database.db" />
-    </cloud-backup>
-</data-extraction-rules>

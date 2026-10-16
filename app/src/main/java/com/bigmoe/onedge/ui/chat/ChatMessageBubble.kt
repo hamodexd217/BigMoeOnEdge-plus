@@ -1,6 +1,11 @@
 package com.bigmoe.onedge.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -12,6 +17,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,6 +27,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
@@ -88,6 +96,9 @@ fun ChatMessageBubble(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            // LazyColumn items should remain content-measured even if a parent supplies a loose height bound.
+            // In particular, never let the live assistant row inherit a viewport-sized minimum height.
+            .wrapContentHeight(Alignment.Top)
             .padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalAlignment = alignment
     ) {
@@ -101,14 +112,36 @@ fun ChatMessageBubble(
 
         if (text.isNotBlank() || isStreaming) {
           Box {
-            Surface(
+            // Give the assistant bubble a responsive maximum width, but let its measured content
+            // choose the actual width. fillMaxWidth() here forced even one-line answers across the
+            // entire conversation pane (as visible in the reported screenshot).
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxWidth(),
+                // Align the bubble itself inside the full-width row container.
+                contentAlignment = if (isUser) Alignment.TopEnd else Alignment.TopStart
+            ) {
+              Surface(
                 shape = bubbleShape,
                 color = bubbleColor,
                 modifier = Modifier
-                    .then(if (isUser) Modifier.widthIn(max = 360.dp) else Modifier.fillMaxWidth())
+                    .then(
+                        if (isUser) {
+                            Modifier.widthIn(max = 360.dp).wrapContentWidth(Alignment.End).wrapContentHeight(Alignment.Top)
+                        } else {
+                            Modifier
+                                .animateContentSize(animationSpec = tween(durationMillis = 70))
+                                .widthIn(max = maxWidth * 0.88f)
+                                .wrapContentWidth(Alignment.Start)
+                                .wrapContentHeight(Alignment.Top)
+                        }
+                    )
                     .then(if (hasMenu) Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true }) else Modifier)
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+              ) {
+                Column(
+                    modifier = Modifier
+                        .wrapContentHeight(Alignment.Top)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
                     MessageBody(
                         text = text,
                         textColor = textColor,
@@ -135,6 +168,7 @@ fun ChatMessageBubble(
                         )
                     }
                 }
+              }
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 if (onEdit != null) {
@@ -337,7 +371,6 @@ private fun ThinkingBlock(
         Column(
             modifier = Modifier
                 .clickable { isExpanded = !isExpanded }
-                .animateContentSize()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -361,13 +394,23 @@ private fun ThinkingBlock(
                     modifier = Modifier.size(16.dp)
                 )
             }
-            if (isExpanded) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = reasoning,
-                    style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            // Animate only the explicit expand/collapse interaction. Once visible, incoming reasoning text
+            // is measured naturally instead of re-animating the panel's height for every streamed token.
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = expandVertically(animationSpec = tween(durationMillis = 150)) +
+                    fadeIn(animationSpec = tween(durationMillis = 100)),
+                exit = shrinkVertically(animationSpec = tween(durationMillis = 120)) +
+                    fadeOut(animationSpec = tween(durationMillis = 80))
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = reasoning,
+                        style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

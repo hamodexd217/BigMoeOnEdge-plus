@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -57,7 +58,10 @@ fun MessageBody(
 ) {
     // Parsing is pure and cheap, but streaming recomposes on every token: only redo it when the text changed.
     val blocks = remember(text) { MarkdownLite.parse(text) }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        modifier = modifier.wrapContentHeight(androidx.compose.ui.Alignment.Top),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         for (block in blocks) {
             when (block) {
                 is MarkdownBlock.Paragraph -> MarkdownParagraph(block.text, textColor)

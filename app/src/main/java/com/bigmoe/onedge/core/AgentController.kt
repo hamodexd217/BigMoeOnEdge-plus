@@ -15,6 +15,7 @@ import com.bigmoe.onedge.tools.ToolManager
 import com.bigmoe.onedge.tools.UTILITY_TOOL_NAMES
 import com.bigmoe.onedge.tools.WEB_PAGE_TOOL_NAMES
 import com.bigmoe.onedge.tools.WebSearchTool
+import com.bigmoe.onedge.tools.ImageSearchTool
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -99,6 +100,11 @@ class AgentController(
         val enabledNames = enabledToolNames(settings, toolManager.toolNames())
         val toolsEnabled = enabledNames.isNotEmpty()
         (toolManager.getTool("web_search") as? WebSearchTool)?.let {
+            it.braveApiKey = settings.braveApiKey
+            it.searxngInstanceUrl = settings.searxngUrl
+        }
+        // Image search shares the configured search credentials/instance and otherwise uses its keyless backend.
+        (toolManager.getTool("image_search") as? ImageSearchTool)?.let {
             it.braveApiKey = settings.braveApiKey
             it.searxngInstanceUrl = settings.searxngUrl
         }

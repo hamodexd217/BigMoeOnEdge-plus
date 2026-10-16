@@ -58,7 +58,7 @@ struct TokenMetrics {
     // kernel forced on us. 0 when faults are unmeasured.
     double majflt_mib = 0.0;
 
-    // ── where memory is, per token (0 when the platform cannot report) ──
+    // ── where memory is, per token (0 when unavailable or CSV memory sampling is disabled) ──
     // The split is the point: the expert cache is anonymous, the model's weights are file-backed,
     // and they are reclaimed differently — anon is compressed into zram, file pages are just
     // dropped. rss_anon_mib falling while the budget stays put IS the kernel taking the cache.

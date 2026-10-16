@@ -232,7 +232,8 @@ struct GenTally {
     // `wall` is the decode's wall time in seconds and `faults`/`cpu_s` the deltas measured around
     // that same decode; `st` is the expert source's stats, or null when streaming is off.
     void
-    record(TokenMetrics & m, double wall, uint64_t faults, double cpu_s, int turn, const IExpertSource::Stats * st) {
+    record(TokenMetrics & m, double wall, uint64_t faults, double cpu_s, int turn,
+           const IExpertSource::Stats * st, bool collect_memory_metrics) {
         m.wall_ms = wall * 1000.0;
         // Fault/CPU decomposition is independent of streaming — dense-weight faults show up in the
         // mmap baseline too — so record it for every token before the moe/no-moe split below.
@@ -243,21 +244,23 @@ struct GenTally {
         majflt += m.majflt;
         cpu_seconds += cpu_s;
 
-        // Read the memory picture AFTER the decode, outside the caller's timing bracket: two /proc
-        // reads are cheap but they are not this token's work, and billing them to wall_ms would
-        // corrupt the very number the reader is here to trust.
-        pio::ProcessMemory pm;
-        if (pio::process_memory(&pm)) {
-            m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
-            m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
-            m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
-            m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
-        }
-        pio::DeviceMemory dm;
-        if (pio::device_memory(&dm)) {
-            m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
-            m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
-            m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
+        // These /proc snapshots populate CSV-only diagnostic columns. They are outside the
+        // token's decode bracket, but still delay the next decode, so skip them entirely when
+        // no metrics sink is attached. The inference path and RunSummary counters are unchanged.
+        if (collect_memory_metrics) {
+            pio::ProcessMemory pm;
+            if (pio::process_memory(&pm)) {
+                m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
+                m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
+                m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
+                m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
+            }
+            pio::DeviceMemory dm;
+            if (pio::device_memory(&dm)) {
+                m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
+                m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
+                m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
+            }
         }
         if (!st) {
             m.compute_ms = m.wall_ms;
@@ -2215,9 +2218,9 @@ RunResult Session::generate(const GenerateRequest & req,
                 }
             }
             if (e == 0)
-                tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr);
+                tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr, sink != nullptr);
             else
-                tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
+                tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr, sink != nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
             if (stop_hit) break;
