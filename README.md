@@ -23,14 +23,15 @@
 </p>
 
 ---
+
 # BigMoeOnEdge+ (BigMoeOnEdge Plus / BigMoeOnEdge-plus)
 
 > BigMoeOnEdge+ is a modified/enhanced fork of [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge).
 
 > **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
 
-> **Project update:** v0.4.0. Check the repository's Releases page for the current published APK and release status.
-> 
+> **Project update:** v0.4.5. Check the repository's [Releases page](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases) for the latest APK and release notes.
+
 ## What is BigMoeOnEdge+?
 
 BigMoeOnEdge+ is an Android chat application built on the **BigMoeOnEdge** native inference engine (version 0.28.0).
@@ -43,11 +44,7 @@ Dense GGUF models are supported through the normal loading path.
 
 A quick look at the artifact workflow:
 
-
-
 ![Artifacts demo](docs/assets/demo-artifacts.gif)
-
-
 
 More screenshots and demo media are in [`docs/assets`](docs/assets).
 
@@ -74,28 +71,23 @@ The model manager loads GGUF models and `mmproj` projector files, and detects wh
 | Vision | `mmproj` support for multimodal models |
 | Artifacts | HTML, SVG, Mermaid, Markdown, and highlighted source code; improved Markdown list and table rendering |
 | Workspace | Browse, open, edit, save, copy, share, and download generated files |
-| Chat controls | Edit and copy messages; copy raw code blocks; improved chat spacing and assistant response width |
+| Chat controls | Edit and copy messages; copy raw code blocks; assistant bubbles wrap to content width; user and assistant messages stay on their intended sides |
 | Telemetry | Per-message statistics such as tokens/s, prefill, and cache information |
 | Settings | Context, sampling, expert cache, I/O and compute overlap, media, and tool controls; streamlined defaults |
 | Wide screens | Persistent chat-history panel |
 | Local API server | Optional on-device server (Anthropic Messages + OpenAI chat APIs) so other apps, such as Claude Code, can use the loaded model |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
 
-## What's new in v0.4.0
+## What's new in v0.4.5
 
-This update focuses on the chat experience, themes, model selection, and optional visual search:
+This release focuses on chat bubble sizing and message alignment:
 
-- **Chat layout:** improved chat spacing and assistant responses that use the available width more consistently.
-- **Markdown display:** improved rendering for Markdown lists and tables.
-- **Themes:** additional premium-style theme choices.
-- **Image search:** optional Wikimedia Commons image search, gated by the web-search setting.
-- **Model loading:** updated model-selection/loading workflows intended to reduce unnecessary copying when the selected file has a usable filesystem path and Android permissions allow access.
-- **MTP sidecar:** support for selecting a separate MTP sidecar where applicable; behavior depends on the model and device.
-- **Settings defaults:** blank system prompt by default, tools disabled by default, and an unlimited-token setting option.
+- **Natural assistant bubble width:** short assistant replies wrap around their content instead of stretching across the entire chat pane.
+- **Responsive wrapping:** longer assistant messages wrap within a maximum width based on the available chat area.
+- **Correct message alignment:** user messages stay on the right, and assistant messages stay on the left.
+- **Content-driven layout:** bubble size follows the rendered message content while preserving the existing chat styling and controls.
 
-Some Android document providers expose files as `content://` URIs instead of ordinary filesystem paths. Direct file access therefore depends on the provider, Android permissions, and the selected model's location; the import/copy workflow may still be necessary.
-
-Validate these features with your target device and model before treating them as production-verified.
+The changes focus on the chat UI layout. No inference-engine performance changes were intended.
 
 ## Model support
 
@@ -125,7 +117,7 @@ The latest release includes an installable Android APK:
 
 **[Download the latest APK](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest)**
 
-Current release: **BigMoeOnEdge+ v0.4.0** (check the repository's Releases page for the published tag and APK).
+Current release: **BigMoeOnEdge+ v0.4.5**.
 
 The app version and engine version (BigMoeOnEdge 0.28.0) are versioned separately.
 
@@ -156,7 +148,7 @@ Clone the repository:
 ```bash
 git clone https://github.com/hamodexd217/BigMoeOnEdge-plus.git
 cd BigMoeOnEdge-plus
-```
+````
 
 Build the default ARM64 debug APK:
 
@@ -182,75 +174,94 @@ Run instrumentation tests on a connected device or emulator:
 ./gradlew connectedDebugAndroidTest
 ```
 
-## Loading models
+### Loading models
 
-1. Open **Models**.
-2. Tap **Choose `.gguf` (model or mmproj)**.
-3. Select the model or projector.
-4. Load it.
+* Open Models.
+
+* Tap Choose `.gguf` (model or mmproj).
+
+* Select the model or projector.
+
+* Load it.
 
 Models are copied into app-private storage, because the native engine needs a real filesystem path. For debug builds, you can also push models with `adb` into the app's model directory and refresh the Models screen.
 
-## Multimodal models
+### Multimodal models
 
 Vision-capable models use an `mmproj` projector. The app can import the model and projector separately, discover projector candidates, and select the correct one when loading.
 
 Image and video support depends on the exact model, projector, and device. Video is handled as sampled frames, not continuous video understanding.
 
-## Web search and tools
+### Web search and tools
 
 Web search and tools run inside the normal chat workflow.
 
-- Web features need network access.
-- Searches and tool calls can take noticeable time.
-- Tool execution can require additional model reasoning.
-- Large local models make these operations considerably slower.
+* Web features need network access.
 
-## Artifacts and workspace
+* Searches and tool calls can take noticeable time.
+
+* Tool execution can require additional model reasoning.
+
+* Large local models make these operations considerably slower.
+
+### Artifacts and workspace
 
 Generated files and code are handled as artifacts instead of plain chat text:
 
-- HTML, SVG, and Mermaid previews
-- Rendered Markdown
-- Highlighted source-code artifacts
-- Copyable code
-- Offline JavaScript execution, only when explicitly requested
-- Workspace browsing and file management
-- Saving, editing, sharing, and downloading files
+* HTML, SVG, and Mermaid previews
+
+* Rendered Markdown
+
+* Highlighted source-code artifacts
+
+* Copyable code
+
+* Offline JavaScript execution, only when explicitly requested
+
+* Workspace browsing and file management
+
+* Saving, editing, sharing, and downloading files
 
 Common source formats such as Kotlin, Java, Python, C/C++, JavaScript/TypeScript, JSON, YAML, shell, Dockerfile, and SQL are saved as code artifacts. Languages that need an external interpreter, such as Python, are not executed by the app.
 
-## Chat and attachments
+### Chat and attachments
 
 Conversations persist through Room. Supported features include:
 
-- Editing and copying messages
-- Copying raw code blocks
-- Persistent per-chat drafts
-- Text and code attachments
-- Images and video
-- ZIP, JAR, TAR, and GZ archives
-- DOCX, XLSX, PPTX, and other supported document formats
-- File navigation and workspace operations
+* Editing and copying messages
+
+* Copying raw code blocks
+
+* Persistent per-chat drafts
+
+* Text and code attachments
+
+* Images and video
+
+* ZIP, JAR, TAR, and GZ archives
+
+* DOCX, XLSX, PPTX, and other supported document formats
+
+* File navigation and workspace operations
 
 Attachment processing uses size limits, so very large files do not silently consume excessive memory.
 
-## Local API server (experimental)
+### Local API server (experimental)
 
-BigMoeOnEdge+ can expose the model that is loaded in the app to other apps on the same device, for example **Mobile Harness running Claude Code**.
+BigMoeOnEdge+ can expose the model that is loaded in the app to other apps on the same device, for example Mobile Harness running Claude Code.
 
-Turn it on in **Settings → Local API server** (the last section; tap its header to expand it).
+Turn it on in Settings → Local API server (the last section; tap its header to expand it).
 
-| | |
-| --- | --- |
-| Endpoints | `POST /v1/messages` (Anthropic Messages, SSE streaming, `tool_use`, thinking blocks), `POST /v1/messages/count_tokens` (estimate), `POST /v1/chat/completions` (OpenAI), `GET /v1/models`, `GET /health` |
-| Address | `http://127.0.0.1:<port>`, default port 8080. Loopback only unless you explicitly enable listening on the network |
-| Authentication | An API key is generated the first time you turn the server on and is required by default. Send it as `x-api-key: <key>` or `Authorization: Bearer <key>`. It can be switched off only while the server is loopback-only |
-| Model | Whatever is loaded in the app. Any `model` name in a request is accepted |
-| Settings | The server uses the app's own settings: Context size, Max tokens, Thinking, sampling and the MTP / guess-ahead options. The only server-specific controls are on/off, port, key, authentication, "Force server settings" and the queue wait |
-| Long prompts | The KV cache is reused when a request starts with the same tokens as the previous one, and only the new part is prefilled. `event: ping` keeps streaming clients alive during a long prefill |
-| Concurrency | One request at a time, with a short queue; if the queue wait runs out the server answers HTTP 529. The in-app chat has priority over API requests |
-| Service | Runs in a foreground service (with a notification and a Stop button) so Android does not kill it |
+|                |                                                                                                                                                                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Endpoints      | POST /v1/messages (Anthropic Messages, SSE streaming, tool_use, thinking blocks), POST /v1/messages/count_tokens (estimate), POST /v1/chat/completions (OpenAI), GET /v1/models, GET /health                                                |
+| Address        | http://127.0.0.1:<port>, default port 8080. Loopback only unless you explicitly enable listening on the network                                                                                                                             |
+| Authentication | An API key is generated the first time you turn the server on and is required by default. Send it as x-api-key: <key> or Authorization: Bearer <key>. It can be switched off only while the server is loopback-only                         |
+| Model          | Whatever is loaded in the app. Any model name in a request is accepted                                                                                                                                                                      |
+| Settings       | The server uses the app's own settings: Context size, Max tokens, Thinking, sampling and the MTP / guess-ahead options. The only server-specific controls are on/off, port, key, authentication, "Force server settings" and the queue wait |
+| Long prompts   | The KV cache is reused when a request starts with the same tokens as the previous one, and only the new part is prefilled. event: ping keeps streaming clients alive during a long prefill                                                  |
+| Concurrency    | One request at a time, with a short queue; if the queue wait runs out the server answers HTTP 529. The in-app chat has priority over API requests                                                                                           |
+| Service        | Runs in a foreground service (with a notification and a Stop button) so Android does not kill it                                                                                                                                            |
 
 Quick test from a computer (`adb forward tcp:8080 tcp:8080` first):
 
@@ -260,22 +271,25 @@ curl -s http://127.0.0.1:8080/v1/messages \
   -d '{"model":"any","max_tokens":64,"messages":[{"role":"user","content":"Say hi."}]}'
 ```
 
-For Claude Code, point `ANTHROPIC_BASE_URL` at the endpoint and use the key as `ANTHROPIC_AUTH_TOKEN` (check the variable names against your Claude Code version). Claude Code sends very large prompts, so set the app's **Context size** to 32768 or more and reload the model; a big context costs RAM for the KV cache.
+For Claude Code, point `ANTHROPIC_BASE_URL` at the endpoint and use the key as `ANTHROPIC_AUTH_TOKEN` (check the variable names against your Claude Code version). Claude Code sends very large prompts, so set the app's Context size to 32768 or more and reload the model; a big context costs RAM for the KV cache.
 
-Full details, every curl command, and what was and was not verified: [`docs/API_SERVER.md`](docs/API_SERVER.md).
+Full details, every curl command, and what was and was not verified: [`docs/API_SERVER.md`](https://docs/API_SERVER.md?utm_source=chatgpt.com).
 
-## Native engine
+### Native engine
 
 Native dependencies are vendored rather than pulled in as git submodules.
 
-- `app/src/main/cpp/core`: the vendored BigMoeOnEdge 0.28.0 engine, plus local patches.
-- `app/src/main/cpp/third_party/llama.cpp`: the vendored llama.cpp snapshot.
-- `EngineNativeBridge.kt`: JNI bridge to the engine.
-- `patches/`: project-specific native changes in re-applicable patch form (`0004` adds the stateless chat mode used by the API server: tools in the chat template, parsed tool calls, stop strings, per-request sampling, KV prefix reuse).
+* `app/src/main/cpp/core`: the vendored BigMoeOnEdge 0.28.0 engine, plus local patches.
+
+* `app/src/main/cpp/third_party/llama.cpp`: the vendored llama.cpp snapshot.
+
+* `EngineNativeBridge.kt`: JNI bridge to the engine.
+
+* `patches/`: project-specific native changes in re-applicable patch form (`0004` adds the stateless chat mode used by the API server: tools in the chat template, parsed tool calls, stop strings, per-request sampling, KV prefix reuse).
 
 The optional Hexagon/NPU path is separate from the default CPU build and requires the Snapdragon toolchain.
 
-## Project structure
+### Project structure
 
 ```text
 app/
@@ -301,46 +315,50 @@ scripts/
 .github/workflows/
 ```
 
-## Testing and status
+### Testing and status
 
 The app has been built through GitHub Actions and tested on real Android hardware during development.
 
 Development testing covered model loading and generation, Room conversations, web search, reasoning, tools, text and code attachments, artifacts, code blocks, vision and video flows, model and projector loading, chat persistence, and workspace operations.
 
-The local API server is the newest feature and has had the least real-world testing; [`docs/API_SERVER.md`](docs/API_SERVER.md) lists what was verified and what was not.
+The local API server is the newest feature and has had the least real-world testing; [`docs/API_SERVER.md`](https://docs/API_SERVER.md?utm_source=chatgpt.com) lists what was verified and what was not.
 
-[`docs/STATUS.md`](docs/STATUS.md) has the full test checklist, implementation notes, and what still needs validation on real devices.
+[`docs/STATUS.md`](https://docs/STATUS.md?utm_source=chatgpt.com) has the full test checklist, implementation notes, and what still needs validation on real devices.
 
-## Known limitations
+### Known limitations
 
 BigMoeOnEdge+ is under active development, and behavior depends on the model and device.
 
-- Inference speed varies a lot between devices and models.
-- Web search requires a network connection and may be slow with large local models.
-- Multimodal behavior depends on the exact model and `mmproj` combination.
-- Image and video support still needs validation on more devices (see `docs/STATUS.md`).
-- Some engine and device combinations need more real-device testing.
-- Video input uses sampled frames, not continuous video understanding.
-- Voice input is not part of this project.
-- Grammar-constrained tool calls are not part of this project. This also applies to the API server: tool calls are parsed from the model's text, so a small model can emit a malformed call.
-- The local API server is new and experimental: it handles one request at a time, does not read images sent through the API, does not enforce a thinking budget, and `count_tokens` is an estimate.
+* Inference speed varies a lot between devices and models.
 
-## Credits
+* Web search requires a network connection and may be slow with large local models.
+
+* Multimodal behavior depends on the exact model and `mmproj` combination.
+
+* Image and video support still needs validation on more devices (see `docs/STATUS.md`).
+
+* Some engine and device combinations need more real-device testing.
+
+* Video input uses sampled frames, not continuous video understanding.
+
+* Voice input is not part of this project.
+
+* Grammar-constrained tool calls are not part of this project. This also applies to the API server: tool calls are parsed from the model's text, so a small model can emit a malformed call.
+
+* The local API server is new and experimental: it handles one request at a time, does not read images sent through the API, does not enforce a thinking budget, and `count_tokens` is an estimate.
+
+### Credits
 
 BigMoeOnEdge+ builds on:
 
-- [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge)
-- [llama.cpp](https://github.com/ggml-org/llama.cpp)
-- Jetpack Compose, Room, DataStore, and the Android ecosystem
+* [BigMoeOnEdge](https://github.com/Helldez/BigMoeOnEdge?utm_source=chatgpt.com)
+
+* [llama.cpp](https://github.com/ggml-org/llama.cpp?utm_source=chatgpt.com)
+
+* Jetpack Compose, Room, DataStore, and the Android ecosystem
 
 The native engine and vendored components keep their own licenses and notices.
 
-## License
+### License
 
-BigMoeOnEdge+ is licensed under the **Apache License 2.0**. See [`LICENSE`](LICENSE).
-
----
-
-<p align="center">
-  Built for local AI on Android.
-</p>
+BigMoeOnEdge+ is licensed under the Apache License 2.0. See `LICENSE`.
