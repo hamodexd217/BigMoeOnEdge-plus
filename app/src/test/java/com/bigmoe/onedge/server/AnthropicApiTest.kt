@@ -31,20 +31,35 @@ class AnthropicApiTest {
     }
 
     @Test
-    fun systemBlocksAreConcatenatedAndTheBillingStampIsBlanked() {
+    fun theBillingBlockIsDroppedAndTheOtherSystemBlocksAreJoinedWithABlankLine() {
         val billing = "x-anthropic-billing-header: cc_version=2.1.1; cc_entrypoint=cli; cch=a5145;"
         val p = parse(
-            """{"max_tokens":1,"system":[{"type":"text","text":"$billing"},{"type":"text","text":"You are Claude Code."}],
+            """{"max_tokens":1,"system":[{"type":"text","text":"$billing"},{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Be careful."}],
                "messages":[{"role":"user","content":"x"}]}"""
         )
-        val sys = msgs(p).getJSONObject(0).getString("content")
-        assertEquals("x-anthropic-billing-header: cc_version=2.1.1; cc_entrypoint=cli; cch=fffff;You are Claude Code.", sys)
-        // Two requests that differ only in the stamp render the identical prompt: that is what keeps the KV prefix reusable.
+        assertEquals("You are Claude Code.\n\nBe careful.", msgs(p).getJSONObject(0).getString("content"))
+        // Requests that differ only in the stamp render the identical prompt: that is what keeps the KV prefix reusable.
         val other = parse(
-            """{"max_tokens":1,"system":[{"type":"text","text":"${billing.replace("a5145", "0b9c7")}"},{"type":"text","text":"You are Claude Code."}],
+            """{"max_tokens":1,"system":[{"type":"text","text":"${billing.replace("a5145", "0b9c7")}"},{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Be careful."}],
                "messages":[{"role":"user","content":"x"}]}"""
         )
         assertEquals(p.messagesJson, other.messagesJson)
+    }
+
+    @Test
+    fun aSystemPromptThatIsOnlyTheBillingLineLeavesNoSystemMessage() {
+        val p = parse("""{"max_tokens":1,"system":"x-anthropic-billing-header: cch=a5145;","messages":[{"role":"user","content":"x"}]}""")
+        assertEquals("user", msgs(p).getJSONObject(0).getString("role"))
+    }
+
+    @Test
+    fun maxTokensBelowOneIsRejected() {
+        try {
+            parse("""{"max_tokens":0,"messages":[{"role":"user","content":"x"}]}""")
+            fail("expected ApiRequestException")
+        } catch (e: ApiRequestException) {
+            assertTrue(e.message!!.contains("max_tokens"))
+        }
     }
 
     @Test
@@ -52,6 +67,8 @@ class AnthropicApiTest {
         val s = "hello x-anthropic-billing-header: cch=abcde;"
         assertEquals(s, AnthropicApi.normalizeBillingHeader(s))
         assertEquals("x-anthropic-billing-header: cch=fffff;rest", AnthropicApi.normalizeBillingHeader("x-anthropic-billing-header: cch=12345;rest"))
+        // Longer than the header line itself: kept, stamp blanked.
+        assertEquals("x-anthropic-billing-header: cch=fffff;\nYou are X.", AnthropicApi.cleanSystemText("x-anthropic-billing-header: cch=12345;\nYou are X."))
     }
 
     @Test

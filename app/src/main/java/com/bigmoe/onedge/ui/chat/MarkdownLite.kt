@@ -9,6 +9,9 @@ sealed interface MarkdownBlock {
     /** [code] is the raw content only (no fence lines, no language label); that is exactly what Copy puts on the clipboard. */
     data class Code(val language: String, val code: String, val closed: Boolean, val fileName: String? = null) : MarkdownBlock
 
+    /** Display math: `$$ ... $$` or `\[ ... \]`, alone on its line(s). [tex] is the LaTeX between the delimiters. */
+    data class Math(val tex: String) : MarkdownBlock
+
     /** A generated prompt / template / instruction block; [text] is copied whole. */
     data class Prompt(val text: String, val closed: Boolean = true, val label: String = "Prompt") : MarkdownBlock
 }
@@ -107,6 +110,16 @@ object MarkdownLite {
                 }
             }
 
+            // Display math on its own line(s). An unclosed one (still streaming in) stays ordinary text until it closes.
+            val math = displayMath(lines, i)
+            if (math != null) {
+                flushProse()
+                blocks.add(MarkdownBlock.Math(math.tex))
+                if (math.after.isNotBlank()) prose.append(math.after.trim()).append('\n')
+                i = math.next
+                continue
+            }
+
             prose.append(line).append('\n')
             i++
         }
@@ -124,4 +137,32 @@ object MarkdownLite {
     }
 
     private val PROMPT_DELIMITER = Regex("^\\s*---\\s*$")
+
+    private class DisplayMath(val tex: String, val after: String, val next: Int)
+
+    /** `$$ x $$` on one line, or `$$` ... `$$` over several lines; the same with `\[` and `\]`. */
+    private fun displayMath(lines: List<String>, start: Int): DisplayMath? {
+        val first = lines[start].trim()
+        val (open, close) = when {
+            first.startsWith("$$") -> "$$" to "$$"
+            first.startsWith("\\[") -> "\\[" to "\\]"
+            else -> return null
+        }
+        val rest = first.substring(open.length)
+        val sameLine = rest.indexOf(close)
+        if (sameLine >= 0) {
+            val tex = rest.substring(0, sameLine).trim()
+            return if (tex.isEmpty()) null else DisplayMath(tex, rest.substring(sameLine + close.length), start + 1)
+        }
+        for (k in start + 1 until lines.size) {
+            val idx = lines[k].indexOf(close)
+            if (idx < 0) continue
+            val sb = StringBuilder(rest)
+            for (m in start + 1 until k) sb.append('\n').append(lines[m])
+            sb.append('\n').append(lines[k].substring(0, idx))
+            val tex = sb.toString().trim()
+            return if (tex.isEmpty()) null else DisplayMath(tex, lines[k].substring(idx + close.length), k + 1)
+        }
+        return null
+    }
 }

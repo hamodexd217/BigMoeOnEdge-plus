@@ -1,12 +1,23 @@
 package com.bigmoe.onedge.ui.chat
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -26,8 +37,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.unit.dp
@@ -36,7 +50,7 @@ import com.bigmoe.onedge.ui.theme.AppTheme
 @Composable
 fun MessageBody(
     text: String,
-    textColor: androidx.compose.ui.graphics.Color,
+    textColor: Color,
     isStreaming: Boolean = false,
     onOpenAsArtifact: (language: String, code: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
@@ -47,6 +61,7 @@ fun MessageBody(
         for (block in blocks) {
             when (block) {
                 is MarkdownBlock.Paragraph -> MarkdownParagraph(block.text, textColor)
+                is MarkdownBlock.Math -> MathBlock(block.tex, textColor)
                 is MarkdownBlock.Code -> CodeBlock(block, onOpenAsArtifact)
                 is MarkdownBlock.Prompt -> PromptBlock(block.text, block.label)
             }
@@ -54,54 +69,173 @@ fun MessageBody(
     }
 }
 
+private val BR_TAG = Regex("(?i)<br\\s*/?>")
+
 @Composable
-private fun MarkdownParagraph(text: String, color: androidx.compose.ui.graphics.Color) {
-    text.lineSequence().forEach { line ->
-        if (line.isBlank()) return@forEach
-        val heading = Regex("^(#{1,3})\\s+(.*)$").matchEntire(line)
-        val style = when (heading?.groupValues?.get(1)?.length) {
-            1 -> MaterialTheme.typography.titleLarge
-            2 -> MaterialTheme.typography.titleMedium
-            3 -> MaterialTheme.typography.titleSmall
-            else -> MaterialTheme.typography.bodyLarge
+private fun bodyStyle(color: Color) = MaterialTheme.typography.bodyLarge.copy(color = color)
+
+@Composable
+private fun MarkdownParagraph(text: String, color: Color) {
+    val lines = remember(text) { text.replace(BR_TAG, "\n").lines() }
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i]
+        if (line.isBlank()) {
+            i++
+            continue
         }
+        val table = MarkdownTable.collect(lines, i)
+        if (table != null) {
+            TableText(table.first, color)
+            i = table.second
+            continue
+        }
+        when (val l = MdLine.classify(line)) {
+            is MdLine.Heading -> {
+                val style = when (l.level) {
+                    1 -> MaterialTheme.typography.titleLarge
+                    2 -> MaterialTheme.typography.titleMedium
+                    3 -> MaterialTheme.typography.titleSmall
+                    else -> MaterialTheme.typography.bodyLarge
+                }
+                androidx.compose.foundation.text.BasicText(
+                    text = inlineText(l.text, color),
+                    style = style.copy(color = color, fontWeight = FontWeight.SemiBold)
+                )
+            }
+            is MdLine.Bullet -> Row(
+                modifier = Modifier.fillMaxWidth().padding(start = (l.level * 14).dp, top = 2.dp, bottom = 2.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                if (l.marker.firstOrNull()?.isDigit() == true) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(25.dp)
+                    ) {
+                        Box(contentAlignment = androidx.compose.ui.Alignment.Center) {
+                            Text(
+                                l.marker.trimEnd('.', ')'),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                } else {
+                    Box(Modifier.size(25.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                        Box(
+                            Modifier.size(if (l.level == 0) 7.dp else 5.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = if (l.level == 0) 0.9f else 0.55f))
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                androidx.compose.foundation.text.BasicText(
+                    text = inlineText(l.text, color),
+                    style = bodyStyle(color),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            is MdLine.Quote -> Row(modifier = Modifier.height(IntrinsicSize.Min).padding(start = ((l.depth - 1) * 12).dp)) {
+                Box(modifier = Modifier.width(3.dp).fillMaxHeight().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)))
+                Spacer(Modifier.width(8.dp))
+                androidx.compose.foundation.text.BasicText(
+                    text = inlineText(l.text, color),
+                    style = bodyStyle(color).copy(fontStyle = FontStyle.Italic),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            MdLine.Rule -> Box(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).height(1.dp).background(color.copy(alpha = 0.25f))
+            )
+            is MdLine.Plain -> androidx.compose.foundation.text.BasicText(
+                text = inlineText(l.text, color),
+                style = bodyStyle(color)
+            )
+        }
+        i++
+    }
+}
+
+/** Display math ($$...$$ or \[...\]) as readable Unicode, on its own line(s), scrollable when it is wide. */
+@Composable
+private fun MathBlock(tex: String, color: Color) {
+    val shown = remember(tex) { MathText.toUnicode(tex, multiline = true) }
+    Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 8.dp, top = 2.dp, bottom = 2.dp)) {
         androidx.compose.foundation.text.BasicText(
-            text = inlineMarkdown(heading?.groupValues?.get(2) ?: line, color),
-            style = style.copy(color = color, fontWeight = if (heading != null) FontWeight.SemiBold else FontWeight.Normal)
+            text = shown,
+            style = bodyStyle(color).copy(fontFamily = FontFamily.Serif)
         )
     }
 }
 
+/** A pipe table as aligned monospace text, scrollable sideways. */
 @Composable
-private fun inlineMarkdown(text: String, color: androidx.compose.ui.graphics.Color): AnnotatedString {
-    val builder = AnnotatedString.Builder()
-    var i = 0
-    while (i < text.length) {
-        when {
-            text.startsWith("**", i) -> {
-                val end = text.indexOf("**", i + 2)
-                if (end >= 0) {
-                    builder.withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = color)) { append(text.substring(i + 2, end)) }
-                    i = end + 2
-                } else {
-                    builder.append(text[i]); i++
-                }
-            }
-            text[i] == '`' -> {
-                val end = text.indexOf('`', i + 1)
-                if (end >= 0) {
-                    builder.withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = AppTheme.colors.codeBlock, color = AppTheme.colors.onCodeBlock)) {
-                        append(text.substring(i + 1, end))
+private fun TableText(rows: List<List<String>>, color: Color) {
+    val columns = remember(rows) { rows.maxOfOrNull { it.size } ?: 0 }
+    if (columns == 0) return
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(Modifier.horizontalScroll(rememberScrollState())) {
+            rows.forEachIndexed { rowIndex, row ->
+                Row {
+                    for (col in 0 until columns) {
+                        Box(
+                            modifier = Modifier
+                                .width(148.dp)
+                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                .background(if (rowIndex == 0) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent)
+                                .padding(horizontal = 10.dp, vertical = 9.dp)
+                        ) {
+                            androidx.compose.foundation.text.BasicText(
+                                text = inlineText(row.getOrElse(col) { "" }, color),
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = color,
+                                    fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            )
+                        }
                     }
-                    i = end + 1
-                } else {
-                    builder.append(text[i]); i++
                 }
-            }
-            else -> {
-                builder.append(text[i]); i++
             }
         }
+    }
+}
+
+@Composable
+private fun inlineText(text: String, color: Color): AnnotatedString {
+    val spans = remember(text) { InlineMarkdown.parse(text) }
+    val codeBackground = AppTheme.colors.codeBlock
+    val codeColor = AppTheme.colors.onCodeBlock
+    val linkColor = MaterialTheme.colorScheme.primary
+    val builder = AnnotatedString.Builder()
+    for (s in spans) {
+        val style = SpanStyle(
+            fontWeight = if (s.bold) FontWeight.Bold else null,
+            fontStyle = if (s.italic) FontStyle.Italic else null,
+            textDecoration = when {
+                s.strike -> TextDecoration.LineThrough
+                s.link -> TextDecoration.Underline
+                else -> null
+            },
+            fontFamily = when {
+                s.code -> FontFamily.Monospace
+                s.math -> FontFamily.Serif
+                else -> null
+            },
+            background = if (s.code) codeBackground else Color.Unspecified,
+            color = when {
+                s.code -> codeColor
+                s.link -> linkColor
+                else -> color
+            }
+        )
+        builder.withStyle(style) { append(s.text) }
     }
     return builder.toAnnotatedString()
 }

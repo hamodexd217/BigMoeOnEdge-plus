@@ -117,4 +117,19 @@ class UtilityToolsTest {
         val withoutDevice = ToolManager().also { registerUtilityTools(it, null) }
         assertEquals(UTILITY_TOOL_NAMES - "device_info", withoutDevice.toolNames())
     }
+
+    @Test
+    fun log2IsExactForPowersOfTwo() {
+        for (k in 0..62) assertEquals("log2(2^$k)", k.toString(), calc("log2(2^$k)"))
+        assertEquals("3.32192809489", calc("log2(10)"))
+    }
+
+    @Test
+    fun roundHalfUpAndTheFloatingPointEdgeCase() {
+        assertEquals("0", calc("round(0.49999999999999994)"))
+        assertEquals("3", calc("round(2.5)"))
+        assertEquals("-2", calc("round(-2.5)"))
+        assertEquals("-1", calc("round(-1.4)"))
+        assertEquals("1", calc("round(0.6)"))
+    }
 }

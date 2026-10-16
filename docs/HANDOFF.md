@@ -18,7 +18,7 @@ ONE consolidated test checklist.
 Phase 1 (delivered earlier as BigMoeOnEdgeExtended-final.zip, built and run by the owner):
 settings parity with the original BigMoeOnEdge Android app wired UI→DataStore→LoadConfig→JNI→SessionConfig;
 patch 0002 (ggml-cpu expert-ready hook → overlap); Home/Chats screen + floating nav bar (Models · Chats · Settings
-· "+"); chat rename/delete; replaceable home picture (res/drawable/home_hero_custom.png); 32 palettes + custom
+· "+"); chat rename/delete; replaceable home picture (res/drawable/home_hero_custom.png); 12 curated palettes in the picker (legacy presets retained) + custom
 palette editor; Web search (Brave → SearXNG → DuckDuckGo → Wikipedia; modes ALWAYS/AUTO); Thinking + Web icon toggles.
 
 After Phase 1, the feature pass added the following and these items are now implemented; see docs/STATUS.md for actual verification:
@@ -55,7 +55,7 @@ After Phase 1, the feature pass added the following and these items are now impl
   frameTimesUs are pure).
 * ChatViewModel: addAttachment/removePendingAttachment/sendMessage with attachments (CONTEXT message, images),
   approval dialog state (pendingConfirmation + resolveConfirmation), attachment preparation failure abort, toggleToolFiles/Code, saveCodeAsArtifact,
-  openFilePath one-shot, artifacts/attachments flows. EngineSettings: toolsFilesEnabled (default true),
+  openFilePath one-shot, artifacts/attachments flows. EngineSettings: toolsFilesEnabled (default false),
   toolsCodeEnabled (false), imageMaxDim (512), videoFrames (4), lastMmprojPath.
 * DI: AppContainer builds Workspace (filesDir/workspace), registers ALL tools, AttachmentManager, ArtifactRepository;
   ViewModelFactory builds ChatViewModel with the new params and FileViewModel (ui/files/FileViewModel.kt, state only).

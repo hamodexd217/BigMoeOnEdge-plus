@@ -171,7 +171,9 @@ fun AppNavigation(
                             )
                             ChatScreen(
                                 viewModel = chatViewModel,
-                                onNavigateBack = { navController.popBackStack() },
+                                historyViewModel = historyViewModel,
+                                onNewChat = { openChat(null) },
+                                onOpenChat = { id -> openChat(id) },
                                 onNavigateHome = { goTo(TopTab.CHATS) },
                                 onNavigateToModels = { goTo(TopTab.MODELS) },
                                 onOpenFile = { path -> navController.navigate(Screen.File.createRoute(path)) },
@@ -182,7 +184,9 @@ fun AppNavigation(
                     } else {
                         ChatScreen(
                             viewModel = chatViewModel,
-                            onNavigateBack = { navController.popBackStack() },
+                            historyViewModel = historyViewModel,
+                            onNewChat = { openChat(null) },
+                            onOpenChat = { id -> openChat(id) },
                             onNavigateHome = { goTo(TopTab.CHATS) },
                             onNavigateToModels = { goTo(TopTab.MODELS) },
                             onOpenFile = { path -> navController.navigate(Screen.File.createRoute(path)) }

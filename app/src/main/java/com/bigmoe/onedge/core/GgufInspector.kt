@@ -21,7 +21,7 @@ enum class ModelKind {
     UNKNOWN
 }
 
-data class GgufSummary(val architecture: String, val expertCount: Int, val kind: ModelKind)
+data class GgufSummary(val architecture: String, val expertCount: Int, val kind: ModelKind, val splitNo: Long? = null, val splitCount: Long? = null)
 
 /**
  * Reads only the metadata block of a GGUF file (no tensors) to find out whether a model is
@@ -83,6 +83,8 @@ object GgufInspector {
         if (kvCount < 0 || kvCount > MAX_KV) return UNKNOWN_SUMMARY
 
         var arch = ""
+        var splitNo: Long? = null
+        var splitCount: Long? = null
         // Every "<something>.expert_count" seen; the one matching the architecture wins, else any of them.
         val experts = LinkedHashMap<String, Long>()
         for (i in 0 until kvCount) {
@@ -90,12 +92,14 @@ object GgufInspector {
             val type = u32(s).toInt()
             when {
                 key == "general.architecture" && type == T_STRING -> arch = readString(s, MAX_KEY_BYTES)
+                key == "split.no" && isInteger(type) -> splitNo = readInteger(s, type)
+                key == "split.count" && isInteger(type) -> splitCount = readInteger(s, type)
                 key.endsWith(".expert_count") && isInteger(type) -> experts[key] = readInteger(s, type)
                 else -> skipValue(s, type)
             }
         }
         val count = (experts["$arch.expert_count"] ?: experts.values.maxOrNull() ?: 0L).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-        return GgufSummary(arch, count, if (count >= 2) ModelKind.MOE else ModelKind.DENSE)
+        return GgufSummary(arch, count, if (count >= 2) ModelKind.MOE else ModelKind.DENSE, splitNo, splitCount)
     }
 
     private fun isInteger(type: Int) = type in intArrayOf(T_UINT8, T_INT8, T_UINT16, T_INT16, T_UINT32, T_INT32, T_UINT64, T_INT64)

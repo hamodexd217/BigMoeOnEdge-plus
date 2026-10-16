@@ -1,15 +1,23 @@
 # STATUS
 
-Date: 2026-10-03
+Date: 2026-10-16
 
-This is the closeout status for the Phase-2/3 feature pass. The project is wired end-to-end in source and has
-been statically checked plus selected pure-Kotlin/C++ host smoke tests. A full Android APK build was **not** possible
-in this sandbox because Android SDK/NDK and a resolvable Gradle distribution are unavailable.
+This file contains the original Phase-2/3 audit and historical device checklist. For the v0.4.0 source delta, read
+[`RELEASE_NOTES_0.4.0.md`](RELEASE_NOTES_0.4.0.md) and the project [`README.md`](../README.md). Do not interpret old
+checklist entries below as proof that the v0.4.0 UI, image search, no-copy picker, MTP sidecar flow, or release APK
+has been built or device-tested.
 
-## Current handoff note (2026-10-03)
+**Current validation boundary:** selected source/static/host smoke checks are recorded in the feature-specific notes,
+but a full Android APK build and real-device test remain outstanding in this environment because Android SDK/NDK and
+resolvable Gradle distribution access are unavailable.
 
-This document now reflects the 0.28.0 engine upgrade rather than the previous 0.24.0 core baseline. Historical notes
-below are kept because they describe earlier owner rounds, but the current engine state is the section at the end of this file.
+## Current handoff note (2026-10-16)
+
+The source bundle now includes the BigMoeOnEdge 0.28.0 core baseline and additional v0.4.0 changes: no-copy GGUF
+selection, separate MTP sidecars for `qwen4exp` while retaining Expert Streaming for the target model, curated palettes
+and portrait chat navigation, full-width assistant rendering, optional Wikimedia Commons image search, reorganized
+settings/defaults, and streamed UI update coalescing. See the release notes for exact boundaries and risks. Historical
+notes below are retained because they describe earlier project rounds and should not be read as a v0.4.0 validation claim.
 
 ## 1. Implemented, in the requested handoff order
 
@@ -76,7 +84,7 @@ Xiaomi tablet.
   cover frame count, memory, and context pressure.
 * Room v1 → v2 uses `fallbackToDestructiveMigration()`: the app shows a startup warning and old **development-build**
   chats are cleared once. Models/settings are not cleared.
-* Model import remains single-file oriented; split models may need manual placement.
+* Split GGUF sets can be imported through the copy importer by selecting the complete numbered shard set together; no-copy registration is a separate real-path flow and does not provide the same multi-file staging/validation.
 * Native generation remains single-flight; unload waits for an active generation to finish.
 
 ## 5. Consolidated device test checklist

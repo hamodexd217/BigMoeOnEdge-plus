@@ -9,9 +9,16 @@ import org.json.JSONObject
 
 class ToolManager(
     private val toolTimeoutMs: Long = 20_000L,
-    private val maxResultChars: Int = 6_000,
+    maxResultChars: Int = 3_500,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
+    /**
+     * Longest result handed back to the model. Every character becomes prompt tokens the phone has to process before
+     * the model can continue, so this is the biggest lever on how long a tool round takes. Set per run from the settings.
+     */
+    @Volatile
+    var maxResultChars: Int = maxResultChars
+
     private val registeredTools = LinkedHashMap<String, Tool>()
 
     /** Shows the approval dialog. Without one, tools that need approval are refused (never run silently). */
@@ -25,6 +32,8 @@ class ToolManager(
     fun getTool(name: String): Tool? = registeredTools[name]
 
     fun hasTools(): Boolean = registeredTools.isNotEmpty()
+
+    fun isParallelSafe(name: String): Boolean = registeredTools[name]?.parallelSafe == true
 
     fun toolNames(): Set<String> = registeredTools.keys.toSet()
 
@@ -49,10 +58,18 @@ class ToolManager(
             b.append("- ${signature(tool)}: ${tool.description}\n")
             val props = tool.parametersSchema.optJSONObject("properties")
             if (props != null) {
+                // Compact: this text is read again whenever the conversation has to be processed from the start,
+                // so every character counts. No line for a parameter whose name says it all; the type only when it
+                // is not the obvious "string".
                 props.keys().forEach { k ->
                     val p = props.optJSONObject(k)
-                    b.append("    ").append(k).append(" (").append(p?.optString("type")).append("): ")
-                        .append(p?.optString("description")).append('\n')
+                    val desc = p?.optString("description").orEmpty()
+                    if (desc.isNotBlank()) {
+                        val type = p?.optString("type").orEmpty()
+                        b.append("    ").append(k)
+                        if (type.isNotEmpty() && type != "string") b.append(" (").append(type).append(')')
+                        b.append(": ").append(desc).append('\n')
+                    }
                 }
             }
         }
@@ -100,7 +117,7 @@ class ToolManager(
 
             // 2. run
             val result = withContext(ioDispatcher) { withTimeout(toolTimeoutMs) { tool.execute(args, ctx) } }
-            if (result.length > maxResultChars) result.take(maxResultChars) + "\n[truncated]" else result
+            clip(result, maxResultChars)
         } catch (e: TimeoutCancellationException) {
             "Error: tool '$toolName' timed out after ${toolTimeoutMs / 1000}s."
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -110,6 +127,20 @@ class ToolManager(
         } catch (e: Exception) {
             "Error executing tool '$toolName': ${e.message ?: e.javaClass.simpleName}"
         }
+    }
+
+    /**
+     * Cuts [text] to about [limit] characters at the last line break that keeps at least 80% of it, never in the middle
+     * of an emoji, and says how much was left out so the model can ask for it (a line range, a narrower query) instead of
+     * the app reading everything up front.
+     */
+    internal fun clip(text: String, limit: Int): String {
+        if (text.length <= limit) return text
+        var cut = limit
+        val nl = text.lastIndexOf('\n', limit)
+        if (nl >= limit * 8 / 10) cut = nl
+        if (cut > 0 && Character.isHighSurrogate(text[cut - 1])) cut--
+        return text.substring(0, cut).trimEnd() + "\n[truncated: ${text.length - cut} more characters not shown]"
     }
 
     /** UI label for a call, e.g. "Reading notes.md". Never throws. */

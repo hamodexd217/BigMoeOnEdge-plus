@@ -22,6 +22,18 @@ class PaletteTest {
     }
 
     @Test
+    fun pickerUsesACompactWarmLightAndDarkSelectionWithoutDroppingLegacyPresets() {
+        assertEquals(12, PalettePresets.featured.size)
+        assertTrue(PalettePresets.featured.any { it.dark })
+        assertTrue(PalettePresets.featured.any { !it.dark })
+        assertTrue(PalettePresets.featured.any { it.id == "paper" })
+        assertTrue(PalettePresets.featured.any { it.id == "sand" })
+        assertTrue(PalettePresets.featured.any { it.id == "coffee" && it.dark })
+        // The full registry remains available for older saved theme IDs and compatibility.
+        assertTrue(PalettePresets.all.size >= 30)
+    }
+
+    @Test
     fun darkFlagMatchesTheBackgroundAndTextIsReadable() {
         for (p in PalettePresets.all) {
             assertEquals("${p.id} dark flag", ColorMath.luminance(p.background) < 0.2, p.dark)

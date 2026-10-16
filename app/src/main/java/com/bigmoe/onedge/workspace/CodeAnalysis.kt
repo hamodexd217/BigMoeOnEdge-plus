@@ -3,6 +3,10 @@ package com.bigmoe.onedge.workspace
 /** Heuristic static summary of a source file (regexes, not a parser; says so in its output). */
 object CodeAnalysis {
 
+    // Compiled once. They used to be built inside the per-line loops (two compilations per line of the file).
+    private val TODO_RE = Regex("\\b(TODO|FIXME|HACK|XXX)\\b")
+    private val IMPORT_RE = Regex("^\\s*(import|from\\s+\\S+\\s+import|#include|using|require\\(|use\\s)")
+
     private val DEFS: Map<String, List<Pair<String, Regex>>> = mapOf(
         "kotlin" to listOf(
             "class" to Regex("^\\s*(?:(?:public|private|internal|protected|data|sealed|enum|abstract|open|inner|annotation|value)\\s+)*(?:class|interface|object)\\s+([A-Za-z_]\\w*)"),
@@ -57,7 +61,7 @@ object CodeAnalysis {
             val l = raw.trim()
             if (raw.length > longest) { longest = raw.length; longestAt = i + 1 }
             if (raw.startsWith("\t")) tabs++ else if (raw.startsWith("  ")) spaces++
-            if (Regex("\\b(TODO|FIXME|HACK|XXX)\\b").containsMatchIn(raw)) todo.add("${i + 1}: ${l.take(100)}")
+            if (TODO_RE.containsMatchIn(raw)) todo.add("${i + 1}: ${l.take(100)}")
             when {
                 l.isEmpty() -> blank++
                 inBlock -> { comment++; if (l.contains("*/")) inBlock = false }
@@ -93,7 +97,7 @@ object CodeAnalysis {
                 }
             }
         }
-        val imports = lines.count { Regex("^\\s*(import|from\\s+\\S+\\s+import|#include|using|require\\(|use\\s)").containsMatchIn(it) }
+        val imports = lines.count { IMPORT_RE.containsMatchIn(it) }
         if (imports > 0) sb.append("Imports/includes: $imports\n")
         if (todo.isNotEmpty()) sb.append("TODO/FIXME (${todo.size}): ${todo.take(8).joinToString(" | ")}\n")
 

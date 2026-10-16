@@ -105,7 +105,7 @@ fun ChatMessageBubble(
                 shape = bubbleShape,
                 color = bubbleColor,
                 modifier = Modifier
-                    .widthIn(max = 360.dp)
+                    .then(if (isUser) Modifier.widthIn(max = 360.dp) else Modifier.fillMaxWidth())
                     .then(if (hasMenu) Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true }) else Modifier)
             ) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {

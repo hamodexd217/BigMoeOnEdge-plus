@@ -76,7 +76,7 @@ class ToolManagerTest {
         val m = ToolManager(maxResultChars = 1000).apply { registerTool(HugeTool()) }
         val r = m.executeToolCall("huge", "{}")
         assertTrue(r.length < 1100)
-        assertTrue(r.endsWith("[truncated]"))
+        assertTrue(r.contains("[truncated: "))
     }
 
     private class ProtectedTool : Tool {

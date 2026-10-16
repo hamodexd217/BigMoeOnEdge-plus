@@ -28,12 +28,13 @@ class WebSearchTool(
 
     override val category: ToolCategory = ToolCategory.WEB
 
+    override val parallelSafe: Boolean = true
+
     override fun describe(arguments: JSONObject): String =
         "Searching the web for \"${arguments.optString("query").take(50)}\""
 
     override val description: String =
-        "Search the web for real-time information, recent events, or up-to-date facts."
-
+        "Search the web for current information and recent events."
     override val parametersSchema: JSONObject = JSONObject().apply {
         put("type", "object")
         put("properties", JSONObject().apply {
@@ -68,18 +69,25 @@ class WebSearchTool(
     /** No account needed: DuckDuckGo first (general web), Wikipedia if that returns nothing or is blocked. */
     private fun executeKeylessSearch(query: String): String {
         val problems = ArrayList<String>()
+        val started = System.nanoTime()
         try {
-            val results = parseDuckDuckGoHtml(httpGet("$duckDuckGoEndpoint?q=${URLEncoder.encode(query, "UTF-8")}", accept = "text/html"))
+            val results = parseDuckDuckGoHtml(
+                httpGet("$duckDuckGoEndpoint?q=${URLEncoder.encode(query, "UTF-8")}", accept = "text/html", timeout = minOf(timeoutMs, 6000))
+            )
             if (results.isNotEmpty()) return formatResults(results)
             problems.add("DuckDuckGo returned no results")
         } catch (e: Exception) {
             problems.add("DuckDuckGo failed: ${e.message}")
         }
+        // One budget for both attempts (a blocked read cannot be cancelled by the tool timeout): the fallback only
+        // gets what is left of 12 s.
+        val leftMs = 12_000 - ((System.nanoTime() - started) / 1_000_000L).toInt()
+        if (leftMs < 1500) return "No results found (${problems.joinToString("; ")}). The web may be slow or unreachable."
         try {
             val lang = if (query.any { it in '\u0600'..'\u06FF' }) "ar" else "en"
             val url = String.format(wikipediaEndpoint, lang) +
                 "?action=query&list=search&format=json&utf8=1&srlimit=5&srsearch=${URLEncoder.encode(query, "UTF-8")}"
-            val results = parseWikipediaJson(httpGet(url, accept = "application/json"), lang)
+            val results = parseWikipediaJson(httpGet(url, accept = "application/json", timeout = minOf(timeoutMs, leftMs)), lang)
             if (results.isNotEmpty()) return formatResults(results)
             problems.add("Wikipedia returned no results")
         } catch (e: Exception) {
@@ -88,18 +96,18 @@ class WebSearchTool(
         return "No results found (${problems.joinToString("; ")}). The web may be unreachable."
     }
 
-    private fun httpGet(url: String, accept: String): String {
+    private fun httpGet(url: String, accept: String, timeout: Int = timeoutMs): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("Accept", accept)
             // Some endpoints refuse the default Java agent.
             setRequestProperty("User-Agent", "Mozilla/5.0 (Android) BigMoeOnEdgePlus/1.0")
-            connectTimeout = timeoutMs
-            readTimeout = timeoutMs
+            connectTimeout = timeout
+            readTimeout = timeout
         }
         try {
             if (connection.responseCode != 200) error("HTTP ${connection.responseCode}")
-            return connection.inputStream.bufferedReader().use { it.readText() }
+            return connection.inputStream.bufferedReader().use { readBounded(it, MAX_RESPONSE_CHARS) }
         } finally {
             connection.disconnect()
         }
@@ -193,11 +201,26 @@ class WebSearchTool(
         private val A_TAG = Regex("<a\\s[^>]*>", RegexOption.IGNORE_CASE)
         private val HREF = Regex("href\\s*=\\s*\"([^\"]*)\"", RegexOption.IGNORE_CASE)
 
+        /** A search page is a few hundred KB at most; never buffer more than this however much a server sends. */
+        private const val MAX_RESPONSE_CHARS = 600_000
+        private val WHITESPACE = Regex("\\s+")
+
+        private fun readBounded(reader: java.io.Reader, maxChars: Int): String {
+            val sb = StringBuilder()
+            val buf = CharArray(8192)
+            while (sb.length < maxChars) {
+                val n = reader.read(buf, 0, minOf(buf.size, maxChars - sb.length))
+                if (n < 0) break
+                sb.append(buf, 0, n)
+            }
+            return sb.toString()
+        }
+
         fun decodeEntities(text: String): String = text
             .replace("&quot;", "\"").replace("&#39;", "'").replace("&#x27;", "'").replace("&apos;", "'")
             .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&amp;", "&")
 
-        fun stripHtml(html: String): String = decodeEntities(TAGS.replace(html, "")).replace(Regex("\\s+"), " ").trim()
+        fun stripHtml(html: String): String = decodeEntities(TAGS.replace(html, "")).replace(WHITESPACE, " ").trim()
 
         /** DuckDuckGo wraps result links as //duckduckgo.com/l/?uddg=<encoded target>&rut=...; unwrap them. */
         fun unwrapDuckDuckGoUrl(href: String): String {
@@ -221,10 +244,11 @@ class WebSearchTool(
                 if (bodyEnd < 0) break
                 val body = stripHtml(html.substring(bodyStart, bodyEnd))
                 if (tag.contains("result__a")) {
+                    // A sixth title ends the scan. (Breaking right after the fifth one dropped the fifth result's snippet.)
+                    if (out.size >= 5) break
                     val href = HREF.find(tag)?.groupValues?.get(1) ?: continue
                     val url = unwrapDuckDuckGoUrl(href)
                     if (body.isNotEmpty() && url.startsWith("http")) out.add(SearchResult(body, "", url))
-                    if (out.size >= 5) break
                 } else if (tag.contains("result__snippet") && out.isNotEmpty() && out.last().snippet.isEmpty()) {
                     out[out.size - 1] = out.last().copy(snippet = body)
                 }

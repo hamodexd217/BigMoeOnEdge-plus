@@ -300,6 +300,8 @@ enum class DraftSource {
 // choice of source cannot change. Default off until the A/B says otherwise on the target device.
 struct SpecConfig {
     DraftSource source = DraftSource::none;
+    // Optional standalone MTP-only GGUF. Empty means use the model's own embedded MTP block.
+    std::string draft_model_path;
 
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.

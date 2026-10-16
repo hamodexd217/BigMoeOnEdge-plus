@@ -50,9 +50,9 @@ private fun kb(bytes: Long) = if (bytes < 1024) "$bytes B" else "${bytes / 1024}
 class ListFilesTool(private val ws: Workspace) : Tool {
     override val name = "list_files"
     override val category = ToolCategory.FILES
-    override val description = "List files and folders in the workspace. Use recursive=true for the whole tree."
+    override val description = "List workspace files and folders. recursive=true for the whole tree."
     override val parametersSchema = toolSchema(
-        listOf(Triple("path", "string", "Folder, relative to the workspace root (default: the root)"), Triple("recursive", "boolean", "Include sub-folders")),
+        listOf(Triple("path", "string", "Folder (default: root)"), Triple("recursive", "boolean", "")),
         emptyList()
     )
     override fun describe(arguments: JSONObject) = "Listing ${arguments.optString("path", "").ifBlank { "workspace" }}"
@@ -67,12 +67,12 @@ class ListFilesTool(private val ws: Workspace) : Tool {
 class ReadFileTool(private val ws: Workspace) : Tool {
     override val name = "read_file"
     override val category = ToolCategory.FILES
-    override val description = "Read a text file. Lines are numbered (the numbers are not part of the file). Long files: pass start_line/end_line."
+    override val description = "Read a text file with numbered lines (the numbers are not part of the file). Long files: use start_line/end_line."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("path", "string", "File path relative to the workspace root"),
-            Triple("start_line", "integer", "First line to read (1-based)"),
-            Triple("end_line", "integer", "Last line to read")
+            Triple("path", "string", ""),
+            Triple("start_line", "integer", "1-based"),
+            Triple("end_line", "integer", "")
         ),
         listOf("path")
     )
@@ -101,13 +101,13 @@ class ReadFileTool(private val ws: Workspace) : Tool {
 class SearchFilesTool(private val ws: Workspace) : Tool {
     override val name = "search_files"
     override val category = ToolCategory.FILES
-    override val description = "Search text inside the workspace files (case-insensitive unless case_sensitive=true)."
+    override val description = "Search text in workspace files (case-insensitive unless case_sensitive=true)."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("query", "string", "Text or regular expression to find"),
-            Triple("path", "string", "Folder or file to search (default: everything)"),
-            Triple("regex", "boolean", "Treat query as a regular expression"),
-            Triple("case_sensitive", "boolean", "Match case")
+            Triple("query", "string", "Text or regex"),
+            Triple("path", "string", "Folder or file (default: all)"),
+            Triple("regex", "boolean", ""),
+            Triple("case_sensitive", "boolean", "")
         ),
         listOf("query")
     )
@@ -130,13 +130,12 @@ class SearchFilesTool(private val ws: Workspace) : Tool {
 class CreateFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "create_file"
     override val category = ToolCategory.FILES
-    override val description = "Create a file with the given content (documents, code, pages, configs). The user sees it as a separate file next to the chat. " +
-        "To change an existing file use edit_file."
+    override val description = "Create a file (documents, code, pages, configs); the user sees it next to the chat. To change an existing file use edit_file."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("path", "string", "File path relative to the workspace, e.g. notes/todo.md"),
-            Triple("content", "string", "Complete file content"),
-            Triple("overwrite", "boolean", "Replace the file if it exists (asks the user)")
+            Triple("path", "string", "e.g. notes/todo.md"),
+            Triple("content", "string", "Complete content"),
+            Triple("overwrite", "boolean", "Replace if it exists (asks the user)")
         ),
         listOf("path", "content")
     )
@@ -179,15 +178,14 @@ class CreateFileTool(private val ws: Workspace, private val registry: ArtifactRe
 class EditFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "edit_file"
     override val category = ToolCategory.FILES
-    override val description = "Edit a file by replacing exact text. old_text must match the file exactly (copy it from read_file) and be unique unless replace_all=true. " +
-        "The user sees a diff and must approve. Several changes: pass edits=[{old_text,new_text},...]."
+    override val description = "Replace exact text in a file. old_text must match exactly (copy it from read_file) and be unique unless replace_all=true. The user approves a diff. Several changes: edits=[{old_text,new_text},...]."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("path", "string", "File path relative to the workspace"),
-            Triple("old_text", "string", "Exact text to replace"),
-            Triple("new_text", "string", "Replacement text (empty to delete)"),
-            Triple("replace_all", "boolean", "Replace every occurrence"),
-            Triple("edits", "array", "Alternative: a list of {old_text, new_text, replace_all} objects, applied in order")
+            Triple("path", "string", ""),
+            Triple("old_text", "string", "Exact text"),
+            Triple("new_text", "string", "Replacement (empty deletes)"),
+            Triple("replace_all", "boolean", ""),
+            Triple("edits", "array", "[{old_text,new_text,replace_all}], applied in order")
         ),
         listOf("path")
     )
@@ -271,9 +269,9 @@ class EditFileTool(private val ws: Workspace, private val registry: ArtifactRegi
 class RenameFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "rename_file"
     override val category = ToolCategory.FILES
-    override val description = "Rename or move a file or folder inside the workspace. The target must not exist."
+    override val description = "Rename or move a file/folder in the workspace; the target must not exist."
     override val parametersSchema = toolSchema(
-        listOf(Triple("path", "string", "Current path"), Triple("new_path", "string", "New path")),
+        listOf(Triple("path", "string", "Current path"), Triple("new_path", "string", "")),
         listOf("path", "new_path")
     )
     override fun describe(arguments: JSONObject) = "Renaming ${arguments.optString("path")}"
@@ -289,8 +287,8 @@ class RenameFileTool(private val ws: Workspace, private val registry: ArtifactRe
 class DeleteFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "delete_file"
     override val category = ToolCategory.FILES
-    override val description = "Delete a file or a folder (with everything in it). The user must approve."
-    override val parametersSchema = toolSchema(listOf(Triple("path", "string", "Path to delete")), listOf("path"))
+    override val description = "Delete a file or folder (with contents). The user must approve."
+    override val parametersSchema = toolSchema(listOf(Triple("path", "string", "")), listOf("path"))
     override fun describe(arguments: JSONObject) = "Deleting ${arguments.optString("path")}"
 
     override fun confirmation(arguments: JSONObject): ConfirmationRequest {
@@ -313,8 +311,8 @@ class DeleteFileTool(private val ws: Workspace, private val registry: ArtifactRe
 class CreateFolderTool(private val ws: Workspace, private val registry: ArtifactRegistry? = null) : Tool {
     override val name = "create_folder"
     override val category = ToolCategory.FILES
-    override val description = "Create a folder (and missing parent folders). It appears in this chat's files, where the user sees it and the files inside it."
-    override val parametersSchema = toolSchema(listOf(Triple("path", "string", "Folder path")), listOf("path"))
+    override val description = "Create a folder (and missing parents); the user sees it in this chat's files."
+    override val parametersSchema = toolSchema(listOf(Triple("path", "string", "")), listOf("path"))
     override fun describe(arguments: JSONObject) = "Creating folder ${arguments.optString("path")}"
 
     override suspend fun execute(arguments: JSONObject): String = execute(arguments, ToolContext.NONE)
@@ -334,11 +332,11 @@ class CreateFolderTool(private val ws: Workspace, private val registry: Artifact
 class CreateProjectTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "create_project"
     override val category = ToolCategory.FILES
-    override val description = "Create several files at once (a small project). Fails without changing anything if one of the files already exists."
+    override val description = "Create several files at once; fails without changes if one exists."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("folder", "string", "Optional folder to put all files in"),
-            Triple("files", "array", "List of {path, content} objects")
+            Triple("folder", "string", "Optional folder for all files"),
+            Triple("files", "array", "[{path, content}]")
         ),
         listOf("files")
     )
@@ -387,9 +385,9 @@ class CreateProjectTool(private val ws: Workspace, private val registry: Artifac
 class ExportZipTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "export_zip"
     override val category = ToolCategory.FILES
-    override val description = "Pack a folder (or file) into a .zip archive under exports/, so the user can download it."
+    override val description = "Pack a folder or file into exports/<name>.zip for the user to download."
     override val parametersSchema = toolSchema(
-        listOf(Triple("path", "string", "Folder or file to pack"), Triple("name", "string", "Archive name without extension")),
+        listOf(Triple("path", "string", ""), Triple("name", "string", "Archive name without extension")),
         listOf("path")
     )
     override fun describe(arguments: JSONObject) = "Zipping ${arguments.optString("path")}"

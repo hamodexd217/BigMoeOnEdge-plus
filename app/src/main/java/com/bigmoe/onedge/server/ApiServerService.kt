@@ -36,13 +36,10 @@ class ApiServerService : Service() {
     private var watchJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val busy = AtomicInteger(0)
-    private var runningUrl: String = ""
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            scope.launch {
-                (application as OnEdgeApplication).container.settingsDataStore.updateServerEnabled(false)
-            }
+            (application as OnEdgeApplication).container.disableApiServer()
             shutdown()
             return START_NOT_STICKY
         }
@@ -83,9 +80,9 @@ class ApiServerService : Service() {
         try {
             api.start(bindAll, port)
             server = api
-            runningUrl = "http://${if (bindAll) "<device-ip>" else "127.0.0.1"}:${api.boundPort}"
-            updateNotification("Listening on $runningUrl")
-            Log.i(TAG, "server up: $runningUrl")
+            val url = "http://${if (bindAll) "<device-ip>" else "127.0.0.1"}:${api.boundPort}"
+            updateNotification("Listening on $url")
+            Log.i(TAG, "server up: $url")
         } catch (e: Exception) {
             server = null
             Log.e(TAG, "cannot start server on port $port: ${e.message}")

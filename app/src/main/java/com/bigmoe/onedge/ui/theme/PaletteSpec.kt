@@ -76,7 +76,7 @@ object ColorMath {
 object PalettePresets {
     const val SYSTEM_ID = "system"
     const val DEFAULT_LIGHT_ID = "paper"
-    const val DEFAULT_DARK_ID = "emerald_dark"
+    const val DEFAULT_DARK_ID = "chatgpt_dark"
 
     private fun p(
         id: String, name: String, dark: Boolean,
@@ -105,6 +105,10 @@ object PalettePresets {
         p("solarized_light", "Solarized Light", false, "268BD2", "2AA198", "FDF6E3", "EEE8D5", "073642", "CB4B16", "268BD2", "EEE8D5", "E4DCC0"),
         p("gruvbox_light", "Gruvbox Light", false, "076678", "427B58", "FBF1C7", "EBDBB2", "3C3836", "D65D0E", "076678", "EBDBB2", "E0CFA0"),
         p("latte", "Catppuccin Latte", false, "1E66F5", "8839EF", "EFF1F5", "E6E9EF", "4C4F69", "FE640B", "1E66F5", "DCE0E8", "CCD0DA"),
+        p("pearl", "Pearl", false, "3D5A80", "607D8B", "FAFAF8", "F0F1EE", "292B2F", "B27B52", "DCE6EF", "ECEDE9", "DFE1DC"),
+        p("chatgpt_dark", "ChatGPT Dark", true, "A3C9B9", "9AA6A0", "212121", "2B2B2B", "ECECEC", "A3C9B9", "303030", "262626", "181818"),
+        p("claude_warm_dark", "Claude Warm", true, "D97757", "B6A69A", "1D1B19", "292623", "F0EAE3", "E5A083", "45332A", "272421", "171411"),
+        p("gemini_dark", "Gemini Night", true, "A8C7FA", "B7C3D0", "131314", "1E1F20", "E3E3E3", "A8C7FA", "303134", "202124", "111111"),
         p("emerald_dark", "Emerald Dark", true, "70DBAF", "B3CCBF", "101412", "1A1F1C", "E1E3DF", "A5CCE0", "1F6F55", "26302B", "0C0F0D"),
         p("amoled", "AMOLED Black", true, "70DBAF", "B3CCBF", "000000", "0A0A0A", "E6E6E6", "A5CCE0", "00513A", "141414", "0D0D0D"),
         p("midnight", "Midnight Blue", true, "6EA8FE", "8AB4F8", "0B1220", "121B2E", "E6ECF7", "4FD1C5", "2D5BB9", "1A2540", "0A0F1A"),
@@ -124,6 +128,12 @@ object PalettePresets {
         p("cyberpunk", "Cyberpunk", true, "FCEE0A", "00F0FF", "0D0221", "1A0B33", "F4F1FF", "FF2A6D", "6B2FBF", "2A1250", "08011A"),
         p("aurora", "Aurora", true, "4ADE80", "22D3EE", "0B1416", "12222A", "E6F4F1", "A78BFA", "1F7A5A", "16303A", "081014")
     )
+
+    /** A small, hand-picked set shown in the palette picker. All legacy presets remain in [all] so saved themes keep working. */
+    val featured: List<PaletteSpec> = listOf(
+        "paper", "sand", "sage", "latte", "pearl", "ocean",
+        "chatgpt_dark", "claude_warm_dark", "gemini_dark", "midnight", "amoled", "coffee"
+    ).mapNotNull { id -> all.firstOrNull { it.id == id } }
 
     fun byId(id: String): PaletteSpec? = all.firstOrNull { it.id == id }
 }

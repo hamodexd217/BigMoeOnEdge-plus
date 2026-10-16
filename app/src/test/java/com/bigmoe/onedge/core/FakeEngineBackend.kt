@@ -44,6 +44,9 @@ class FakeEngineBackend(
     val script = ArrayDeque<ScriptedTurn>()
     val calls = ArrayList<RecordedCall>()
     var loadError: String? = null
+    var draftLoadError: String? = null
+    val loadAttempts = ArrayList<Pair<LoadConfig, String?>>()
+    var lastDraftPath: String? = null
     var freed = false
 
     private val stopLatch = CountDownLatch(1)
@@ -54,10 +57,12 @@ class FakeEngineBackend(
     var lastConfig: LoadConfig? = null
     override fun capabilities() = EngineCaps(overlapHook = true, multimodal = true, npuPrefill = false)
 
-    override fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?): String? {
+    override fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?, draftPath: String?): String? {
         lastCsvPath = csvPath
         lastConfig = config
-        return loadError
+        lastDraftPath = draftPath
+        loadAttempts += config to draftPath
+        return if (draftPath != null) draftLoadError ?: loadError else loadError
     }
     override fun modelInfo(): Map<String, String> = info
 

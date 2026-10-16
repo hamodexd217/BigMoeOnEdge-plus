@@ -15,6 +15,9 @@ import com.bigmoe.onedge.tools.ToolManager
 import com.bigmoe.onedge.tools.UTILITY_TOOL_NAMES
 import com.bigmoe.onedge.tools.WEB_PAGE_TOOL_NAMES
 import com.bigmoe.onedge.tools.WebSearchTool
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -99,6 +102,7 @@ class AgentController(
             it.braveApiKey = settings.braveApiKey
             it.searxngInstanceUrl = settings.searxngUrl
         }
+        toolManager.maxResultChars = settings.toolResultChars
         val system = buildSystemPrompt(
             settings, toolsEnabled, toolManager.getToolsDescriptionPrompt(enabledNames), alwaysSearch
         )
@@ -152,7 +156,9 @@ class AgentController(
                     prompt = prompt,
                     expectedKey = expectedKey,
                     maxTokens = settings.maxTokens,
-                    think = settings.thinkingEnabled,
+                    // After a tool result the model usually just has to use it: reasoning again costs minutes at
+                    // decode speed, so it only happens when the user asked for it.
+                    think = settings.thinkingEnabled && (engineRound == 0 || settings.thinkAfterTools),
                     images = if (engineRound == 0) request.images else emptyList()
                 )
             ).collect { ev ->
@@ -174,7 +180,7 @@ class AgentController(
             val fin = finished
             if (fin != null) {
                 generatedTotal += fin.stats.nGenerated
-                emit(AgentEvent.GenerationProgress(generatedTotal, fin.stats.nPast))
+                emit(AgentEvent.GenerationProgress(generatedTotal, fin.stats.nPast.takeIf { it > 0 })) // 0 = unknown: never overwrite a good value
             }
             if (fin == null || !fin.ok) {
                 val message = fin?.error?.ifBlank { null } ?: "Generation ended unexpectedly"
@@ -231,24 +237,30 @@ class AgentController(
 
             val results = ArrayList<Pair<String, String>>()
             var malformedReason: String? = null
+            val calls = ArrayList<Pair<String, String>>() // (name, arguments JSON) of the calls that parsed
             for ((payload, _) in payloads.take(MAX_CALLS_PER_ROUND)) {
                 when (val parsed = ToolProtocol.parseCall(payload)) {
                     is ToolCallParseResult.Malformed -> malformedReason = malformedReason ?: parsed.reason
-                    is ToolCallParseResult.Ok -> {
-                        emit(AgentEvent.ToolStarted(parsed.call.name, parsed.call.arguments))
-                        val result = if (parsed.call.name in enabledNames) {
-                            toolManager.executeToolCall(
-                                parsed.call.name, parsed.call.arguments, ToolContext(request.sessionId, assistantId)
-                            )
-                        } else if (!toolsEnabled) {
-                            "Error: tools are disabled. Answer without them."
-                        } else {
-                            "Error: tool '${parsed.call.name}' is not enabled. Enabled tools: ${enabledNames.sorted().joinToString(", ")}."
-                        }
-                        results.add(parsed.call.name to result)
-                    }
+                    is ToolCallParseResult.Ok -> calls.add(parsed.call.name to parsed.call.arguments)
                 }
             }
+            for ((name, args) in calls) emit(AgentEvent.ToolStarted(name, args))
+
+            val toolCtx = ToolContext(request.sessionId, assistantId)
+            suspend fun runOne(name: String, args: String): String = when {
+                name in enabledNames -> toolManager.executeToolCall(name, args, toolCtx)
+                !toolsEnabled -> "Error: tools are disabled. Answer without them."
+                else -> "Error: tool '$name' is not enabled. Enabled tools: ${enabledNames.sorted().joinToString(", ")}."
+            }
+            // Calls that only read from the network do not depend on each other: run them side by side, so a round
+            // with three page reads costs the slowest one, not the sum. Anything else keeps its order.
+            val outputs: List<String> =
+                if (calls.size > 1 && calls.all { it.first in enabledNames && toolManager.isParallelSafe(it.first) }) {
+                    coroutineScope { calls.map { c -> async { runOne(c.first, c.second) } }.awaitAll() }
+                } else {
+                    calls.map { c -> runOne(c.first, c.second) }
+                }
+            for (i in calls.indices) results.add(calls[i].first to outputs[i])
 
             prompt = when {
                 results.isEmpty() -> {
@@ -333,6 +345,8 @@ class AgentController(
             if (settings.toolsUtilitiesEnabled) names.addAll(UTILITY_TOOL_NAMES)
             if (settings.isWebSearchEnabled) {
                 names.addAll(WEB_PAGE_TOOL_NAMES)
+                // Image search shares the explicit Web Search switch and stays unavailable by default.
+                names.add("image_search")
                 if (settings.webSearchMode == WebSearchMode.AUTO) names.add("web_search")
             }
             return names.intersect(registered)

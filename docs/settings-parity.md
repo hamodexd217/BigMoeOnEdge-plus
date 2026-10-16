@@ -32,8 +32,9 @@ cross-check of the order was run).
 | Metrics CSV | Diagnostics | per-token CSV sink passed to `generate()` | file in `<external files>/metrics/`, shareable |
 | Sampling (temperature/top-p/top-k) | Compute | `sampling.*` | the original runs greedy; defaults here keep 0.7/0.9/40 |
 
-Defaults are the original app's defaults (fixed 2000 MiB cache, 4+4 lanes, O_DIRECT, overlap, Anon dense,
-drop-cold 75 %, top-k model default, thinking off).
+Engine/performance defaults remain aligned with the original app (fixed 2000 MiB cache, 4 I/O lanes, O_DIRECT,
+overlap, Anon dense weights, drop-cold 75 %, model-default top-k). The chat defaults are intentionally more opt-in:
+blank system prompt, unlimited generation (until context exhaustion), thinking off, web search off, and every tool family off.
 
 ## Why this app was ~3 tok/s and the original 5–6 tok/s (diagnosis)
 Not a UI problem. Compared implementation vs implementation:

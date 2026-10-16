@@ -76,7 +76,8 @@ fun ChatHistoryPanel(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp
     ) {
-        Column(Modifier.fillMaxHeight().padding(14.dp)) {
+        // Keep the heading comfortably inset on compact split-screen layouts as well as full-width phones.
+        Column(Modifier.fillMaxHeight().padding(horizontal = 22.dp, vertical = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "CHATS",

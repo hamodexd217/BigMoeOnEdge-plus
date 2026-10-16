@@ -23,6 +23,7 @@ import com.bigmoe.onedge.tools.registerFileTools
 import com.bigmoe.onedge.tools.registerUtilityTools
 import com.bigmoe.onedge.tools.registerWebPageTools
 import com.bigmoe.onedge.tools.WebSearchTool
+import com.bigmoe.onedge.tools.ImageSearchTool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -112,6 +113,7 @@ class AppContainer(private val context: Context) {
     val toolManager: ToolManager by lazy {
         ToolManager().apply {
             registerTool(WebSearchTool())
+            registerTool(ImageSearchTool())
             registerWebPageTools(this)
             registerFileTools(this, workspace, artifactRepository)
             registerCodeTools(this, workspace, javaScriptRunner)
@@ -149,8 +151,17 @@ class AppContainer(private val context: Context) {
 
     /** adb test hook, see [com.bigmoe.onedge.server.ApiServerIntentHook]. No-op unless the intent carries its extras. */
     fun handleApiServerIntent(intent: android.content.Intent?) {
+        // MainActivity is exported, so any app could send these extras (set the key, switch authentication off...).
+        // The hook therefore exists in debuggable builds only.
+        val debuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) return
         if (intent?.hasExtra(com.bigmoe.onedge.server.ApiServerIntentHook.EXTRA_ACTION) != true) return
         appScope.launch { com.bigmoe.onedge.server.ApiServerIntentHook.handle(intent, apiServerController, settingsDataStore) }
+    }
+
+    /** The notification's Stop button: persist "off" in the app-wide scope (the service's own scope dies with the service). */
+    fun disableApiServer() {
+        appScope.launch { apiServerController.setEnabled(false) }
     }
 
     /** Called once from Application.onCreate: brings the local API server back if it was left enabled. */
@@ -164,7 +175,9 @@ class AppContainer(private val context: Context) {
             val s = settingsDataStore.settingsFlow.first()
             if (s.autoLoadLastModel && s.lastModelPath.isNotBlank() && File(s.lastModelPath).isFile) {
                 val projector = s.lastMmprojPath.takeIf { it.isNotBlank() && File(it).isFile }
-                engineController.loadModel(s.lastModelPath, s.toLoadConfig(), projector)
+                val draftPath = if (s.spec == com.bigmoe.onedge.core.SpecSource.MTP && s.separateMtpDraftEnabled)
+                    modelManager.draftForModel(s.lastModelPath) else null
+                engineController.loadModel(s.lastModelPath, s.toLoadConfig(), projector, draftPath)
             }
         }
     }

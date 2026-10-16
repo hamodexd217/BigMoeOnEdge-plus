@@ -108,7 +108,7 @@ normalises the per-request billing header to keep the prefix stable), and the ca
 * **Streaming**: `stream:true` gives Anthropic SSE (`message_start`, `content_block_*`, `message_delta`, `message_stop`). `event: ping` is sent whenever nothing was written for 3 s, so a long prefill does not hit the client's read timeout. (A non-streaming request cannot be kept alive this way.)
 * **Thinking**: with thinking on, reasoning arrives as `thinking` content blocks (`thinking_delta`, empty `signature`), never in the text block; with it off, reasoning is dropped. `thinking.budget_tokens` is not enforced.
 * **tool_use**: a tool call is delivered once the engine has parsed it complete: one `content_block_start`, one `input_json_delta` carrying the whole input, one stop. Not token-by-token.
-* **Honoured request fields**: `max_tokens` (capped by the app's Max tokens, 0 = no cap; the app default is 1024, so raise it for coding agents), `stop_sequences`, `stream`, `system`, `messages`, `tools`, `tool_choice` (`any`/`tool` -> "some tool", a specific tool cannot be forced), `thinking`, and unless forced `temperature` / `top_p` / `top_k` (OpenAI: `seed` too).
+* **Honoured request fields**: `max_tokens` (capped by the app's Max tokens, 0 = no cap; the app default is unlimited (0 = no cap beyond the available context)), `stop_sequences`, `stream`, `system`, `messages`, `tools`, `tool_choice` (`any`/`tool` -> "some tool", a specific tool cannot be forced), `thinking`, and unless forced `temperature` / `top_p` / `top_k` (OpenAI: `seed` too).
 * **Force server settings ON**: request sampling, request `thinking` and request `max_tokens` are ignored; the app's own sampler settings, its Thinking switch and its Max tokens apply. `stop_sequences` and `stream` are always honoured.
 * **Ignored, and said so**: the response carries `X-BigMoe-Ignored: ...` listing what was not applied (forced values, `budget_tokens`, images, `min_p`, penalties, `n`>1, `response_format`, ...). Sampling params are also ignored while "guess ahead" (speculation) is on, because that mode only verifies exactly under greedy decoding.
 * **Images** in requests are replaced by a text placeholder (the stateless path has no vision).
@@ -227,3 +227,22 @@ Settings > **Local API server**: the **last** section, collapsed until you tap i
 * Removed the duplicate server settings (context size, thinking, max output tokens); the server follows the app's own. Stored values of the removed keys are simply ignored.
 * Chat: the status shown before the first token (while the prompt is being read) now says "Reading…" instead of "Thinking…". The real "Thinking" block for reasoning is unchanged.
 * `session.cpp`: a turn cancelled after prefill keeps the prompt in the KV only when there is no MTP draft context (otherwise it rolls back as before). Patch 0004 regenerated; `git apply --check` on the pristine tree passed again, `g++ -fsyntax-only` on `session.cpp` and the bridge passed again. Kotlin: still not compiled, tests still never run.
+
+
+## Audit round (full scan)
+Scope: every file I wrote or touched, every engine `.cpp` (28 files, `g++ -Wall -Wextra`), and a pattern scan of all Kotlin (swallowed cancellation, divisions, global scopes) plus a read of the risky numeric code (GGUF parser, ContextPlanner, calculator, unit converter, workspace path check).
+
+Fixed:
+* **Security:** the adb hook (`api_server`, `api_key` extras) lived in the exported `MainActivity`, so any installed app could start the server, choose its key or switch authentication off. It now works in debuggable builds only; `api_no_auth` is removed.
+* **Security / DoS:** the HTTP layer read the whole body (up to 64 MB) before checking the key. Auth is now checked on the request head, before the body (`MiniHttpServer.guard`). `/health` no longer reveals the model name.
+* Stop button in the notification could leave "server enabled" on (the write ran in the service's own scope, cancelled with the service): now persisted in the app scope.
+* Open client connections survived `stop()` (a blocking read cannot be cancelled): all sockets are closed on stop.
+* An in-app generation that asked for the engine in the instant between an API lease being granted and its native call started was missed (the native side clears its cancel flag on start): `generateChat` now checks the lease and the token callback keeps checking it.
+* `max_tokens` <= 0 was passed on to the engine, where it means "fill the whole context": now a 400, like Anthropic.
+* Claude Code's billing-header system block (changes every request, useless to a local model) is dropped instead of kept with a blanked stamp; remaining system blocks are joined with a blank line instead of glued together.
+* **Calculator:** `log2(2^k)` was off in the last digit for 9 of the 62 powers of two (e.g. `log2(2^29) = 29.000000000000004`), and `round(0.49999999999999994)` returned 1. Both fixed and checked with real Java runs of the same algorithms; tests added.
+* Chat: "Thinking..." before the first token is now "Reading..." (earlier change).
+* Context footer "0 / n_ctx" and the KV wipe after an accepted-EOG draft: see `docs/CTX_AND_KV_REUSE.md` (patch 0005).
+
+Looked at and found fine: engine `.cpp` warnings (one unused parameter in `router_hook.cpp`, pre-existing), `Workspace.resolve` (canonical path + root prefix check), `GgufInspector` bounds, `ContextPlanner` budget arithmetic, division sites with possible zero denominators, catch-all handlers around suspend calls (only three in `FileViewModel`, inside `viewModelScope`, harmless).
+Known and left alone: the token estimate is `bytes / 3` (conservative; it overestimates English by roughly a quarter); Qwen-style templates drop old reasoning when a new user turn starts, so part of the KV prefix cannot be reused on those models.

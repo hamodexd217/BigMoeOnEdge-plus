@@ -98,6 +98,15 @@ struct TokenMetrics {
     std::string reasoning;
 };
 
+// RunSummary::kv_reuse
+enum KvReuse : int {
+    KV_REUSE_NONE = 0,    // nothing to reuse: first turn, "new chat", or a one-shot run
+    KV_REUSE_FULL = 1,    // the whole cached sequence was a prefix of the new prompt; only the suffix was prefilled
+    KV_REUSE_PARTIAL = 2, // the prompts diverged; the cached tail was dropped and the common prefix kept
+    KV_REUSE_REFUSED = 3  // the prompts diverged but the memory cannot drop a tail (recurrent / hybrid / SWA):
+                          // everything was prefilled again
+};
+
 struct RunSummary {
     // The loaded model's architecture, as gguf reports it. Carried here so a caller can tell what
     // the run was capable of and not only what it did: a MoE arch that ran without streaming is the
@@ -115,6 +124,18 @@ struct RunSummary {
     // after the reused KV prefix), and n_past is the total context length after the turn.
     int n_prompt = 0;
     int n_past = 0;
+    // KV-reuse diagnostics (additive; n_prompt above stays as it was). All counters, none of them a query of the KV.
+    //   n_ctx_used     context the turn occupies: prompt tokens + generated tokens. Same value as n_past; named for
+    //                  what it is. Never read back from the KV after the end-of-turn trim (see session.cpp).
+    //   n_prompt_total tokens in the rendered prompt (text turns) / positions incl. images.
+    //   n_reused       leading prompt tokens served from the KV, not evaluated again.
+    //   n_prefill_eval tokens actually evaluated by prefill this turn (= n_prompt_total - n_reused).
+    //   kv_reuse       why n_reused is what it is, one of KV_REUSE_*.
+    int n_ctx_used = 0;
+    int n_prompt_total = 0;
+    int n_reused = 0;
+    int n_prefill_eval = 0;
+    int kv_reuse = 0;
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;
 

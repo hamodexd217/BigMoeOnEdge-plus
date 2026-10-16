@@ -110,7 +110,9 @@ data class ModelInfo(
     /** True when a vision projector (mmproj) is loaded and images are accepted. */
     val visionActive: Boolean,
     val mmprojPath: String?,
-    val config: LoadConfig
+    val config: LoadConfig,
+    val draftModelPath: String? = null,
+    val loadWarning: String? = null
 )
 
 sealed interface EngineState {

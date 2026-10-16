@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class ModelManagerTest {
 
@@ -81,6 +83,103 @@ class ModelManagerTest {
         assertTrue(ModelManager.isLaterShard("model-00002-of-00003.gguf"))
         assertTrue(ModelManager.isLaterShard("Model-00003-OF-00003.GGUF"))
         assertFalse(ModelManager.isLaterShard("plain.gguf"))
+    }
+
+    @Test
+    fun splitSetValidationListsMissingShardsAndAcceptsCompleteSet() {
+        val dir = File.createTempFile("splitmodels", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val first = File(dir, "Qwen-00001-of-00003.gguf").apply { writeMinimalGguf(0, 3) }
+        val missing = ModelManager(dir).splitSetIssue(first)
+        assertTrue(missing.orEmpty().contains("00002-of-00003.gguf"))
+        assertTrue(missing.orEmpty().contains("00003-of-00003.gguf"))
+        File(dir, "Qwen-00002-of-00003.gguf").writeMinimalGguf(1, 3)
+        File(dir, "Qwen-00003-of-00003.gguf").writeMinimalGguf(2, 3)
+        assertEquals(null, ModelManager(dir).splitSetIssue(first))
+    }
+
+    @Test
+    fun renameSplitSetRenamesEveryShardAndKeepsNumbering() = kotlinx.coroutines.runBlocking {
+        val dir = File.createTempFile("splitrename", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val first = File(dir, "Qwen-00001-of-00002.gguf").apply { writeMinimalGguf(0, 2) }
+        File(dir, "Qwen-00002-of-00002.gguf").writeMinimalGguf(1, 2)
+        val renamed = ModelManager(dir).rename(first.path, "Flash-Next.gguf")
+        assertEquals("Flash-Next-00001-of-00002.gguf", renamed.name)
+        assertTrue(File(dir, "Flash-Next-00002-of-00002.gguf").isFile)
+        assertFalse(first.exists())
+        assertFalse(File(dir, "Qwen-00002-of-00002.gguf").exists())
+    }
+
+    @Test
+    fun deleteFirstShardDeletesAllExistingShards() = kotlinx.coroutines.runBlocking {
+        val dir = File.createTempFile("splitdelete", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val first = File(dir, "Qwen-00001-of-00002.gguf").apply { writeText("one") }
+        val second = File(dir, "Qwen-00002-of-00002.gguf").apply { writeText("two") }
+        assertTrue(ModelManager(dir).delete(first.path))
+        assertFalse(first.exists())
+        assertFalse(second.exists())
+    }
+
+    private fun File.writeMinimalGguf(splitNo: Long? = null, splitCount: Long? = null) {
+        val entries = 1 + (if (splitNo != null) 1 else 0) + (if (splitCount != null) 1 else 0)
+        val b = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN)
+        b.put("GGUF".toByteArray())
+        b.putInt(3); b.putLong(0); b.putLong(entries.toLong())
+        fun str(v: String) { val bytes = v.toByteArray(Charsets.UTF_8); b.putLong(bytes.size.toLong()); b.put(bytes) }
+        str("general.architecture"); b.putInt(8); str("qwen4exp")
+        if (splitNo != null) { str("split.no"); b.putInt(10); b.putLong(splitNo) }
+        if (splitCount != null) { str("split.count"); b.putInt(10); b.putLong(splitCount) }
+        outputStream().use { it.write(b.array(), 0, b.position()); it.write(ByteArray(8)) }
+    }
+
+    @Test
+    fun existingPathWithSpacesRegistersWithoutCopying() = kotlinx.coroutines.runBlocking {
+        val dir = File.createTempFile("models with spaces", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val source = File(dir, "Qwen 3.5 model Q4.gguf").apply { writeBytes("GGUF".toByteArray() + ByteArray(32)) }
+        val appDir = File.createTempFile("app models", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val manager = ModelManager(appDir)
+        val registered = manager.registerExistingPath(source.absolutePath)
+        assertEquals(source.canonicalPath, registered.path)
+        assertFalse(registered.inAppStorage)
+        assertTrue(source.isFile)
+    }
+
+    @Test
+    fun relativeExistingPathGetsActionableError() = kotlinx.coroutines.runBlocking {
+        val dir = File.createTempFile("appmodels", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val manager = ModelManager(dir)
+        try {
+            manager.registerExistingPath("model.gguf")
+            throw AssertionError("relative path should be rejected")
+        } catch (e: java.io.IOException) {
+            assertTrue(e.message.orEmpty().contains("absolute filesystem path"))
+        }
+    }
+
+    @Test
+    fun existingPathsRegisterWithoutTakingOwnershipAndCanBeUnregistered() = kotlinx.coroutines.runBlocking {
+        val dir = File.createTempFile("models", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val sourceDir = File.createTempFile("source", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val source = File(sourceDir, "Qwen.gguf").apply { writeBytes("GGUF".toByteArray() + ByteArray(32)) }
+        val manager = ModelManager(dir)
+        val registered = manager.registerExistingPath(source.path)
+        assertFalse(registered.inAppStorage)
+        assertTrue(manager.listModels().any { it.path == source.canonicalPath })
+        assertTrue(manager.delete(source.path))
+        assertTrue("unregister must never delete user-owned source files", source.exists())
+    }
+
+    @Test
+    fun sidecarIsNotListedAsTargetAndCanBeAttachedByModelPath() = kotlinx.coroutines.runBlocking {
+        val dir = File.createTempFile("models", "").apply { delete(); mkdirs(); deleteOnExit() }
+        val model = File(dir, "Qwen.gguf").apply { writeBytes("GGUF".toByteArray() + ByteArray(32)) }
+        val draft = File(dir, "mtp-Qwen-shared-Q8_0.gguf").apply { writeBytes("GGUF".toByteArray() + ByteArray(32)) }
+        val manager = ModelManager(dir)
+        assertTrue(manager.listModels().none { it.path == draft.canonicalPath })
+        assertEquals(draft.name, manager.listDrafts().single().name)
+        manager.attachDraft(model.path, draft.path)
+        assertEquals(draft.canonicalPath, manager.draftForModel(model.path))
+        manager.attachDraft(model.path, null)
+        assertEquals(null, manager.draftForModel(model.path))
     }
 
     @Test

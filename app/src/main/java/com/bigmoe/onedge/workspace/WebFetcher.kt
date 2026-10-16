@@ -16,19 +16,29 @@ data class FetchResult(val finalUrl: String, val contentType: String, val body: 
  * [allowInsecureLocal] exists for tests that talk to a local server.
  */
 class WebFetcher(
-    private val timeoutMs: Int = 10_000,
-    private val maxBytes: Int = 2_000_000,
-    private val allowInsecureLocal: Boolean = false
+    private val timeoutMs: Int = 8_000,
+    private val maxBytes: Int = 1_000_000,
+    private val allowInsecureLocal: Boolean = false,
+    /**
+     * Wall-clock limit for the whole fetch: every redirect hop and the download together. The per-step timeouts alone
+     * did not bound it (6 hops x 2 timeouts of 10 s, or a server that drips bytes forever), and a blocked socket read
+     * cannot be cancelled from outside, so the limit has to be enforced here. What was downloaded by then is used.
+     */
+    private val totalBudgetMs: Int = 15_000
 ) {
     fun fetch(url: String): FetchResult {
         var current = url.trim()
+        val deadline = System.nanoTime() + totalBudgetMs * 1_000_000L
+        fun leftMs(): Int = ((deadline - System.nanoTime()) / 1_000_000L).toInt()
         repeat(6) {
             val u = validate(current)
+            val left = leftMs()
+            if (left < 800) throw WebFetchException("Timed out opening the page")
             val c = (u.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 instanceFollowRedirects = false
-                connectTimeout = timeoutMs
-                readTimeout = timeoutMs
+                connectTimeout = minOf(timeoutMs, left)
+                readTimeout = minOf(timeoutMs, left)
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Android) BigMoeOnEdgePlus/1.0")
                 setRequestProperty("Accept", "text/html,text/plain,application/xhtml+xml,application/json;q=0.8,*/*;q=0.5")
                 setRequestProperty("Accept-Language", "en,ar;q=0.8")
@@ -53,6 +63,7 @@ class WebFetcher(
                         if (n < 0) break
                         bytes.write(buf, 0, n)
                         if (bytes.size() > maxBytes) break // keep what we have; extraction works on the start of the page
+                        if (leftMs() <= 0) break           // out of time: the start of the page is still useful
                     }
                 }
                 val charsetName = Regex("charset=([\\w-]+)").find(type)?.groupValues?.get(1)

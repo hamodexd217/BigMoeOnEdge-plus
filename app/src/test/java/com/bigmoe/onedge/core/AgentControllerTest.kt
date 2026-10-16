@@ -283,7 +283,7 @@ class AgentControllerTest {
 
     @Test
     fun enabledToolNamesFollowFileCodeAndWebModes() {
-        val registered = setOf("read_file", "run_javascript", "web_search", "read_webpage", "extract_webpage", "calculate", "get_datetime")
+        val registered = setOf("read_file", "run_javascript", "web_search", "image_search", "read_webpage", "extract_webpage", "calculate", "get_datetime")
         val base = EngineSettings(toolsFilesEnabled = false, toolsCodeEnabled = false, toolsUtilitiesEnabled = false, isWebSearchEnabled = false)
         assertTrue(AgentController.enabledToolNames(base, registered).isEmpty())
         assertEquals(setOf("calculate", "get_datetime"), AgentController.enabledToolNames(base.copy(toolsUtilitiesEnabled = true), registered))
@@ -291,8 +291,10 @@ class AgentControllerTest {
         assertTrue(AgentController.enabledToolNames(base.copy(toolsCodeEnabled = true), registered).contains("run_javascript"))
         val auto = base.copy(isWebSearchEnabled = true, webSearchMode = WebSearchMode.AUTO)
         assertTrue(AgentController.enabledToolNames(auto, registered).contains("web_search"))
+        assertTrue(AgentController.enabledToolNames(auto, registered).contains("image_search"))
         val always = auto.copy(webSearchMode = WebSearchMode.ALWAYS)
         assertFalse(AgentController.enabledToolNames(always, registered).contains("web_search"))
+        assertTrue(AgentController.enabledToolNames(always, registered).contains("image_search"))
         assertTrue(AgentController.enabledToolNames(always, registered).contains("read_webpage"))
     }
 

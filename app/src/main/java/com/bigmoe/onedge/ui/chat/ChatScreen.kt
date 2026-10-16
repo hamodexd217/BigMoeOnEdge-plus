@@ -21,12 +21,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
@@ -34,6 +34,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -48,6 +52,9 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -62,6 +69,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.core.EngineState
+import com.bigmoe.onedge.ui.history.HistoryViewModel
+import com.bigmoe.onedge.ui.home.ChatHistoryPanel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.launch
 import com.bigmoe.onedge.data.local.entity.MessageRole
 import com.bigmoe.onedge.workspace.FileKinds
 
@@ -69,7 +82,9 @@ import com.bigmoe.onedge.workspace.FileKinds
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
-    onNavigateBack: () -> Unit,
+    historyViewModel: HistoryViewModel,
+    onNewChat: () -> Unit,
+    onOpenChat: (String) -> Unit,
     onNavigateHome: () -> Unit,
     onNavigateToModels: () -> Unit,
     onOpenFile: (String) -> Unit,
@@ -77,6 +92,7 @@ fun ChatScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val latestUiState = rememberUpdatedState(uiState)
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     // Copies [text] verbatim and says so.
@@ -88,6 +104,8 @@ fun ChatScreen(
         onDispose { viewModel.flushDraft() }
     }
     val listState = rememberLazyListState()
+    val chatsDrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
     var showFilesSheet by remember { mutableStateOf(false) }
     var editingMessage by remember { mutableStateOf<ChatMessageUiModel?>(null) }
 
@@ -115,13 +133,51 @@ fun ChatScreen(
         if (atBottom) follow = true
     }
 
-    LaunchedEffect(uiState.messages.size, uiState.liveText.length, uiState.liveReasoning.length, showLiveBubble, follow) {
+    // Coalesce bursty token/reasoning updates into a bounded-rate autoscroll. Scrolling to an
+    // enormous offset for every token made the UI do unnecessary layout work while generation ran.
+    LaunchedEffect(listState, follow, itemCount) {
         if (follow && itemCount > 0) {
-            listState.scrollToItem(itemCount - 1)
-            listState.scrollBy(1_000_000f) // a tall last item: show its END, not its top
+            snapshotFlow {
+                    val latest = latestUiState.value
+                    Triple(latest.messages.size, latest.liveText.length, latest.liveReasoning.length)
+                }
+                .conflate()
+                .collect {
+                    if (follow && itemCount > 0) {
+                        listState.scrollToItem(itemCount - 1)
+                        listState.scrollBy(1_000_000f) // a tall last item: show its END, not its top
+                    }
+                    delay(32) // at most about 30 follow-scroll passes per second
+                }
         }
     }
 
+    ModalNavigationDrawer(
+        modifier = modifier,
+        drawerState = chatsDrawerState,
+        gesturesEnabled = !wideMode,
+        drawerContent = {
+            ModalDrawerSheet {
+                ChatHistoryPanel(
+                    viewModel = historyViewModel,
+                    selectedSessionId = uiState.currentSession?.id,
+                    onNewChat = {
+                        drawerScope.launch {
+                            chatsDrawerState.close()
+                            onNewChat()
+                        }
+                    },
+                    onOpenChat = { id ->
+                        drawerScope.launch {
+                            chatsDrawerState.close()
+                            onOpenChat(id)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+    ) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -142,8 +198,8 @@ fun ChatScreen(
                 },
                 navigationIcon = {
                     if (!wideMode) {
-                        IconButton(onClick = onNavigateBack) {
-                            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to chats")
+                        IconButton(onClick = { drawerScope.launch { chatsDrawerState.open() } }) {
+                            Icon(imageVector = Icons.Default.Menu, contentDescription = "Open chats")
                         }
                     }
                 },
@@ -162,7 +218,7 @@ fun ChatScreen(
                 }
             )
         },
-        modifier = modifier
+        modifier = Modifier.fillMaxSize()
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -179,7 +235,11 @@ fun ChatScreen(
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(stopFollowing)) {
                         items(items = uiState.messages, key = { it.id }) { message ->
                             if (message.role == MessageRole.TOOL) {
-                                ToolResultCard(body = message.text)
+                                if (ImageSearchResultParser.parse(message.text) != null) {
+                                    ImageSearchResultsCard(body = message.text)
+                                } else {
+                                    ToolResultCard(body = message.text)
+                                }
                             } else {
                                 val messageAttachments = uiState.attachments.filter { it.messageId == message.id }
                                 ChatMessageBubble(
@@ -302,6 +362,7 @@ fun ChatScreen(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
             )
         }
+    }
     }
 
     LaunchedEffect(uiState.openFilePath) {

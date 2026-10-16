@@ -31,6 +31,19 @@ class HttpRequest(
     fun header(name: String): String? = headers[name.lowercase()]
 }
 
+/** The request line and headers, available before the body is read (so a request can be refused without reading it). */
+class HttpHead(
+    val method: String,
+    val target: String,
+    val headers: Map<String, String>
+) {
+    val path: String get() = target.substringBefore('?')
+    fun header(name: String): String? = headers[name.lowercase()]
+}
+
+/** A reason to refuse a request from its head alone. The connection is closed after the reply. */
+class Rejection(val status: Int, val body: String)
+
 class HttpParseException(val status: Int, message: String) : Exception(message)
 
 /** Reads one request. Returns null on a clean EOF before the first byte (an idle keep-alive connection closing). */
@@ -40,6 +53,13 @@ object HttpParser {
     const val MAX_BODY = 64 * 1024 * 1024
 
     fun readRequest(input: InputStream, out: OutputStream): HttpRequest? {
+        val head = readHead(input) ?: return null
+        val body = readBody(head, input, out)
+        return HttpRequest(head.method, head.target, head.headers, body)
+    }
+
+    /** Request line + headers. Null on a clean EOF before the first byte. */
+    fun readHead(input: InputStream): HttpHead? {
         val requestLine = readLine(input) ?: return null
         if (requestLine.isBlank()) return null
         val parts = requestLine.split(' ')
@@ -60,13 +80,18 @@ object HttpParser {
             val value = line.substring(colon + 1).trim()
             headers[name] = if (headers.containsKey(name)) headers[name] + ", " + value else value
         }
+        return HttpHead(method, target, headers)
+    }
 
+    /** The body announced by [head]. Answers `Expect: 100-continue` first, so call it only for a request that is accepted. */
+    fun readBody(head: HttpHead, input: InputStream, out: OutputStream): ByteArray {
+        val headers = head.headers
         if (headers["expect"]?.equals("100-continue", ignoreCase = true) == true) {
             out.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.US_ASCII))
             out.flush()
         }
 
-        val body: ByteArray = when {
+        return when {
             headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true -> readChunked(input)
             headers.containsKey("content-length") -> {
                 val n = headers["content-length"]!!.toLongOrNull() ?: throw HttpParseException(400, "bad content-length")
@@ -76,7 +101,6 @@ object HttpParser {
             }
             else -> ByteArray(0)
         }
-        return HttpRequest(method, target, headers, body)
     }
 
     private fun readFully(input: InputStream, n: Int): ByteArray {
@@ -224,12 +248,15 @@ class MiniHttpServer(
     private val port: Int,
     private val maxConnections: Int,
     private val log: (String) -> Unit,
+    /** Looks at the head only; a non-null result refuses the request before its body is read or buffered. */
+    private val guard: suspend (HttpHead) -> Rejection? = { null },
     private val handler: suspend (HttpRequest, HttpResponder) -> Unit
 ) {
     private var serverSocket: ServerSocket? = null
     private var scope: CoroutineScope? = null
     private var acceptJob: Job? = null
     private val active = AtomicInteger(0)
+    private val sockets: MutableSet<Socket> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
     /** The port actually bound (differs from the requested one when that was 0). */
     val boundPort: Int get() = serverSocket?.localPort ?: -1
@@ -257,10 +284,12 @@ class MiniHttpServer(
                     }
                     continue
                 }
+                sockets.add(sock)
                 launch {
                     try {
                         serve(sock)
                     } finally {
+                        sockets.remove(sock)
                         active.decrementAndGet()
                         runCatching { sock.close() }
                     }
@@ -271,6 +300,9 @@ class MiniHttpServer(
 
     fun stop() {
         runCatching { serverSocket?.close() }
+        // Blocking reads cannot be cancelled: close every open connection so none outlives the server.
+        for (s in sockets.toList()) runCatching { s.close() }
+        sockets.clear()
         scope?.cancel()
         serverSocket = null
         scope = null
@@ -283,7 +315,14 @@ class MiniHttpServer(
         val out = sock.getOutputStream()
         while (true) {
             val req: HttpRequest = try {
-                HttpParser.readRequest(input, out) ?: return
+                val head = HttpParser.readHead(input) ?: return
+                val rejection = guard(head)
+                if (rejection != null) {
+                    runCatching { HttpResponder(out, false).sendJson(rejection.status, rejection.body) }
+                    return
+                }
+                val body = HttpParser.readBody(head, input, out)
+                HttpRequest(head.method, head.target, head.headers, body)
             } catch (e: SocketTimeoutException) {
                 return
             } catch (e: HttpParseException) {

@@ -68,7 +68,12 @@ class EngineController(
      * Loads [modelPath]; blocks (on the IO dispatcher) for as long as the engine takes. Any previously
      * loaded model is released first. Returns null on success or the error message.
      */
-    suspend fun loadModel(modelPath: String, requested: LoadConfig, mmprojPath: String? = null): String? = withContext(ioDispatcher) {
+    suspend fun loadModel(
+        modelPath: String,
+        requested: LoadConfig,
+        mmprojPath: String? = null,
+        draftPath: String? = null
+    ): String? = withContext(ioDispatcher) {
         lifecycleMutex.withLock {
             val file = File(modelPath)
             if (!file.isFile || !file.canRead()) {
@@ -76,17 +81,44 @@ class EngineController(
                 _state.value = EngineState.Failed(modelPath, msg)
                 return@withLock msg
             }
-            // Expert streaming only makes sense for a Mixture-of-Experts model, so the mode follows the model:
-            // MoE -> streaming, regular (dense) model -> the ordinary mmap load. There is no user switch for it.
-            val config = applyAutoMode(requested, GgufInspector.inspect(file).kind)
+            val kind = GgufInspector.inspect(file).kind
+            val wantsSeparateDraft = requested.spec == SpecSource.MTP && !draftPath.isNullOrBlank()
+            // A separate MTP sidecar must not disable streaming for the target MoE model. Keep the
+            // normal auto policy: MoE target experts stream from storage; the independent sidecar
+            // uses mmap because its tensors belong to a different GGUF/offset map.
+            val config = applyAutoMode(requested, kind)
             engineStateKey = null
             _state.value = EngineState.Loading(modelPath, System.currentTimeMillis())
-            val error = try {
-                backend.load(modelPath, config, if (config.metricsCsv) csvPathProvider() else null, mmprojPath)
+            val csv = if (config.metricsCsv) csvPathProvider() else null
+            var activeConfig = config
+            var activeDraftPath: String? = if (wantsSeparateDraft) draftPath else null
+            var warning: String? = null
+            var error = try {
+                backend.load(modelPath, activeConfig, csv, mmprojPath, activeDraftPath)
             } catch (e: UnsatisfiedLinkError) {
                 "Native engine library failed to load: ${e.message}"
             } catch (e: Throwable) {
                 "Unexpected error while loading: ${e.message ?: e.javaClass.simpleName}"
+            }
+
+            // A broken/mismatched sidecar must not brick the target model. Retry a plain decode and
+            // surface the failure rather than claiming MTP is active.
+            if (error != null && wantsSeparateDraft) {
+                val draftError = error
+                val plainConfig = config.copy(spec = SpecSource.OFF)
+                val plainError = try {
+                    backend.load(modelPath, plainConfig, csv, mmprojPath, null)
+                } catch (e: Throwable) {
+                    "Unexpected error while retrying without the MTP draft: ${e.message ?: e.javaClass.simpleName}"
+                }
+                if (plainError == null) {
+                    activeConfig = plainConfig
+                    activeDraftPath = null
+                    warning = "Separate MTP draft failed to load ($draftError). Loaded with normal decoding; speculation is OFF."
+                    error = null
+                } else {
+                    error = "Separate MTP draft failed: $draftError\nFallback without speculation also failed: $plainError"
+                }
             }
             if (error != null) {
                 _state.value = EngineState.Failed(modelPath, error)
@@ -98,14 +130,16 @@ class EngineController(
                     path = modelPath,
                     name = file.name,
                     arch = info["arch"].orEmpty(),
-                    nCtx = info["n_ctx"]?.toIntOrNull() ?: config.nCtx,
+                    nCtx = info["n_ctx"]?.toIntOrNull() ?: activeConfig.nCtx,
                     nExpertUsed = info["n_expert_used"]?.toIntOrNull() ?: 0,
                     loadSeconds = info["load_seconds"]?.toDoubleOrNull() ?: 0.0,
                     thinkControl = info["think_control"] ?: "template",
                     overlapActive = info["overlap"] == "1",
                     visionActive = info["vision"] == "1",
                     mmprojPath = mmprojPath,
-                    config = config
+                    config = activeConfig,
+                    draftModelPath = activeDraftPath,
+                    loadWarning = warning
                 )
             )
             null
@@ -297,6 +331,12 @@ class EngineController(
             emit(chatFailed("No model is loaded. Load a model first.", lease.preempted))
             return@flow
         }
+        // The in-app chat may have asked for the engine between the lease being granted and this call; a stop() sent
+        // then would be lost (the native side clears its cancel flag when a generation starts), so check here.
+        if (lease.preempted) {
+            emit(chatFailed("The in-app chat took the model.", true))
+            return@flow
+        }
         engineStateKey = null
         try {
             coroutineScope {
@@ -308,7 +348,8 @@ class EngineController(
                             override fun onToken(answerDelta: ByteArray, reasoningDelta: ByteArray): Boolean {
                                 if (reasoningDelta.isNotEmpty()) events.trySend(ChatEvent.Reasoning(decodeUtf8(reasoningDelta)))
                                 if (answerDelta.isNotEmpty()) events.trySend(ChatEvent.Answer(decodeUtf8(answerDelta)))
-                                return !stopped.get()
+                                // Also covers a preemption that arrived after the check above but before the native start.
+                                return !stopped.get() && !lease.preempted
                             }
 
                             override fun onFinished(

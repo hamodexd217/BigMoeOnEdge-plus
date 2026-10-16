@@ -6,7 +6,7 @@ package com.bigmoe.onedge.core
  */
 interface EngineBackend {
     /** Blocking. Returns null on success, otherwise the error message. */
-    fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?): String?
+    fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?, draftPath: String? = null): String?
 
     /** Build-time features of the native library. */
     fun capabilities(): EngineCaps
@@ -53,13 +53,14 @@ class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBacken
 
     override fun capabilities(): EngineCaps = EngineCaps.fromBits(bridge.nativeCapabilities())
 
-    override fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?): String? {
+    override fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?, draftPath: String?): String? {
         val err = bridge.nativeLoadModel(
             modelPath = encodeUtf8(modelPath),
             ints = config.toIntArray(),
             floats = config.toFloatArray(),
             csvPath = encodeUtf8(csvPath.orEmpty()),
-            mmprojPath = encodeUtf8(mmprojPath.orEmpty())
+            mmprojPath = encodeUtf8(mmprojPath.orEmpty()),
+            draftPath = encodeUtf8(draftPath.orEmpty())
         )
         return if (err.isEmpty()) null else decodeUtf8(err)
     }

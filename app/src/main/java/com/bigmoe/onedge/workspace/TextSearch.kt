@@ -10,6 +10,8 @@ object TextSearch {
     data class Result(val matches: List<Match>, val filesSearched: Int, val filesWithMatches: Int, val truncated: Boolean)
 
     private const val MAX_FILE_BYTES = 1_000_000
+    private const val SEARCH_BUDGET_BYTES = 48_000_000L
+    private const val SEARCH_BUDGET_NANOS = 8_000_000_000L
 
     /** Languages that are code (used by search_code to skip prose, data and logs). */
     fun isCodeFile(name: String): Boolean {
@@ -41,11 +43,16 @@ object TextSearch {
         var searched = 0
         var withMatches = 0
         var truncated = false
+        // Up to 2000 files of 1 MB each could be read for one query; bound the bytes and the time instead.
+        val deadline = System.nanoTime() + SEARCH_BUDGET_NANOS
+        var bytesLeft = SEARCH_BUDGET_BYTES
         for (f in files) {
+            if (bytesLeft <= 0 || System.nanoTime() > deadline) { truncated = true; break }
             val rel = workspace.relative(f)
             if (codeOnly && !isCodeFile(f.name)) continue
             if (extensions.isNotEmpty() && FileKinds.extension(f.name) !in extensions) continue
             if (f.length() > MAX_FILE_BYTES) continue
+            bytesLeft -= f.length()
             val bytes = try { f.readBytes() } catch (_: Exception) { continue }
             if (FileKinds.looksBinary(bytes)) continue
             searched++

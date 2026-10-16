@@ -83,6 +83,7 @@ object OpenAiApi {
         }
 
         val maxTokens = body.optIntOrNull("max_completion_tokens") ?: body.optIntOrNull("max_tokens")
+        if (maxTokens != null && maxTokens < 1) throw ApiRequestException("max_tokens must be at least 1")
         val includeUsage = body.optJSONObject("stream_options")?.optBoolean("include_usage", false) ?: false
 
         return ParsedChat(

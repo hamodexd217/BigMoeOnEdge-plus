@@ -39,8 +39,8 @@ android {
         // dependable from Android 10 (upstream uses 29); the NDK toolchain also links against this platform level.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

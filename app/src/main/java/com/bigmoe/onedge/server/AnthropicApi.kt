@@ -37,15 +37,16 @@ object AnthropicApi {
 
         // System prompt: a string, or an array of text blocks (concatenated, like llama-server does).
         val sys = body.opt("system")
-        val sysText = StringBuilder()
+        val sysParts = ArrayList<String>()
         when (sys) {
-            is String -> sysText.append(normalizeBillingHeader(sys))
+            is String -> sysParts.add(cleanSystemText(sys))
             is JSONArray -> for (i in 0 until sys.length()) {
                 val b = sys.optJSONObject(i) ?: continue
-                if (b.optString("type") == "text") sysText.append(normalizeBillingHeader(b.optString("text")))
+                if (b.optString("type") == "text") sysParts.add(cleanSystemText(b.optString("text")))
             }
         }
-        if (sysText.isNotEmpty()) oai.put(JSONObject().put("role", "system").put("content", sysText.toString()))
+        val sysText = sysParts.filter { it.isNotEmpty() }.joinToString("\n\n")
+        if (sysText.isNotEmpty()) oai.put(JSONObject().put("role", "system").put("content", sysText))
 
         val msgs = body.getJSONArray("messages")
         var droppedImages = false
@@ -176,12 +177,16 @@ object AnthropicApi {
             }
         }
 
+        val maxTokens = body.optIntOrNull("max_tokens")
+        // 0 or less would mean "as much as the context allows" to the engine; Anthropic rejects it too.
+        if (maxTokens != null && maxTokens < 1) throw ApiRequestException("max_tokens must be at least 1")
+
         return ParsedChat(
             messagesJson = oai.toString(),
             toolsJson = if (oaiTools.length() > 0) oaiTools.toString() else "",
             toolChoice = toolChoice,
             stop = stops,
-            maxTokens = body.optIntOrNull("max_tokens"),
+            maxTokens = maxTokens,
             temperature = body.optDoubleOrNull("temperature"),
             topP = body.optDoubleOrNull("top_p"),
             topK = body.optIntOrNull("top_k"),
@@ -193,11 +198,20 @@ object AnthropicApi {
         )
     }
 
+    private const val BILLING_PREFIX = "x-anthropic-billing-header:"
+
     /**
-     * Claude Code starts its system prompt with "x-anthropic-billing-header: ...; cch=a5145;" and the 5-character stamp
-     * changes on every request. Left alone it sits at the very start of the prompt and defeats KV prefix reuse for
-     * everything after it, so the stamp is blanked ("fffff"), as llama-server does (llama.cpp PR 21793).
+     * Claude Code sends a system block "x-anthropic-billing-header: ...; cch=a5145;" whose 5-character stamp changes on
+     * every request. It is metadata for Anthropic's billing and means nothing to a local model, and left in it sits at
+     * the very start of the prompt and defeats KV prefix reuse for everything after it. A block that is only that line
+     * is dropped; the same line at the start of a longer block has its stamp blanked instead.
      */
+    fun cleanSystemText(text: String): String {
+        if (!text.startsWith(BILLING_PREFIX)) return text
+        return if (text.indexOf('\n') < 0) "" else normalizeBillingHeader(text)
+    }
+
+    /** Blanks the per-request stamp ("fffff"), as llama-server does (llama.cpp PR 21793). */
     fun normalizeBillingHeader(text: String): String {
         val prefix = "x-anthropic-billing-header:"
         if (!text.startsWith(prefix)) return text

@@ -6,6 +6,7 @@ import com.bigmoe.onedge.core.DenseWeights
 import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.core.EngineController
 import com.bigmoe.onedge.core.EngineState
+import com.bigmoe.onedge.core.ModelManager
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
 import com.bigmoe.onedge.data.local.datastore.EngineSettingsDataStore
 import com.bigmoe.onedge.data.local.datastore.WebSearchMode
@@ -21,6 +22,7 @@ import kotlinx.coroutines.launch
 class SettingsViewModel(
     private val dataStore: EngineSettingsDataStore,
     private val engineController: EngineController,
+    private val modelManager: ModelManager,
     private val apiServer: com.bigmoe.onedge.server.ApiServerController
 ) : ViewModel() {
 
@@ -46,6 +48,8 @@ class SettingsViewModel(
     fun updateToolsFilesEnabled(v: Boolean) = launch { dataStore.updateToolsFilesEnabled(v) }
     fun updateToolsCodeEnabled(v: Boolean) = launch { dataStore.updateToolsCodeEnabled(v) }
     fun updateToolsUtilitiesEnabled(v: Boolean) = launch { dataStore.updateToolsUtilitiesEnabled(v) }
+    fun updateToolResultChars(v: Int) = launch { dataStore.updateToolResultChars(v) }
+    fun updateThinkAfterTools(v: Boolean) = launch { dataStore.updateThinkAfterTools(v) }
     fun updateImageMaxDim(v: Int) = launch { dataStore.updateImageMaxDim(v) }
     fun updateVideoFrames(v: Int) = launch { dataStore.updateVideoFrames(v) }
 
@@ -74,6 +78,7 @@ class SettingsViewModel(
     fun updateSpec(v: SpecSource) = launch { dataStore.updateSpec(v) }
     fun updateDraftMax(v: Int) = launch { dataStore.updateDraftMax(v) }
     fun updateMtpPMinPct(v: Int) = launch { dataStore.updateMtpPMinPct(v) }
+    fun updateSeparateMtpDraftEnabled(v: Boolean) = launch { dataStore.updateSeparateMtpDraftEnabled(v) }
     fun updateMetricsCsv(v: Boolean) = launch { dataStore.updateMetricsCsv(v) }
     fun updateNpuPrefill(v: Boolean) = launch { dataStore.updateNpuPrefill(v) }
     fun updateNpuLoaders(v: Int) = launch { dataStore.updateNpuLoaders(v) }
@@ -108,6 +113,8 @@ class SettingsViewModel(
     fun reloadModel() = launch {
         val ready = engineController.state.value as? EngineState.Ready ?: return@launch
         val s = dataStore.settingsFlow.first()
-        engineController.loadModel(ready.info.path, s.toLoadConfig(), ready.info.mmprojPath)
+        val draftPath = if (s.spec == SpecSource.MTP && s.separateMtpDraftEnabled)
+            modelManager.draftForModel(ready.info.path) else null
+        engineController.loadModel(ready.info.path, s.toLoadConfig(), ready.info.mmprojPath, draftPath)
     }
 }

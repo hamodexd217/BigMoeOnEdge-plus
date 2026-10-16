@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore(name = "engine_settings")
 
-const val DEFAULT_SYSTEM_PROMPT = "You are a helpful on-device AI assistant."
+const val DEFAULT_SYSTEM_PROMPT = ""
 
 /** When web search is switched on: the model decides (tool call) or the app searches for every message. */
 enum class WebSearchMode { AUTO, ALWAYS }
@@ -61,21 +61,27 @@ data class EngineSettings(
     val spec: SpecSource = SpecSource.OFF,
     val draftMax: Int = 3,
     val mtpPMinPct: Int = 0,
+    /** Explicitly opt into a separate MTP draft GGUF; target-model expert streaming stays enabled for MoE. */
+    val separateMtpDraftEnabled: Boolean = false,
     val metricsCsv: Boolean = true,
     /** Enable optional Hexagon/NPU prefill; off by default so CPU-only APKs remain normal. */
     val npuPrefill: Boolean = false,
     val npuLoaders: Int = 8,
     // ---- per-request ----
     /** <= 0 = as long as the context allows. */
-    val maxTokens: Int = 1024,
+    val maxTokens: Int = -1,
     val thinkingEnabled: Boolean = false,
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     val isWebSearchEnabled: Boolean = false,
     val webSearchMode: WebSearchMode = WebSearchMode.ALWAYS,
-    val toolsFilesEnabled: Boolean = true,
+    val toolsFilesEnabled: Boolean = false,
     val toolsCodeEnabled: Boolean = false,
     /** Offline helpers: date/time, calculator, unit converter, random numbers, device status. */
-    val toolsUtilitiesEnabled: Boolean = true,
+    val toolsUtilitiesEnabled: Boolean = false,
+    /** Longest tool result handed back to the model, in characters. The model reads every one of them before it can go on. */
+    val toolResultChars: Int = DEFAULT_TOOL_RESULT_CHARS,
+    /** Reason again after a tool result. Off by default: reasoning tokens are generated at the model's (slow) decode speed. */
+    val thinkAfterTools: Boolean = false,
     /** Longest side of pictures sent to the model, in pixels (more = sharper, but many more tokens). */
     val imageMaxDim: Int = 512,
     /** Frames sampled evenly from an attached video. */
@@ -147,6 +153,7 @@ data class EngineSettings(
     )
 }
 
+const val DEFAULT_TOOL_RESULT_CHARS = 3500
 const val DEFAULT_SERVER_PORT = 8080
 const val DEFAULT_SERVER_QUEUE_SEC = 60
 
@@ -182,6 +189,7 @@ class EngineSettingsDataStore(private val context: Context) {
         val SPEC = stringPreferencesKey("spec")
         val DRAFT_MAX = intPreferencesKey("draft_max")
         val MTP_P_MIN_PCT = intPreferencesKey("mtp_p_min_pct")
+        val SEPARATE_MTP_DRAFT_ENABLED = booleanPreferencesKey("separate_mtp_draft_enabled")
         val METRICS_CSV = booleanPreferencesKey("metrics_csv")
         val NPU_PREFILL = booleanPreferencesKey("npu_prefill")
         val NPU_LOADERS = intPreferencesKey("npu_loaders")
@@ -193,6 +201,8 @@ class EngineSettingsDataStore(private val context: Context) {
         val TOOLS_FILES = booleanPreferencesKey("tools_files")
         val TOOLS_CODE = booleanPreferencesKey("tools_code")
         val TOOLS_UTILITIES = booleanPreferencesKey("tools_utilities")
+        val TOOL_RESULT_CHARS = intPreferencesKey("tool_result_chars")
+        val THINK_AFTER_TOOLS = booleanPreferencesKey("think_after_tools")
         val IMAGE_MAX_DIM = intPreferencesKey("image_max_dim")
         val VIDEO_FRAMES = intPreferencesKey("video_frames")
         val LAST_MMPROJ = stringPreferencesKey("last_mmproj_path")
@@ -238,6 +248,7 @@ class EngineSettingsDataStore(private val context: Context) {
             spec = enumOrDefault(p[Keys.SPEC], d.spec),
             draftMax = p[Keys.DRAFT_MAX] ?: d.draftMax,
             mtpPMinPct = p[Keys.MTP_P_MIN_PCT] ?: d.mtpPMinPct,
+            separateMtpDraftEnabled = p[Keys.SEPARATE_MTP_DRAFT_ENABLED] ?: d.separateMtpDraftEnabled,
             metricsCsv = p[Keys.METRICS_CSV] ?: d.metricsCsv,
             npuPrefill = p[Keys.NPU_PREFILL] ?: d.npuPrefill,
             npuLoaders = p[Keys.NPU_LOADERS] ?: d.npuLoaders,
@@ -249,6 +260,8 @@ class EngineSettingsDataStore(private val context: Context) {
             toolsFilesEnabled = p[Keys.TOOLS_FILES] ?: d.toolsFilesEnabled,
             toolsCodeEnabled = p[Keys.TOOLS_CODE] ?: d.toolsCodeEnabled,
             toolsUtilitiesEnabled = p[Keys.TOOLS_UTILITIES] ?: d.toolsUtilitiesEnabled,
+            toolResultChars = p[Keys.TOOL_RESULT_CHARS] ?: d.toolResultChars,
+            thinkAfterTools = p[Keys.THINK_AFTER_TOOLS] ?: d.thinkAfterTools,
             imageMaxDim = p[Keys.IMAGE_MAX_DIM] ?: d.imageMaxDim,
             videoFrames = p[Keys.VIDEO_FRAMES] ?: d.videoFrames,
             lastMmprojPath = p[Keys.LAST_MMPROJ] ?: d.lastMmprojPath,
@@ -297,6 +310,7 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateSpec(v: SpecSource) = set(Keys.SPEC, v.name)
     suspend fun updateDraftMax(v: Int) = set(Keys.DRAFT_MAX, v.coerceIn(1, 8))
     suspend fun updateMtpPMinPct(v: Int) = set(Keys.MTP_P_MIN_PCT, v.coerceIn(0, 100))
+    suspend fun updateSeparateMtpDraftEnabled(v: Boolean) = set(Keys.SEPARATE_MTP_DRAFT_ENABLED, v)
     suspend fun updateMetricsCsv(v: Boolean) = set(Keys.METRICS_CSV, v)
     suspend fun updateNpuPrefill(v: Boolean) = set(Keys.NPU_PREFILL, v)
     suspend fun updateNpuLoaders(v: Int) = set(Keys.NPU_LOADERS, v.coerceIn(1, 16))
@@ -310,6 +324,8 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateToolsFilesEnabled(v: Boolean) = set(Keys.TOOLS_FILES, v)
     suspend fun updateToolsCodeEnabled(v: Boolean) = set(Keys.TOOLS_CODE, v)
     suspend fun updateToolsUtilitiesEnabled(v: Boolean) = set(Keys.TOOLS_UTILITIES, v)
+    suspend fun updateToolResultChars(v: Int) = set(Keys.TOOL_RESULT_CHARS, v.coerceIn(500, 20_000))
+    suspend fun updateThinkAfterTools(v: Boolean) = set(Keys.THINK_AFTER_TOOLS, v)
     suspend fun updateImageMaxDim(v: Int) = set(Keys.IMAGE_MAX_DIM, v.coerceIn(224, 1344))
     suspend fun updateVideoFrames(v: Int) = set(Keys.VIDEO_FRAMES, v.coerceIn(1, 16))
     suspend fun updateLastMmprojPath(v: String) = set(Keys.LAST_MMPROJ, v)

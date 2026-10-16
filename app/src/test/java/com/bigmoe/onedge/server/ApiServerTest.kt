@@ -77,6 +77,35 @@ class ApiServerTest {
     }
 
     @Test
+    fun anUnauthenticatedRequestIsRefusedBeforeItsBodyIsRead() {
+        val (server, _) = start(FakeEngineBackend())
+        // Announce a 50 MB body and never send it: the 401 must come back anyway, because the head alone is enough.
+        java.net.Socket("127.0.0.1", server.boundPort).use { sock ->
+            sock.soTimeout = 5000
+            sock.getOutputStream().write(
+                ("POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: 50000000\r\nContent-Type: application/json\r\n\r\n").toByteArray()
+            )
+            sock.getOutputStream().flush()
+            val first = sock.getInputStream().bufferedReader().readLine()
+            assertTrue(first, first.startsWith("HTTP/1.1 401"))
+        }
+    }
+
+    @Test
+    fun healthDoesNotRevealTheModel() {
+        val (server, _) = start(FakeEngineBackend())
+        val body = call(server, "GET", "/health", headers = emptyMap()).body
+        assertTrue(!body.contains(".gguf"))
+        assertTrue(JSONObject(body).getBoolean("model_loaded"))
+    }
+
+    @Test
+    fun maxTokensZeroIs400() {
+        val (server, _) = start(FakeEngineBackend())
+        assertEquals(400, call(server, "POST", "/v1/messages", """{"max_tokens":0,"messages":[{"role":"user","content":"x"}]}""").status)
+    }
+
+    @Test
     fun authCanBeSwitchedOffOnLoopback() {
         val (server, _) = start(FakeEngineBackend(), EngineSettings(serverRequireKey = false))
         assertEquals(200, call(server, "GET", "/v1/models", headers = emptyMap()).status)

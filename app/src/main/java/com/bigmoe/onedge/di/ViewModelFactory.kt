@@ -31,6 +31,7 @@ class AppViewModelFactory(
             modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(
                 dataStore = container.settingsDataStore,
                 engineController = container.engineController,
+                modelManager = container.modelManager,
                 apiServer = container.apiServerController
             ) as T
             modelClass.isAssignableFrom(ModelViewModel::class.java) -> ModelViewModel(

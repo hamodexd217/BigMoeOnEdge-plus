@@ -9,14 +9,14 @@ import org.json.JSONObject
 class SearchCodeTool(private val ws: Workspace) : Tool {
     override val name = "search_code"
     override val category = ToolCategory.CODE
-    override val description = "Search source code files (not prose or data) with surrounding lines. Supports regular expressions and extension filters."
+    override val description = "Search source files (not prose) with surrounding lines. Regex and extension filters supported."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("query", "string", "Text or regular expression"),
-            Triple("path", "string", "Folder or file (default: everything)"),
-            Triple("regex", "boolean", "Treat query as a regular expression"),
-            Triple("extensions", "string", "Comma separated, e.g. kt,java"),
-            Triple("context_lines", "integer", "Lines of context around each match (0-5)")
+            Triple("query", "string", "Text or regex"),
+            Triple("path", "string", "Folder or file (default: all)"),
+            Triple("regex", "boolean", "Treat query as a regex"),
+            Triple("extensions", "string", "e.g. kt,java"),
+            Triple("context_lines", "integer", "0-5")
         ),
         listOf("query")
     )
@@ -42,8 +42,8 @@ class SearchCodeTool(private val ws: Workspace) : Tool {
 class AnalyzeCodeTool(private val ws: Workspace) : Tool {
     override val name = "analyze_code"
     override val category = ToolCategory.CODE
-    override val description = "Static summary of a source file: size, functions and classes with line numbers, imports, TODOs, bracket balance."
-    override val parametersSchema = toolSchema(listOf(Triple("path", "string", "File path")), listOf("path"))
+    override val description = "Summary of a source file: size, functions/classes with line numbers, imports, TODOs, bracket balance."
+    override val parametersSchema = toolSchema(listOf(Triple("path", "string", "")), listOf("path"))
     override fun describe(arguments: JSONObject) = "Analyzing ${arguments.optString("path")}"
     override suspend fun execute(arguments: JSONObject): String {
         val path = arguments.requireString("path")
@@ -60,9 +60,8 @@ fun interface JavaScriptRunner {
 class RunJavaScriptTool(private val runner: JavaScriptRunner) : Tool {
     override val name = "run_javascript"
     override val category = ToolCategory.CODE
-    override val description = "Run JavaScript in an isolated sandbox with no network and no file access. console.log output and the value of the last expression are returned. " +
-        "Use it to compute, test algorithms or check output; it cannot run Python or Kotlin."
-    override val parametersSchema = toolSchema(listOf(Triple("code", "string", "JavaScript source")), listOf("code"))
+    override val description = "Run JavaScript in an isolated sandbox (no network, no files). Returns console.log output and the last expression's value. Cannot run Python or Kotlin."
+    override val parametersSchema = toolSchema(listOf(Triple("code", "string", "")), listOf("code"))
     override fun describe(arguments: JSONObject) = "Running JavaScript"
     override suspend fun execute(arguments: JSONObject): String {
         val code = arguments.requireString("code")

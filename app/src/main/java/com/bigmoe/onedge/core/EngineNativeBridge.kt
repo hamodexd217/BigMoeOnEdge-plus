@@ -85,7 +85,8 @@ class EngineNativeBridge {
         ints: IntArray,
         floats: FloatArray,
         csvPath: ByteArray,
-        mmprojPath: ByteArray
+        mmprojPath: ByteArray,
+        draftPath: ByteArray
     ): ByteArray
 
     /** Bit 0: expert-ready hook compiled in (overlap possible). Bit 1: built with multimodal (mtmd). */

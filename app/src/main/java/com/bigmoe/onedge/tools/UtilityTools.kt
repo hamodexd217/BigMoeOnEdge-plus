@@ -159,11 +159,23 @@ object Calculator {
                 "atan" -> { need(1); Math.atan(a[0]) }
                 "ln" -> { need(1); if (a[0] <= 0) throw CalcException("ln of a number <= 0"); Math.log(a[0]) }
                 "log" -> { need(1); if (a[0] <= 0) throw CalcException("log of a number <= 0"); Math.log10(a[0]) }
-                "log2" -> { need(1); if (a[0] <= 0) throw CalcException("log2 of a number <= 0"); Math.log(a[0]) / Math.log(2.0) }
+                "log2" -> {
+                    need(1)
+                    if (a[0] <= 0) throw CalcException("log2 of a number <= 0")
+                    // ln(x)/ln(2) is off in the last digit for some exact powers of two (log2(2^29) = 29.000000000000004).
+                    val r = Math.log(a[0]) / Math.log(2.0)
+                    val k = Math.rint(r)
+                    if (Math.abs(r - k) < 1e-9 && Math.pow(2.0, k) == a[0]) k else r
+                }
                 "exp" -> { need(1); Math.exp(a[0]) }
                 "floor" -> { need(1); Math.floor(a[0]) }
                 "ceil" -> { need(1); Math.ceil(a[0]) }
-                "round" -> { need(1); Math.floor(a[0] + 0.5) }
+                "round" -> {
+                    need(1)
+                    // Half rounds up. floor(x + 0.5) is wrong for 0.49999999999999994 (the sum rounds up to 1.0).
+                    val f = Math.floor(a[0])
+                    if (a[0] - f >= 0.5) f + 1.0 else f
+                }
                 "pow" -> { need(2); Math.pow(a[0], a[1]) }
                 "min" -> { if (a.isEmpty()) throw CalcException("min() needs arguments"); a.reduce { x, y -> Math.min(x, y) } }
                 "max" -> { if (a.isEmpty()) throw CalcException("max() needs arguments"); a.reduce { x, y -> Math.max(x, y) } }
@@ -290,9 +302,9 @@ object UnitConverter {
 class GetDateTimeTool(private val clock: () -> ZonedDateTime = { ZonedDateTime.now() }) : Tool {
     override val name = "get_datetime"
     override val category = ToolCategory.UTILITIES
-    override val description = "Current date, time and weekday on this device (you have no clock of your own). Optional timezone such as Asia/Baghdad or Europe/London."
+    override val description = "Current date, time and weekday on this device (you have no clock). Optional IANA timezone, e.g. Asia/Baghdad."
     override val parametersSchema = toolSchema(
-        listOf(Triple("timezone", "string", "IANA time zone name (default: the device's)")),
+        listOf(Triple("timezone", "string", "")),
         emptyList()
     )
     override fun describe(arguments: JSONObject) = "Checking the date and time"
@@ -311,9 +323,8 @@ class GetDateTimeTool(private val clock: () -> ZonedDateTime = { ZonedDateTime.n
 class CalculateTool : Tool {
     override val name = "calculate"
     override val category = ToolCategory.UTILITIES
-    override val description = "Evaluate a maths expression exactly instead of guessing. Supports + - * / % ^ ( ), pi, e and sqrt cbrt abs sin cos tan (radians) " +
-        "asin acos atan ln log log2 exp floor ceil round min max pow."
-    override val parametersSchema = toolSchema(listOf(Triple("expression", "string", "e.g. (12.5 * 8) / 3 + sqrt(144)")), listOf("expression"))
+    override val description = "Evaluate a maths expression exactly: + - * / % ^ ( ), pi, e, sqrt cbrt abs sin cos tan (radians) asin acos atan ln log log2 exp floor ceil round min max pow."
+    override val parametersSchema = toolSchema(listOf(Triple("expression", "string", "e.g. (12.5*8)/3+sqrt(144)")), listOf("expression"))
     override fun describe(arguments: JSONObject) = "Calculating ${arguments.optString("expression").take(40)}"
     override suspend fun execute(arguments: JSONObject): String {
         val expr = arguments.requireString("expression")
@@ -331,9 +342,9 @@ class ConvertUnitsTool : Tool {
     override val description = "Convert a value between units: ${UnitConverter.supportedUnits()}."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("value", "number", "The number to convert"),
-            Triple("from", "string", "Unit it is in, e.g. km"),
-            Triple("to", "string", "Unit wanted, e.g. mi")
+            Triple("value", "number", ""),
+            Triple("from", "string", "e.g. km"),
+            Triple("to", "string", "e.g. mi")
         ),
         listOf("value", "from", "to")
     )
@@ -358,12 +369,12 @@ class ConvertUnitsTool : Tool {
 class RandomNumberTool(private val random: java.util.Random = java.util.Random()) : Tool {
     override val name = "random_number"
     override val category = ToolCategory.UTILITIES
-    override val description = "Random whole numbers (dice, raffles, picking an index). Defaults: 1 to 100, one number."
+    override val description = "Random whole numbers (dice, raffles, picking an index). Default 1 to 100, one number."
     override val parametersSchema = toolSchema(
         listOf(
-            Triple("min", "integer", "Lowest value (inclusive)"),
-            Triple("max", "integer", "Highest value (inclusive)"),
-            Triple("count", "integer", "How many numbers, 1-20")
+            Triple("min", "integer", ""),
+            Triple("max", "integer", ""),
+            Triple("count", "integer", "1-20")
         ),
         emptyList()
     )
@@ -387,7 +398,7 @@ fun interface DeviceInfoProvider {
 class DeviceInfoTool(private val provider: DeviceInfoProvider) : Tool {
     override val name = "device_info"
     override val category = ToolCategory.UTILITIES
-    override val description = "Battery level and charging state, free storage, memory and Android version of this phone."
+    override val description = "Battery, charging, free storage, memory and Android version of this phone."
     override val parametersSchema = toolSchema(emptyList(), emptyList())
     override fun describe(arguments: JSONObject) = "Reading device status"
     override suspend fun execute(arguments: JSONObject): String = provider.summary()

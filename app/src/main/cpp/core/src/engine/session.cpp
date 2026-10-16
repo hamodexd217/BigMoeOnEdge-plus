@@ -349,6 +349,8 @@ struct Session::Impl {
     // file and its buffers back the rebound expert tensors, so it must be shut down before
     // the context and model are freed. The destructor does that explicitly.
     std::unique_ptr<llama_model, void (*)(llama_model *)> model{nullptr, llama_model_free};
+    // A detached draft model must outlive its context; declare it before ctx_dft for teardown order.
+    std::unique_ptr<llama_model, void (*)(llama_model *)> model_dft{nullptr, llama_model_free};
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
 #ifdef BMOE_HAVE_MTMD
     mtmd::context_ptr mtmd;
@@ -487,6 +489,7 @@ struct Session::Impl {
         mtp.reset();
         if (mtp_batch_owned) llama_batch_free(mtp_batch);
         ctx_dft.reset();
+        model_dft.reset();
         ctx.reset();
         hook.reset();
         model.reset();
@@ -801,7 +804,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
     // the gguf metadata either way, so the "this model has no trained head" check below is
     // unaffected by this flag.
-    mparams.load_mtp = cfg.spec.is_mtp();
+    mparams.load_mtp = cfg.spec.is_mtp() && cfg.spec.draft_model_path.empty();
 
     // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
@@ -863,16 +866,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // trained MTP head — which is most ggufs, including quants of MTP-capable models that were
     // converted without the nextn tensors.
     im.n_layer_nextn = llama_model_n_layer_nextn(model);
-    if (cfg.spec.is_mtp() && im.n_layer_nextn <= 0)
-        return fail("--mtp needs a model with a trained MTP head, and this gguf has no nextn block "
-                    "(nextn_predict_layers is absent or zero). Qwen3.5/3.6 carry one in their "
-                    "ordinary quantisations; other architectures have none. --ngram speculates on any "
-                    "model, since it drafts from the text rather than from the weights. See "
-                    "docs/mtp.md and docs/ngram.md.");
-
     char arch[128] = {0};
     llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
     im.arch = arch;
+    if (cfg.spec.is_mtp() && cfg.spec.draft_model_path.empty() && im.n_layer_nextn <= 0)
+        return fail("MTP requested, but this GGUF has no embedded nextn/MTP block. Attach a separate MTP-only GGUF in Models, or use n-gram speculation.");
+    if (cfg.spec.is_mtp() && !cfg.spec.draft_model_path.empty() && std::strcmp(arch, "qwen4exp") != 0)
+        return fail("A separate MTP draft is currently supported only for Qwen4Exp targets (general.architecture=qwen4exp).");
 
     const MoeRecipe * recipe = nullptr;
     if (cfg.moe.enabled) {
@@ -900,7 +900,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // on the hook and the streamer must span the trunk PLUS the head. The index space is contiguous
     // and the tensor naming identical, so this bound is the only thing standing between the streamer
     // and the MTP experts — left at n_layer they are silently skipped and stay mmap-resident.
-    const int n_layer_streamed = im.n_layer + (cfg.spec.is_mtp() ? im.n_layer_nextn : 0);
+    const int n_layer_streamed = im.n_layer + ((cfg.spec.is_mtp() && cfg.spec.draft_model_path.empty()) ? im.n_layer_nextn : 0);
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, n_layer_streamed);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
@@ -963,26 +963,44 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 #endif
     }
 
-    // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
-    // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
-    // rolled back on the draft side, the target is the one that speculates.
+    // MTP's draft context is either the target's embedded nextn head, or an independently loaded
+    // MTP-only GGUF. The detached Qwen4Exp head borrows token embeddings/output through ctx_other.
     if (cfg.spec.is_mtp()) {
+        llama_model * draft_model = model;
+        if (!cfg.spec.draft_model_path.empty()) {
+            llama_model_params draft_mparams = llama_model_default_params();
+            draft_mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
+            draft_mparams.use_extra_bufts = false;
+            draft_mparams.n_gpu_layers = 0;
+            draft_mparams.load_mtp = true;
+            draft_model = llama_model_load_from_file(cfg.spec.draft_model_path.c_str(), draft_mparams);
+            if (!draft_model) return fail("failed to load separate MTP draft GGUF: " + cfg.spec.draft_model_path);
+            im.model_dft.reset(draft_model);
+            char draft_arch[128] = {0};
+            llama_model_meta_val_str(draft_model, "general.architecture", draft_arch, sizeof(draft_arch));
+            if (std::strcmp(draft_arch, arch) != 0)
+                return fail("MTP draft architecture mismatch: target is '" + std::string(arch) + "', draft is '" + draft_arch + "'.");
+            if (llama_model_n_layer_nextn(draft_model) <= 0)
+                return fail("The selected draft GGUF has no MTP/nextn block. Convert it with llama.cpp's --mtp option.");
+            if (llama_model_n_embd(draft_model) != llama_model_n_embd(model) ||
+                llama_vocab_n_tokens(llama_model_get_vocab(draft_model)) != llama_vocab_n_tokens(llama_model_get_vocab(model)))
+                return fail("MTP draft does not match the target embedding width/vocabulary; choose the matching draft GGUF.");
+        }
+
         llama_context_params dparams = cparams;
         dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         dparams.n_rs_seq = 0;
-        // Compute buffers are reserved for the WIDEST ubatch, and left at the target's width the
-        // draft context reserves gigabytes for a graph it never runs: the widest thing it ever
-        // computes is a prefill chunk, and at decode time it is 1 + draft_max positions. On this
-        // engine every MiB reserved is a MiB the expert cache does not get, and the cache is what
-        // decides whether the widened verify read set is a hit or a flash read — so an oversized
-        // draft context does not merely waste memory, it eats the feature's own prize. Measured on
-        // the desktop host: leaving it at the target's width cost ~1 GiB of expert cache and 3
-        // points of hit rate. n_batch stays as it is — the speculative driver sizes its internal
-        // batch from it and must still accept a whole prefill chunk, which llama.cpp then splits
-        // into ubatches of the width below.
+        if (draft_model != model) {
+            dparams.ctx_other = ctx;
+            // A detached head has its own file and is not part of the target streamer's offset map.
+            // A stream conflict is rejected above; keep diagnostics/prefill hooks from treating this
+            // independent model's layer ids as the target's layers.
+            dparams.cb_eval = nullptr;
+            dparams.cb_eval_user_data = nullptr;
+        }
         dparams.n_ubatch = (uint32_t) std::max(cfg.spec.draft_max + 1, mtp_draft_ubatch);
         if (dparams.n_ubatch > cparams.n_ubatch) dparams.n_ubatch = cparams.n_ubatch;
-        llama_context * ctx_dft = llama_init_from_model(model, dparams);
+        llama_context * ctx_dft = llama_init_from_model(draft_model, dparams);
         if (!ctx_dft) return fail("failed to create the MTP draft context");
         im.ctx_dft.reset(ctx_dft);
         llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads);
@@ -1051,11 +1069,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (cfg.spec.is_mtp()) {
             batch_fill(im.mtp_batch, &warm_tok, 1, /*pos0*/ 0, /*all_logits*/ true);
             if (llama_decode(ctx, im.mtp_batch) != 0) return fail("capture warm-up decode failed");
-            // The MTP graph is built only by a decode on the draft context, and process() is what
-            // issues it. Without this pass the head's expert layer never reaches the eval callback,
-            // so it would stay unbound and silently mmap-resident — the one thing streaming exists
-            // to avoid on a model that does not fit.
-            if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
+            // With an embedded head, the MTP graph shares the target model and its eval callback,
+            // so capture its experts in the same file-offset space. A separate sidecar has its own
+            // GGUF and deliberately has no target RouterHook callback; process it during capture
+            // only for the embedded case. The target model's experts remain streamed either way.
+            if (cfg.spec.draft_model_path.empty() &&
+                !common_speculative_process(im.mtp.get(), im.mtp_batch))
                 return fail("MTP capture warm-up failed: the draft context could not process the batch");
         } else {
             llama_batch warm = llama_batch_get_one(&warm_tok, 1);
@@ -1697,6 +1716,7 @@ RunResult Session::generate(const GenerateRequest & req,
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     size_t n_common = 0;
+    int kv_reuse = KV_REUSE_NONE; // reported in RunSummary::kv_reuse
     if (chat_on && !im.kv_tokens.empty()) {
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
@@ -1707,8 +1727,13 @@ RunResult Session::generate(const GenerateRequest & req,
             if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
                 im.clear_memory(ctx);
                 n_common = 0;
+                kv_reuse = KV_REUSE_REFUSED;
+            } else {
+                kv_reuse = KV_REUSE_PARTIAL;
             }
             im.kv_tokens.resize(n_common);
+        } else {
+            kv_reuse = KV_REUSE_FULL;
         }
         // The draft context mirrors the target's positions, so it has to be rewound to the SAME
         // point — including when n_common did not move, since the previous turn left it holding
@@ -1951,6 +1976,9 @@ RunResult Session::generate(const GenerateRequest & req,
     if (spec_on) mtp_ctx = tokens;
     std::vector<llama_token> verify_toks; // [confirmed token, drafts...] for the verify batch
     std::vector<llama_token> confirmed;   // what one decode confirmed, in order
+    // Tokens the LAST decode group left in the KV without handing them to the caller: an accepted end-of-generation
+    // token (decoded as a draft, never emitted) or confirmed tokens cut off by n_predict / a stop string.
+    std::vector<llama_token> group_surplus;
     const long long mtp0_drafted = im.mtp_drafted;
     const long long mtp0_accepted = im.mtp_accepted;
     const long long mtp0_decodes = im.mtp_decodes;
@@ -2146,6 +2174,7 @@ RunResult Session::generate(const GenerateRequest & req,
             prev_ra_issue_ns = ri;
             prev_ra_wd_ns = rw;
         }
+        size_t n_emitted_here = 0;
         for (size_t e = 0; e < confirmed.size() && n_gen < n_predict; ++e) {
             const llama_token out = confirmed[e];
             char piece[256];
@@ -2155,6 +2184,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (chat_on) im.kv_tokens.push_back(out); // this token is now in the KV
             if (spec_on) mtp_ctx.push_back(out);
             ++n_gen;
+            ++n_emitted_here;
 
             TokenMetrics m;
             m.step = n_gen;
@@ -2193,6 +2223,12 @@ RunResult Session::generate(const GenerateRequest & req,
             if (stop_hit) break;
         }
 
+        // verify_toks = [tok, drafts...]; after the rejected tail was rolled back the KV holds the first 1 + n_acc of
+        // them, and the caller got the first n_emitted_here. The rest is KV content nobody was shown.
+        group_surplus.clear();
+        if (spec_on)
+            for (size_t k = n_emitted_here; k < (size_t) (1 + n_acc); ++k) group_surplus.push_back(verify_toks[k]);
+
         if (stop_hit) break;
         if (eog_hit) {
             natural_end = true;
@@ -2211,18 +2247,37 @@ RunResult Session::generate(const GenerateRequest & req,
     // token is decoded but never emitted, and a group can be cut short by n_predict. The KV and
     // kv_tokens must agree exactly or the next turn's prefix reuse decodes from a state that never
     // produced this answer, so trim back to what was actually emitted.
+    //
+    // The context the turn occupies is fixed HERE, from counters, before any trim: the trim below can wipe
+    // kv_tokens, and the summary used to read the length back from them (a reply that ended inside the first
+    // speculative group then reported "0 / n_ctx"). The two agree whenever the KV survived.
+    const int n_ctx_used = (image_turn ? (int) n_pos_img : n_prompt) + n_gen;
+    bool kept_surplus = false;
     if (spec_on) {
         const llama_pos emitted_end = (image_turn ? n_pos_img : (llama_pos) n_prompt) + n_gen;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
-            // Nothing survives that we can still describe, so say so rather than leave kv_tokens
-            // asserting a prefix the context no longer holds. The next turn re-prefills in full.
-            im.clear_memory(ctx);
-            im.kv_tokens.clear();
+        // Nothing sits beyond emitted_end unless the last group left a surplus (or the turn was cancelled inside a
+        // decode, when the whole verify batch may be in there): without one the KV already ends where it should.
+        const bool need_trim = res.cancelled || !group_surplus.empty();
+        if (need_trim && !llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
+            if (chat_on && !res.cancelled && !image_turn) {
+                // A recurrent / hybrid memory (e.g. Qwen3.5) cannot drop the tail: its state only goes forward. The
+                // tail is real, decoded context (typically the end-of-generation token a draft got accepted), so
+                // KEEP it and record it: kv_tokens then describes the KV exactly and nothing is lost. The next turn
+                // re-renders the answer followed by the same end token, so this prefix usually still matches.
+                for (llama_token t : group_surplus) im.kv_tokens.push_back(t);
+                kept_surplus = true;
+            } else {
+                // Nothing survives that we can still describe, so say so rather than leave kv_tokens
+                // asserting a prefix the context no longer holds. The next turn re-prefills in full.
+                im.clear_memory(ctx);
+                im.kv_tokens.clear();
+            }
         }
         // The draft context mirrors the target's positions (process() decodes the same batches into
         // it), so it is trimmed to the same point — not cleared, or a continued chat turn would
-        // feed it only the new suffix and draft from a state that never saw the conversation.
-        if (mtp_on && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, emitted_end, -1))
+        // feed it only the new suffix and draft from a state that never saw the conversation. When the surplus was
+        // kept the target was not trimmed, so the draft context stays where it is (it holds the same tokens).
+        if (mtp_on && !kept_surplus && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, emitted_end, -1))
             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 
@@ -2239,8 +2294,12 @@ RunResult Session::generate(const GenerateRequest & req,
     loop_overhead_s += secs(loop_mark, clock_t_::now());
     s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
     s.n_prompt = image_turn ? n_prompt_eff : n_prompt - (int) n_common;
-    s.n_past = image_turn ? (int) n_pos_img + n_gen
-                          : (chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen);
+    s.n_past = n_ctx_used; // counters (see above), not im.kv_tokens.size(): that is 0 after a wipe
+    s.n_ctx_used = n_ctx_used;
+    s.n_prompt_total = image_turn ? n_prompt_eff : n_prompt;
+    s.n_reused = image_turn ? 0 : (int) n_common;
+    s.n_prefill_eval = s.n_prompt;
+    s.kv_reuse = kv_reuse;
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
     s.prefill_device_tokens = prefill_device_tokens;

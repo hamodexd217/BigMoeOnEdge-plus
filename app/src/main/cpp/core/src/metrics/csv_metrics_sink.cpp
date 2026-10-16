@@ -89,7 +89,8 @@ public:
             "prefill_stall_s=%.3f prefill_mgmt_s=%.3f "
             "prefill_dev_tokens=%d prefill_dev_nodes=%lld prefill_dev_read_mib=%.1f prefill_dev_stall_s=%.3f "
             "row_table_MiB=%.1f row_resident_MiB=%.1f row_rows=%lld row_reads=%lld "
-            "row_read_MiB=%.1f row_evictions=%lld row_io_errors=%lld\n",
+            "row_read_MiB=%.1f row_evictions=%lld row_io_errors=%lld "
+            "n_ctx_used=%d n_prompt_total=%d n_reused=%d n_prefill_eval=%d kv_reuse=%d\n",
             s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
             s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
             s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0, s.moe_stall_s_per_token,
@@ -105,7 +106,8 @@ public:
             s.moe_adopt_s_per_token, s.cache_evictions, s.cache_rereads, s.prefill_cpu_seconds, s.prefill_read_mib,
             s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.prefill_device_tokens,
             s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds, s.row_table_mib,
-            s.row_resident_mib, s.row_rows, s.row_slab_reads, s.row_read_mib, s.row_evictions, s.row_io_errors);
+            s.row_resident_mib, s.row_rows, s.row_slab_reads, s.row_read_mib, s.row_evictions, s.row_io_errors,
+            s.n_ctx_used, s.n_prompt_total, s.n_reused, s.n_prefill_eval, s.kv_reuse);
         std::fflush(f_);
     }
 

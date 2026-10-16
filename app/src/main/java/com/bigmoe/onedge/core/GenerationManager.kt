@@ -66,30 +66,80 @@ class GenerationManager(
         _state.value = State(session.id, session.title, true, null, contextTotal = total)
         generationJob = scope.launch {
             GenerationForegroundService.start(context, session.id)
-            try {
-                agentController.runAgentLoop(request, sink).collect { event ->
-                    when (event) {
-                        AgentEvent.GenerationStarted -> update { copy(startedAt = startedAt ?: System.currentTimeMillis()) }
-                        is AgentEvent.Text -> update { copy(liveText = liveText + event.delta, liveStatus = null) }
-                        is AgentEvent.Reasoning -> update { copy(liveReasoning = liveReasoning + event.delta) }
-                        is AgentEvent.ToolStarted -> update { copy(liveStatus = event.name + "…") }
-                        is AgentEvent.Notice -> {
-                            terminalState = when {
-                                event.text == AgentController.NOTE_STOPPED -> "CANCELLED"
-                                Regex("(?i)\\b(error|failed|crashed|unexpected|could not)\\b").containsMatchIn(event.text) -> "ERROR"
-                                else -> "FINISHED"
-                            }
-                            update { copy(notice = event.text) }
-                        }
-                        is AgentEvent.GenerationProgress -> updateTokenProgress(event.generatedTokens, event.contextUsed)
-                        is AgentEvent.MessageSaved -> {
-                            if (event.role == com.bigmoe.onedge.data.local.entity.MessageRole.ASSISTANT) {
-                                lastAssistantMessageId = event.id
-                            }
-                            update { copy(liveText = "", liveReasoning = "") }
-                        }
-                        is AgentEvent.Artifact, AgentEvent.Done -> Unit
+            // Batch streaming UI snapshots to roughly 30 Hz. Text was previously concatenated and
+            // published once per token, forcing repeated copies of the whole response and extra redraws.
+            val pendingText = StringBuilder()
+            val pendingReasoning = StringBuilder()
+            var pendingProgress: AgentEvent.GenerationProgress? = null
+            var lastUiFlushNanos = System.nanoTime()
+            fun flushPending() {
+                val textChunk = pendingText.toString()
+                val reasoningChunk = pendingReasoning.toString()
+                val progress = pendingProgress
+                pendingText.setLength(0)
+                pendingReasoning.setLength(0)
+                pendingProgress = null
+                if (textChunk.isNotEmpty() || reasoningChunk.isNotEmpty() || progress != null) {
+                    update {
+                        copy(
+                            liveText = liveText + textChunk,
+                            liveReasoning = liveReasoning + reasoningChunk,
+                            liveStatus = if (textChunk.isNotEmpty()) null else liveStatus,
+                            generatedTokens = progress?.let { maxOf(generatedTokens, it.generatedTokens) } ?: generatedTokens,
+                            contextUsed = progress?.contextUsed ?: contextUsed
+                        )
                     }
+                }
+                lastUiFlushNanos = System.nanoTime()
+            }
+            fun flushIfDue() {
+                if (System.nanoTime() - lastUiFlushNanos >= 33_000_000L) flushPending()
+            }
+            try {
+                try {
+                    agentController.runAgentLoop(request, sink).collect { event ->
+                        when (event) {
+                            is AgentEvent.Text -> {
+                                pendingText.append(event.delta)
+                                flushIfDue()
+                            }
+                            is AgentEvent.Reasoning -> {
+                                pendingReasoning.append(event.delta)
+                                flushIfDue()
+                            }
+                            is AgentEvent.GenerationProgress -> {
+                                pendingProgress = event
+                                flushIfDue()
+                            }
+                            else -> {
+                                // Keep status, tool and persistence boundaries ordered after all pending text.
+                                flushPending()
+                                when (event) {
+                                    AgentEvent.GenerationStarted -> update { copy(startedAt = startedAt ?: System.currentTimeMillis()) }
+                                    is AgentEvent.ToolStarted -> update { copy(liveStatus = event.name + "…") }
+                                    is AgentEvent.Notice -> {
+                                        terminalState = when {
+                                            event.text == AgentController.NOTE_STOPPED -> "CANCELLED"
+                                            Regex("(?i)\\b(error|failed|crashed|unexpected|could not)\\b").containsMatchIn(event.text) -> "ERROR"
+                                            else -> "FINISHED"
+                                        }
+                                        update { copy(notice = event.text) }
+                                    }
+                                    is AgentEvent.MessageSaved -> {
+                                        if (event.role == com.bigmoe.onedge.data.local.entity.MessageRole.ASSISTANT) {
+                                            lastAssistantMessageId = event.id
+                                        }
+                                        update { copy(liveText = "", liveReasoning = "") }
+                                    }
+                                    is AgentEvent.Artifact, AgentEvent.Done -> Unit
+                                    is AgentEvent.Text, is AgentEvent.Reasoning, is AgentEvent.GenerationProgress -> Unit
+                                }
+                            }
+                        }
+                    }
+                } finally {
+                    // Never lose the last partial chunk, including when cancellation interrupts collection.
+                    flushPending()
                 }
             } catch (t: Throwable) {
                 if (t !is CancellationException) {

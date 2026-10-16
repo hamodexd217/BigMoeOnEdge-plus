@@ -22,7 +22,7 @@ Current groups:
 * Files: list/read/search/create/edit/rename/delete/create_folder/create_project/export_zip. `create_folder` also lists the folder in the chat's files.
 * Code: search_code/analyze_code/run_javascript.
 * Utilities: get_datetime/calculate/convert_units/random_number/device_info (offline, read-only; `UTILITY_TOOL_NAMES`).
-* Web: web_search/read_webpage/extract_webpage.
+* Web: web_search/read_webpage/extract_webpage/image_search. `image_search` queries Wikimedia Commons and returns thumbnails with source URLs and available attribution/license metadata. It is enabled by the same opt-in globe/Web Search control and is off on a new install.
 
 Security rules are deliberate: every file path is resolved inside the private workspace, destructive changes require user
 approval, JavaScript runs in an offline WebView sandbox with no JS bridge, and artifact HTML uses a restrictive CSP.

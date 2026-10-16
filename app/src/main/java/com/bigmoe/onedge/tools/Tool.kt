@@ -38,6 +38,12 @@ interface Tool {
     val parametersSchema: JSONObject
     val category: ToolCategory get() = ToolCategory.FILES
 
+    /**
+     * True for tools that only read from the network and touch nothing local, so several calls in one round can run
+     * at the same time. Anything that writes, or depends on the order of calls, keeps the default (false).
+     */
+    val parallelSafe: Boolean get() = false
+
     /** Short text for the UI while the tool runs, e.g. "Reading notes.md". */
     fun describe(arguments: JSONObject): String = name
 

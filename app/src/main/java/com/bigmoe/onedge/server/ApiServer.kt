@@ -35,7 +35,7 @@ class ApiServer(
     fun start(bindAll: Boolean, port: Int) {
         stop()
         val address = InetAddress.getByName(if (bindAll) "0.0.0.0" else "127.0.0.1")
-        val s = MiniHttpServer(address, port, MAX_CONNECTIONS, log) { req, resp -> handle(req, resp) }
+        val s = MiniHttpServer(address, port, MAX_CONNECTIONS, log, guard = { head -> guard(head) }) { req, resp -> handle(req, resp) }
         s.start()
         http = s
         log("listening on ${address.hostAddress}:${s.boundPort}")
@@ -48,22 +48,44 @@ class ApiServer(
 
     // ------------------------------------------------------------------------------------------------ routing
 
-    suspend fun handle(req: HttpRequest, resp: HttpResponder) {
-        val path = req.path.trimEnd('/').ifEmpty { "/" }
-        val openAi = path.endsWith("/chat/completions")
-        val s = settings()
-        val rt = ApiRuntime.from(s)
+    private fun normalizedPath(raw: String): String = raw.trimEnd('/').ifEmpty { "/" }
 
-        if (req.method == "GET" && (path == "/" || path == "/health" || path == "/v1/health")) {
-            val m = engine.loadedModel()
-            val o = JSONObject().put("status", "ok").put("model_loaded", m != null).put("model", m?.name ?: JSONObject.NULL)
+    private fun isHealth(method: String, path: String): Boolean =
+        method == "GET" && (path == "/" || path == "/health" || path == "/v1/health")
+
+    /** The 401 body when the request must carry a key and does not, else null. */
+    private fun authFailure(path: String, headers: Map<String, String>, rt: ApiRuntime): String? {
+        if (!rt.requireKey || ApiKey.matches(rt.apiKey, ApiKey.fromHeaders(headers))) return null
+        return if (path.endsWith("/chat/completions")) OpenAiApi.errorBody("invalid_request_error", "Incorrect API key provided.")
+        else AnthropicApi.errorBody("authentication_error", "invalid x-api-key")
+    }
+
+    /**
+     * Runs on the request head, before the body is read: an unauthenticated client cannot make the server buffer a
+     * large body (matters when the server listens on the network).
+     */
+    private suspend fun guard(head: HttpHead): Rejection? {
+        val path = normalizedPath(head.path)
+        if (isHealth(head.method, path)) return null
+        val body = authFailure(path, head.headers, ApiRuntime.from(settings())) ?: return null
+        return Rejection(401, body)
+    }
+
+    suspend fun handle(req: HttpRequest, resp: HttpResponder) {
+        val path = normalizedPath(req.path)
+        val openAi = path.endsWith("/chat/completions")
+        val rt = ApiRuntime.from(settings())
+
+        if (isHealth(req.method, path)) {
+            // Unauthenticated, so it says nothing about what is loaded.
+            val o = JSONObject().put("status", "ok").put("model_loaded", engine.loadedModel() != null)
             resp.sendJson(200, o.toString())
             return
         }
 
-        if (rt.requireKey && !ApiKey.matches(rt.apiKey, ApiKey.fromHeaders(req.headers))) {
-            if (openAi) resp.sendJson(401, OpenAiApi.errorBody("invalid_request_error", "Incorrect API key provided."))
-            else resp.sendJson(401, AnthropicApi.errorBody("authentication_error", "invalid x-api-key"))
+        val denied = authFailure(path, req.headers, rt)
+        if (denied != null) {
+            resp.sendJson(401, denied)
             return
         }
 

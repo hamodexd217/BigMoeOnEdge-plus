@@ -37,6 +37,21 @@ class EngineControllerTest {
     }
 
     @Test
+    fun failedSeparateDraftFallsBackToPlainDecodingWithWarning() = runTest {
+        val fake = FakeEngineBackend().apply { draftLoadError = "MTP architecture mismatch" }
+        val c = EngineController({ fake }, UnconfinedTestDispatcher(testScheduler))
+        val f = modelFile()
+        assertNull(c.loadModel(f.path, cfg.copy(spec = SpecSource.MTP), draftPath = "/draft/mtp-model.gguf"))
+        val ready = c.state.value as EngineState.Ready
+        assertEquals(SpecSource.OFF, ready.info.config.spec)
+        assertTrue(ready.info.loadWarning.orEmpty().contains("MTP architecture mismatch"))
+        assertNull(ready.info.draftModelPath)
+        assertEquals(2, fake.loadAttempts.size)
+        assertEquals("/draft/mtp-model.gguf", fake.loadAttempts[0].second)
+        assertEquals(null, fake.loadAttempts[1].second)
+    }
+
+    @Test
     fun missingFileIsReportedWithoutTouchingTheEngine() = runTest {
         val fake = FakeEngineBackend()
         val c = EngineController({ fake }, UnconfinedTestDispatcher(testScheduler))

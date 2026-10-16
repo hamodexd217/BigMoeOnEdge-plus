@@ -1,5 +1,13 @@
 package com.bigmoe.onedge.ui.models
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +32,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -38,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import java.io.File
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.ModelFile
@@ -54,9 +64,66 @@ fun ModelScreen(
     val engine by viewModel.engineState.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val context = LocalContext.current
+    var sharedPathAccessGranted by remember { mutableStateOf(hasSharedPathAccess(context)) }
+    var showAdvancedPath by remember { mutableStateOf(false) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) viewModel.importModel(context.contentResolver, uri)
+    // MANAGE_EXTERNAL_STORAGE is a special Settings grant, not a normal runtime prompt.
+    // When the user returns, retry registration automatically so the path is not copied.
+    val allFilesAccessLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        sharedPathAccessGranted = hasSharedPathAccess(context)
+        if (sharedPathAccessGranted) {
+            viewModel.registerExistingPath()
+        } else {
+            viewModel.showMessage("Storage access was not enabled. Try Add GGUF from storage again after granting access, or use Import GGUF file(s) (copy).")
+        }
+    }
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        sharedPathAccessGranted = granted
+        if (granted) viewModel.registerExistingPath()
+        else viewModel.showMessage("Storage permission was not granted. Use Import GGUF file(s) (copy), or grant access and try Add GGUF from storage again.")
+    }
+
+    // Default path: select a GGUF in Android's picker and register its real shared-storage path.
+    // This avoids making a second multi-GB copy. The native engine needs a filesystem path, not content://.
+    val noCopyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val path = resolveSharedStorageDocumentPath(context, uri)
+            if (path == null) {
+                viewModel.showMessage(
+                    "This picker location does not expose a direct filesystem path. Browse to Internal storage in the picker, " +
+                        "select the .gguf there, or use Import & copy for cloud/provider files."
+                )
+            } else if (!path.endsWith(".gguf", ignoreCase = true)) {
+                viewModel.showMessage("Choose a .gguf file (model, MTP draft, or mmproj). No file was copied.")
+            } else {
+                viewModel.setExistingPathInput(path)
+                if (!isSharedAbsolutePath(path) || sharedPathAccessGranted) {
+                    viewModel.registerExistingPath()
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val appSettings = Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                    try {
+                        allFilesAccessLauncher.launch(appSettings)
+                    } catch (_: Exception) {
+                        allFilesAccessLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                    }
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    legacyStoragePermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+                } else {
+                    viewModel.registerExistingPath()
+                }
+            }
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) viewModel.importModels(context.contentResolver, uris)
     }
 
     Scaffold(
@@ -82,17 +149,74 @@ fun ModelScreen(
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Add a model / mmproj", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Pick a .gguf file: a model, or an mmproj file (the vision projector that lets a vision model " +
-                                "see pictures and video). It is copied into the app's private storage (${ui.modelsDir}) " +
-                                "because the engine needs a real file path. You need as much free storage as the " +
-                                "file size.",
+                            "Choose a GGUF from Internal storage to add it in place. The model stays in its original folder, " +
+                                "so BigMoeOnEdge does not create another multi-GB copy. A storage-access permission may be " +
+                                "requested the first time. Cloud/provider files may need the copy option below.",
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Text(
-                            "Advanced: you can also `adb push model.gguf` (or the mmproj file) into that folder and press refresh.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
+                        Button(
+                            onClick = { noCopyPicker.launch(arrayOf("*/*")) },
+                            enabled = ui.importProgress == null,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Add GGUF from storage (no copy)") }
+                        OutlinedButton(
+                            onClick = { picker.launch(arrayOf("*/*")) },
+                            enabled = ui.importProgress == null,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Import GGUF file(s) (copy)") }
+                        TextButton(onClick = { showAdvancedPath = !showAdvancedPath }) {
+                            Text(if (showAdvancedPath) "Hide advanced path entry" else "Advanced: enter a path manually")
+                        }
+                        if (showAdvancedPath) {
+                            Text(
+                                "Use this only if the picker cannot expose the original filesystem path. Split GGUFs must be registered from the first shard.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                            OutlinedTextField(
+                                value = ui.existingPathInput,
+                                onValueChange = viewModel::setExistingPathInput,
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Existing GGUF path (no copy)") },
+                                placeholder = { Text("/storage/emulated/0/Download/model-00001-of-00012.gguf") },
+                                singleLine = true
+                            )
+                            val needsSharedStoragePermission = isSharedAbsolutePath(ui.existingPathInput) && !sharedPathAccessGranted
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = {
+                                    if (!isSharedAbsolutePath(ui.existingPathInput) || sharedPathAccessGranted) {
+                                        viewModel.registerExistingPath()
+                                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                        val appSettings = Intent(
+                                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            Uri.parse("package:${context.packageName}")
+                                        )
+                                        try {
+                                            allFilesAccessLauncher.launch(appSettings)
+                                        } catch (_: Exception) {
+                                            allFilesAccessLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                                        }
+                                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                        legacyStoragePermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+                                    } else {
+                                        viewModel.registerExistingPath()
+                                    }
+                                }) {
+                                    Text(if (needsSharedStoragePermission) "Grant path access" else "Register path")
+                                }
+                                OutlinedButton(onClick = viewModel::refresh) { Text("Refresh") }
+                            }
+                            if (needsSharedStoragePermission) {
+                                Text(
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                                        "Android requires Allow access to manage all files for direct paths. Registration retries when you return."
+                                    else
+                                        "Allow file read access when Android asks. The file is not copied.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
                         val progress = ui.importProgress
                         if (progress != null) {
                             if (progress.totalBytes > 0) {
@@ -109,11 +233,6 @@ fun ModelScreen(
                                 Text(ModelManager.formatBytes(progress.copiedBytes), style = MaterialTheme.typography.labelSmall)
                             }
                             OutlinedButton(onClick = viewModel::cancelImport) { Text("Cancel import") }
-                        } else {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Choose .gguf (model or mmproj)") }
-                                OutlinedButton(onClick = viewModel::refresh) { Text("Refresh") }
-                            }
                         }
                     }
                 }
@@ -137,6 +256,23 @@ fun ModelScreen(
                 }
             }
 
+            if (ui.drafts.isNotEmpty()) {
+                item {
+                    Text("MTP draft sidecars", style = MaterialTheme.typography.titleMedium)
+                    Text("Attach one to each target above. Sidecars are hidden from the target-model list.", style = MaterialTheme.typography.bodySmall)
+                }
+                items(ui.drafts, key = { "draft:${it.path}" }) { draft ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(draft.name, style = MaterialTheme.typography.titleSmall)
+                                Text("${ModelManager.formatBytes(draft.sizeBytes)} • " + if (draft.inAppStorage) "App storage" else "Registered path (no copy)", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(onClick = { viewModel.delete(draft.path) }) { Text("Remove") }
+                        }
+                    }
+                }
+            }
             if (ui.models.isEmpty()) {
                 item { Text("No models yet.", color = MaterialTheme.colorScheme.secondary) }
             }
@@ -146,7 +282,11 @@ fun ModelScreen(
                     isLoaded = (engine as? EngineState.Ready)?.info?.path == model.path,
                     busy = engine is EngineState.Loading,
                     onLoad = { viewModel.requestLoad(model.path) },
-                    onDelete = { viewModel.delete(model.path) }
+                    onDelete = { viewModel.delete(model.path) },
+                    drafts = ui.drafts,
+                    attachedDraftPath = ui.modelDrafts[model.path],
+                    onAttachDraft = { viewModel.attachDraft(model.path, it) },
+                    onRename = { viewModel.rename(model.path, it) }
                 )
             }
             // keeps the last row clear of the floating navigation bar
@@ -261,6 +401,8 @@ private fun StatusCard(
                 is EngineState.Ready -> {
                     val info = engine.info
                     Text("Loaded: ${info.name}", style = MaterialTheme.typography.titleMedium)
+                    info.draftModelPath?.let { Text("Separate MTP draft: ${it.substringAfterLast('/')}", style = MaterialTheme.typography.bodySmall) }
+                    info.loadWarning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                     Text(
                         if (info.mmprojPath.isNullOrBlank()) "Vision: inactive (no mmproj)"
                         else "Vision: active • ${info.mmprojPath.substringAfterLast('/')}"
@@ -305,25 +447,116 @@ private fun ModelRow(
     isLoaded: Boolean,
     busy: Boolean,
     onLoad: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    drafts: List<ModelFile>,
+    attachedDraftPath: String?,
+    onAttachDraft: (String?) -> Unit,
+    onRename: (String) -> Unit
 ) {
+    var draftMenu by remember { mutableStateOf(false) }
+    var renameDialog by remember { mutableStateOf(false) }
+    var renameText by remember(model.path) { mutableStateOf(model.name) }
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(model.name, style = MaterialTheme.typography.titleSmall)
-                Text(ModelManager.formatBytes(model.sizeBytes), style = MaterialTheme.typography.labelSmall)
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(model.name, style = MaterialTheme.typography.titleSmall)
+                    Text("${ModelManager.formatBytes(model.sizeBytes)} • " + if (model.inAppStorage) "App storage" else "Registered path (no copy)", style = MaterialTheme.typography.labelSmall)
+                }
+                if (isLoaded) {
+                    Text("Loaded", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                } else {
+                    TextButton(onClick = onLoad, enabled = !busy) { Text("Load") }
+                }
+                IconButton(onClick = onDelete, enabled = !busy) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove model")
+                }
             }
-            if (isLoaded) {
-                Text("Loaded", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
-            } else {
-                TextButton(onClick = onLoad, enabled = !busy) { Text("Load") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text("MTP draft", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        drafts.firstOrNull { it.path == attachedDraftPath }?.name ?: "No sidecar attached",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                androidx.compose.foundation.layout.Box {
+                    OutlinedButton(onClick = { draftMenu = true }) { Text("Attach") }
+                    DropdownMenu(expanded = draftMenu, onDismissRequest = { draftMenu = false }) {
+                        DropdownMenuItem(text = { Text("Use model's built-in MTP / none") }, onClick = { draftMenu = false; onAttachDraft(null) })
+                        drafts.forEach { d ->
+                            DropdownMenuItem(text = { Text(d.name) }, onClick = { draftMenu = false; onAttachDraft(d.path) })
+                        }
+                    }
+                }
+                TextButton(onClick = { renameDialog = true }) { Text("Rename") }
             }
-            IconButton(onClick = onDelete, enabled = !busy) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete model")
-            }
+            if (!model.inAppStorage) Text("This file stays in its original folder; removing it here only unregisters it.", style = MaterialTheme.typography.labelSmall)
         }
     }
+    if (renameDialog) {
+        AlertDialog(
+            onDismissRequest = { renameDialog = false },
+            title = { Text("Rename model") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true, label = { Text("New name") })
+                    if (model.name.contains(Regex("-\\d{5}-of-\\d{5}\\.gguf$", RegexOption.IGNORE_CASE))) {
+                        Text("All shards will be renamed together; GGUF split numbering is preserved.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { renameDialog = false; onRename(renameText) }) { Text("Rename") } },
+            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("Cancel") } }
+        )
+    }
 }
+
+/**
+ * Resolve only Android's real external-storage DocumentsProvider URIs to the backing file path.
+ * Arbitrary cloud providers and Downloads virtual documents intentionally return null: their
+ * content:// URI cannot safely be passed to the native GGUF loader as a filesystem path.
+ */
+private fun resolveSharedStorageDocumentPath(context: android.content.Context, uri: Uri): String? = runCatching {
+    if (!DocumentsContract.isDocumentUri(context, uri) ||
+        uri.authority != "com.android.externalstorage.documents") return@runCatching null
+
+    val documentId = DocumentsContract.getDocumentId(uri)
+    val colon = documentId.indexOf(':')
+    if (colon <= 0 || colon == documentId.lastIndex) return@runCatching null
+
+    val volumeId = documentId.substring(0, colon)
+    val relativePath = documentId.substring(colon + 1).replace('\\', '/')
+    if (relativePath.startsWith('/') || relativePath.split('/').any { it == ".." }) return@runCatching null
+
+    val base = if (volumeId.equals("primary", ignoreCase = true)) {
+        Environment.getExternalStorageDirectory()
+    } else {
+        // External-volume file roots usually look like /storage/<UUID>/Android/data/<package>/files.
+        context.getExternalFilesDirs(null).filterNotNull().firstNotNullOfOrNull { appDir ->
+            val normalized = appDir.absolutePath.replace('\\', '/')
+            val marker = "/Android/data/${context.packageName}/"
+            val at = normalized.indexOf(marker)
+            if (at > 0 && normalized.substring(0, at).substringAfterLast('/') == volumeId) {
+                File(normalized.substring(0, at))
+            } else null
+        } ?: return@runCatching null
+    }.canonicalFile
+
+    val selected = File(base, relativePath).canonicalFile
+    if (selected.path != base.path && !selected.path.startsWith(base.path + File.separator)) return@runCatching null
+    selected.path
+}.getOrNull()
+
+private fun hasSharedPathAccess(context: android.content.Context): Boolean = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+    else -> true
+}
+
+/** Only absolute paths in Android shared/external storage need the special storage grant. */
+private fun isSharedAbsolutePath(rawPath: String): Boolean {
+    val path = rawPath.trim().replace('\\', '/')
+    return path.startsWith("/storage/") || path == "/sdcard" || path.startsWith("/sdcard/")
+}
+

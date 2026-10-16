@@ -226,7 +226,7 @@ fun ChatInputBar(
                     ToggleIcon(
                         icon = Icons.Default.Language,
                         on = isWebSearchEnabled,
-                        description = if (isWebSearchEnabled) "Web search: ON" else "Web search: OFF",
+                        description = if (isWebSearchEnabled) "Web & image search: ON" else "Web & image search: OFF",
                         onClick = onToggleWebSearch
                     )
                     ToggleIcon(

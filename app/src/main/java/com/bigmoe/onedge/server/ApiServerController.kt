@@ -48,20 +48,19 @@ class ApiServerController(
  * adb hook so the server can be tested before (or without) the settings screen:
  *   adb shell am start -n <package>/.MainActivity --es api_server start --ei api_port 8080 --es api_key test-key
  *   adb shell am start -n <package>/.MainActivity --es api_server stop
- * Only the extras listed here are read; they set the same persisted settings the screen does.
+ * Debuggable builds only (see AppContainer.handleApiServerIntent): MainActivity is exported, so in a release build any
+ * app could use these extras to set the key or switch authentication off. Release builds use the settings screen.
  */
 object ApiServerIntentHook {
     const val EXTRA_ACTION = "api_server"
     const val EXTRA_PORT = "api_port"
     const val EXTRA_KEY = "api_key"
-    const val EXTRA_NO_AUTH = "api_no_auth"
 
     suspend fun handle(intent: Intent?, controller: ApiServerController, settings: EngineSettingsDataStore) {
         val action = intent?.getStringExtra(EXTRA_ACTION) ?: return
         if (intent.hasExtra(EXTRA_PORT)) settings.updateServerPort(intent.getIntExtra(EXTRA_PORT, 8080))
         val key = intent.getStringExtra(EXTRA_KEY)
         if (!key.isNullOrBlank()) settings.updateServerApiKey(key)
-        if (intent.hasExtra(EXTRA_NO_AUTH)) settings.updateServerRequireKey(!intent.getBooleanExtra(EXTRA_NO_AUTH, false))
         when (action) {
             "start" -> controller.setEnabled(true)
             "stop" -> controller.setEnabled(false)
