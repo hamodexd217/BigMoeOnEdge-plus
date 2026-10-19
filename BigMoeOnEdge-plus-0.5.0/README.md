@@ -31,7 +31,7 @@
 
 > **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
 
-> **Project update:** v0.4.5. Check the repository's [Releases page](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases) for the latest APK and release notes.
+> **Project update:** v0.5.0 (performance-investigation release). Check the repository's [Releases page](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases) for the latest APK and release notes.
 
 ## What is BigMoeOnEdge+?
 
@@ -79,7 +79,26 @@ The model manager loads GGUF models and `mmproj` projector files, and detects wh
 | Local API server | Optional on-device server (Anthropic Messages + OpenAI chat APIs) so other apps, such as Claude Code, can use the loaded model |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
 
-## What's new in v0.4.5
+## What's new in v0.5.0
+
+This release is a performance investigation. On the owner's phone BigMoeOnEdge+ decoded at about 1.3-1.4 tokens/s against about 2.0-2.3 for the
+original BigMoeOnEdge 0.29.0, on every model tried. v0.5.0 recovers part of that gap; **it does not fully close it, and the remaining cause is not proven.**
+
+* **`android:appCategory="game"`**, as in the original app. Measured by the owner: about 1.3-1.4 -> about 1.7 tokens/s on their phone. Vendor-specific:
+  some performance layers use it to pick a CPU profile, and Samsung's game service has been reported to throttle such apps. Build without it with `-PbmoeAppCategory=undefined`.
+* **Fast-core pinning and a small priority boost** for the engine's compute threads (`perf_tuning.h`). Experimental and unmeasured. It cannot raise CPU clocks, which needs root. Disable with `-PbmoePinFastCores=false`.
+* **Less UI work while generating:** the streaming cursor and status indicator no longer run per-frame animations; they blink about twice a second. Experimental and unmeasured.
+* **Model picker in the chat:** the chip button in the chat's top bar now opens a list of your models. Tap one to load it (the usual memory check and projector choice follow) or tap the loaded one to unload it; "Manage models..." still opens the Models page.
+* **MTP folded away on the Models page:** each model card has a collapsible "MTP draft" section (arrow). Expanded, it holds the sidecar Attach control, a note that **MTP does not work with an mmproj** (the engine refuses an image turn while Guess ahead is on), and the MTP / Guess ahead settings, which moved here from Settings. Rename is now a pencil icon on the model row.
+* **Performance & engine is now the first section in Settings.**
+* **Diagnostics:** one `Run stats:` logcat line per generation and a `CPU features compiled in:` line (`adb logcat -s OnEdge-JNI`), plus `scripts/bmoe-capture.sh` for A/B captures of CPU clocks, memory pressure and thermals.
+* **Version:** app version is now 0.5.0 (the Gradle `versionName` previously still read 0.4.0). The engine stays BigMoeOnEdge 0.28.0.
+
+Everything is documented, with the measurements, what was ruled out, corrections to earlier assumptions, and what is unverified, in
+[`docs/PERFORMANCE_INVESTIGATION_0.5.0.md`](docs/PERFORMANCE_INVESTIGATION_0.5.0.md). The changes were checked statically only: the Android build and a device
+benchmark were not run by their author (see *Testing and status*).
+
+## Previous release: v0.4.5
 
 This release focuses on chat bubble sizing and message alignment:
 
@@ -110,6 +129,12 @@ Generation speed depends on the model, quantization, context size, storage speed
 
 **I/O and compute overlap:** the Settings screen has an *I/O and compute overlap* switch. When enabled, the engine issues the next weight reads while the current layer is computing, so flash latency is hidden behind the work. Its effect depends on the model and device, so compare tokens/s with the switch on and off on your own hardware.
 
+**Known speed gap (v0.5.0):** on the owner's phone the original BigMoeOnEdge decodes faster than BigMoeOnEdge+ with the same model and settings. The
+investigation found that the two apps' engine code, settings mapping and build flags are equivalent where they could be compared, that the original runs
+with `android:appCategory="game"` (now added here), and that during Plus's runs the phone showed memory reclaim and a CPU clock ceiling. The two apps were
+not compared under identical phone conditions, so the rest of the gap is unexplained. For a fair comparison: restart the phone, close other apps, set the
+same I/O lanes in both apps, generate 100+ tokens, repeat several runs, and compare the metrics CSVs. Do not judge speed from the first few tokens, which run on a cold cache.
+
 Some feature tests intentionally use a smaller model so they finish faster. Those tests show that a feature works. They do not represent the performance of a large model.
 
 ## Download
@@ -118,7 +143,7 @@ The latest release includes an installable Android APK:
 
 **[Download the latest APK](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest)**
 
-Current release: **BigMoeOnEdge+ v0.4.5**.
+Current release: **BigMoeOnEdge+ v0.5.0**.
 
 The app version and engine version (BigMoeOnEdge 0.28.0) are versioned separately.
 
@@ -161,6 +186,16 @@ Build for ARM64 and x86_64:
 
 ```bash
 ./gradlew assembleDebug -PbmoeAbis=arm64-v8a,x86_64
+```
+
+Performance-related build options (both change only how the engine's threads are scheduled, not any inference setting):
+
+```bash
+# android:appCategory written to the manifest (default: game, as in BigMoeOnEdge 0.29.0). Use "undefined" for the old behaviour.
+./gradlew assembleDebug -PbmoeAppCategory=undefined
+
+# Keep the engine's compute threads on the fast CPU cores with a small priority boost (default: on).
+./gradlew assembleDebug -PbmoePinFastCores=false
 ```
 
 Run JVM unit tests:
@@ -286,6 +321,8 @@ Native dependencies are vendored rather than pulled in as git submodules.
 
 * `EngineNativeBridge.kt`: JNI bridge to the engine.
 
+* `app/src/main/cpp/perf_tuning.h`: header-only helper that keeps the compute threads on the fast cores (v0.5.0, experimental).
+
 * `patches/`: project-specific native changes in re-applicable patch form (`0004` adds the stateless chat mode used by the API server: tools in the chat template, parsed tool calls, stop strings, per-request sampling, KV prefix reuse).
 
 The optional Hexagon/NPU path is separate from the default CPU build and requires the Snapdragon toolchain.
@@ -313,6 +350,8 @@ docs/
   ...
 patches/
 scripts/
+  bmoe-capture.sh       read-only A/B capture of CPU clocks, memory pressure and thermals while generating
+  kt_lint.py            offline Kotlin sanity checks (not a compiler)
 .github/workflows/
 ```
 
@@ -326,11 +365,23 @@ The local API server is the newest feature and has had the least real-world test
 
 [`docs/STATUS.md`](https://docs/STATUS.md?utm_source=chatgpt.com) has the full test checklist, implementation notes, and what still needs validation on real devices.
 
+**v0.5.0 status:** the changes in v0.5.0 were validated statically only. The `appCategory` change was measured by the app owner on one phone (about 1.3-1.4 ->
+about 1.7 tokens/s; run counts and thermal state not controlled). The fast-core pinning and UI changes were not measured. Host checks that were run: patch application,
+unit tests of the core-selection logic (9 checks), compilation of the new native helper code with `-Wall -Wextra -Wformat=2`, and `scripts/kt_lint.py` (unchanged findings).
+The UI changes (model picker, collapsible MTP section, Settings order) were checked with the offline linter, bracket balance and import resolution only; they have not been compiled or seen on a device by their author.
+**Not run:** an Android NDK/Gradle build, a Kotlin compile, any benchmark by the author.
+
 ### Known limitations
 
 BigMoeOnEdge+ is under active development, and behavior depends on the model and device.
 
 * Inference speed varies a lot between devices and models.
+
+* v0.5.0: BigMoeOnEdge+ may still decode slower than the original BigMoeOnEdge on the same phone; the remaining cause is not demonstrated (see `docs/PERFORMANCE_INVESTIGATION_0.5.0.md`).
+
+* v0.5.0: an app cannot set CPU clock speed or the governor (that needs root). Thermal and vendor CPU limits, and memory pressure from other apps, are outside the app's control.
+
+* v0.5.0: `android:appCategory="game"` can help on some phones and be neutral or harmful on others (Samsung's game service has been reported to throttle such apps); measure on your device.
 
 * Web search requires a network connection and may be slow with large local models.
 

@@ -177,6 +177,7 @@ fun AppNavigation(
                                 onNavigateHome = { goTo(TopTab.CHATS) },
                                 onNavigateToModels = { goTo(TopTab.MODELS) },
                                 onOpenFile = { path -> navController.navigate(Screen.File.createRoute(path)) },
+                                modelViewModel = modelViewModel,
                                 wideMode = true,
                                 modifier = Modifier.weight(1f)
                             )
@@ -189,7 +190,8 @@ fun AppNavigation(
                             onOpenChat = { id -> openChat(id) },
                             onNavigateHome = { goTo(TopTab.CHATS) },
                             onNavigateToModels = { goTo(TopTab.MODELS) },
-                            onOpenFile = { path -> navController.navigate(Screen.File.createRoute(path)) }
+                            onOpenFile = { path -> navController.navigate(Screen.File.createRoute(path)) },
+                            modelViewModel = modelViewModel
                         )
                     }
                 }

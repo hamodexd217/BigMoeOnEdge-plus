@@ -18,6 +18,7 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -27,11 +28,62 @@
 #include <vector>
 
 #include "bmoe/session.h"
+#include "ggml-cpu.h" // ggml_cpu_has_* : one-time CPU feature line in the log (diagnostic only)
+#ifdef BMOE_PIN_FAST_CORES
+#include "perf_tuning.h"
+#endif
 
 #define LOG_TAG "OnEdge-JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+#ifdef BMOE_PIN_FAST_CORES
+// Compute thread count of the open session, so the fast-core set is never smaller than it.
+static std::atomic<int> g_n_threads{4};
+// Slightly favoured scheduling weight for the engine thread (nice 0 -> -4). The UI's own threads run at -10.
+static constexpr int kEngineNice = -4;
+
+// Applies the fast-core mask + priority boost to the calling (engine worker) thread for one generate call;
+// ggml's compute threads are created from this thread and inherit both. Logs the outcome the first time and
+// whenever it changes.
+class EnginePerfScope {
+public:
+    EnginePerfScope()
+        : plan_(bmoe_perf::plan_fast_cores("/sys/devices/system/cpu", static_cast<int>(sysconf(_SC_NPROCESSORS_CONF)),
+                                           g_n_threads.load())),
+          guard_(plan_, kEngineNice) {
+        char buf[200];
+        std::snprintf(buf, sizeof(buf), "%s | affinity=%d nice=%d", plan_.note.c_str(), guard_.affinity_applied() ? 1 : 0,
+                      guard_.nice_applied() ? kEngineNice : 0);
+        static std::mutex mu;
+        static std::string last;
+        std::lock_guard<std::mutex> lk(mu);
+        if (last != buf) {
+            last = buf;
+            LOGI("Engine thread tuning: %s", buf);
+        }
+    }
+
+private:
+    bmoe_perf::CorePlan plan_;
+    bmoe_perf::ScopedFastCores guard_;
+};
+#endif
+
+// Diagnostic only (no behaviour change): one logcat line per generation with the engine's own per-token
+// decomposition. cores_busy = cpu_s/token / wall_s/token: close to the thread count means compute-bound;
+// much lower means cores were waiting (flash stall) or throttled/preempted. Read with:
+//   adb logcat -s OnEdge-JNI
+static void log_run_stats(const bmoe::RunSummary & s) {
+    const double cores_busy = s.s_per_token > 0.0 ? s.cpu_s_per_token / s.s_per_token : 0.0;
+    LOGI("Run stats: n_gen=%d tok/s=%.3f s/tok=%.3f compute_s/tok=%.3f io_s/tok=%.3f stall_s/tok=%.3f "
+         "mgmt_s/tok=%.3f cpu_s/tok=%.3f cores_busy=%.2f majflt/tok=%.1f loop_overhead_s/tok=%.4f "
+         "cache_hit=%.1f%% read_mib=%.0f",
+         s.n_generated, s.tokens_per_second, s.s_per_token, s.moe_compute_s_per_token, s.moe_io_s_per_token,
+         s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cpu_s_per_token, cores_busy, s.majflt_per_token,
+         s.loop_overhead_s_per_token, s.cache_hit_pct, s.moe_read_mib);
+}
 
 // Layout of the int/float arrays passed to nativeLoadModel. MUST stay in sync with
 // LoadConfig.toIntArray()/toFloatArray() in EngineTypes.kt (a unit test pins the Kotlin side).
@@ -269,6 +321,9 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
         cfg.spec.draft_max = std::clamp<int>(iv[I_DRAFT_MAX], 1, bmoe::SpecConfig::draft_max_limit);
     }
 
+#ifdef BMOE_PIN_FAST_CORES
+    g_n_threads.store(cfg.n_threads > 0 ? cfg.n_threads : 4);
+#endif
     LOGI("Opening Session: n_ctx=%d n_batch=%d ubatch=%d threads=%d streaming=%d cache_mode=%d cache_mb=%d "
          "dense=%d overlap=%d drop=%d topk_override=%d spec=%d",
          cfg.n_ctx, cfg.n_batch, cfg.n_ubatch, cfg.n_threads, streaming ? 1 : 0, static_cast<int>(iv[I_CACHE_MODE]),
@@ -305,6 +360,8 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
         g_model_info = info;
     }
     LOGI("Session opened");
+    LOGI("CPU features compiled in: neon=%d fp16_va=%d dotprod=%d i8mm=%d", ggml_cpu_has_neon(), ggml_cpu_has_fp16_va(),
+         ggml_cpu_has_dotprod(), ggml_cpu_has_matmul_int8());
     return to_bytes(env, std::string());
 }
 
@@ -354,6 +411,9 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerate(
     jobject callback)
 {
     if (callback == nullptr) return JNI_FALSE;
+#ifdef BMOE_PIN_FAST_CORES
+    const EnginePerfScope perf_scope;
+#endif
 
     jclass cb_cls = env->GetObjectClass(callback);
     jmethodID on_token_mid = env->GetMethodID(cb_cls, "onToken", "([B[B)Z");
@@ -466,6 +526,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerate(
     }
 
     const bmoe::RunSummary & s = result.summary;
+    log_run_stats(s);
     finish(true, result.cancelled, "", result.generated_text, result.reasoning_text, s.n_generated, s.n_prompt,
            s.n_past, s.tokens_per_second, s.prefill_seconds, s.cache_hit_pct);
     return JNI_TRUE;
@@ -487,6 +548,9 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerateChat(
     jobject callback)
 {
     if (callback == nullptr) return JNI_FALSE;
+#ifdef BMOE_PIN_FAST_CORES
+    const EnginePerfScope perf_scope;
+#endif
 
     jclass cb_cls = env->GetObjectClass(callback);
     jmethodID on_token_mid = env->GetMethodID(cb_cls, "onToken", "([B[B)Z");

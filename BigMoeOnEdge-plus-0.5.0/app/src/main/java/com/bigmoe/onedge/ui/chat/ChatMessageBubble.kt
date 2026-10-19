@@ -6,10 +6,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -149,13 +145,9 @@ fun ChatMessageBubble(
                         onOpenAsArtifact = onOpenCodeArtifact
                     )
                     if (isStreaming) {
-                        val transition = rememberInfiniteTransition(label = "cursor")
-                        val cursorAlpha by transition.animateFloat(
-                            initialValue = 1f,
-                            targetValue = 0f,
-                            animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
-                            label = "cursor_alpha"
-                        )
+                        // A slow on/off blink (state flips twice a second) instead of an infinite animation,
+                        // which invalidated the UI on every display frame for the whole generation.
+                        val cursorOn by rememberSlowBlink()
                         Spacer(modifier = Modifier.width(4.dp))
                         Box(
                             modifier = Modifier
@@ -163,7 +155,7 @@ fun ChatMessageBubble(
                                 .size(width = 8.dp, height = 18.dp)
                                 // Read in the draw phase: .alpha(cursorAlpha) read the animated value during composition,
                                 // so the whole bubble content recomposed on every animation frame while streaming.
-                                .graphicsLayer { this.alpha = cursorAlpha }
+                                .graphicsLayer { this.alpha = if (cursorOn) 1f else 0f }
                                 .background(textColor)
                         )
                     }

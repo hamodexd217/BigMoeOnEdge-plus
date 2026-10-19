@@ -10,6 +10,7 @@ import android.provider.DocumentsContract
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -52,6 +56,8 @@ import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.ModelFile
 import com.bigmoe.onedge.core.ModelManager
+import com.bigmoe.onedge.core.SpecSource
+import com.bigmoe.onedge.data.local.datastore.EngineSettings
 import com.bigmoe.onedge.data.local.datastore.loadConfigDiffers
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -155,15 +161,15 @@ fun ModelScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                         Button(
-                            onClick = { noCopyPicker.launch(arrayOf("*/*")) },
-                            enabled = ui.importProgress == null,
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("Add GGUF from storage (no copy)") }
-                        OutlinedButton(
                             onClick = { picker.launch(arrayOf("*/*")) },
                             enabled = ui.importProgress == null,
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Import GGUF file(s) (copy)") }
+                        OutlinedButton(
+                            onClick = { noCopyPicker.launch(arrayOf("*/*")) },
+                            enabled = ui.importProgress == null,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Add GGUF from storage (no copy) may be slower") }
                         TextButton(onClick = { showAdvancedPath = !showAdvancedPath }) {
                             Text(if (showAdvancedPath) "Hide advanced path entry" else "Advanced: enter a path manually")
                         }
@@ -286,7 +292,9 @@ fun ModelScreen(
                     drafts = ui.drafts,
                     attachedDraftPath = ui.modelDrafts[model.path],
                     onAttachDraft = { viewModel.attachDraft(model.path, it) },
-                    onRename = { viewModel.rename(model.path, it) }
+                    onRename = { viewModel.rename(model.path, it) },
+                    settings = settings,
+                    viewModel = viewModel
                 )
             }
             // keeps the last row clear of the floating navigation bar
@@ -294,36 +302,40 @@ fun ModelScreen(
         }
     }
 
-    ui.pendingLoad?.let { pending ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissPendingLoad,
-            title = { Text(if (pending.advice.canLoad) "Load model?" else "Cannot load") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    pending.advice.errors.forEach { Text("• $it", color = MaterialTheme.colorScheme.error) }
-                    pending.advice.warnings.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
-                    if (pending.advice.canLoad) {
-                        ProjectorPicker(
-                            projectors = pending.projectors,
-                            selected = pending.selectedProjector,
-                            onSelect = viewModel::selectProjector
-                        )
-                        Text(
-                            "Loading can take a minute or more and uses a lot of memory. Keep the app open.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
+    ui.pendingLoad?.let { pending -> PendingLoadDialog(viewModel, pending) }
+}
+
+/** The confirmation step of a load (memory advice + projector choice). Shared by the Models page and the chat's model picker. */
+@Composable
+internal fun PendingLoadDialog(viewModel: ModelViewModel, pending: PendingLoad) {
+    AlertDialog(
+        onDismissRequest = viewModel::dismissPendingLoad,
+        title = { Text(if (pending.advice.canLoad) "Load model?" else "Cannot load") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                pending.advice.errors.forEach { Text("• $it", color = MaterialTheme.colorScheme.error) }
+                pending.advice.warnings.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+                if (pending.advice.canLoad) {
+                    ProjectorPicker(
+                        projectors = pending.projectors,
+                        selected = pending.selectedProjector,
+                        onSelect = viewModel::selectProjector
+                    )
+                    Text(
+                        "Loading can take a minute or more and uses a lot of memory. Keep the app open.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
-            },
-            confirmButton = {
-                if (pending.advice.canLoad) TextButton(onClick = viewModel::confirmLoad) { Text("Load") }
-                else TextButton(onClick = viewModel::dismissPendingLoad) { Text("OK") }
-            },
-            dismissButton = {
-                if (pending.advice.canLoad) TextButton(onClick = viewModel::dismissPendingLoad) { Text("Cancel") }
             }
-        )
-    }
+        },
+        confirmButton = {
+            if (pending.advice.canLoad) TextButton(onClick = viewModel::confirmLoad) { Text("Load") }
+            else TextButton(onClick = viewModel::dismissPendingLoad) { Text("OK") }
+        },
+        dismissButton = {
+            if (pending.advice.canLoad) TextButton(onClick = viewModel::dismissPendingLoad) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
@@ -451,11 +463,21 @@ private fun ModelRow(
     drafts: List<ModelFile>,
     attachedDraftPath: String?,
     onAttachDraft: (String?) -> Unit,
-    onRename: (String) -> Unit
+    onRename: (String) -> Unit,
+    settings: EngineSettings,
+    viewModel: ModelViewModel
 ) {
     var draftMenu by remember { mutableStateOf(false) }
     var renameDialog by remember { mutableStateOf(false) }
     var renameText by remember(model.path) { mutableStateOf(model.name) }
+    // MTP is optional and most people never use it, so its section stays folded until the arrow is pressed.
+    var mtpExpanded by remember(model.path) { mutableStateOf(false) }
+    val attachedName = drafts.firstOrNull { it.path == attachedDraftPath }?.name
+    val mtpSummary = when (settings.spec) {
+        SpecSource.MTP -> "On \u2022 " + (attachedName ?: "model's own head")
+        SpecSource.NGRAM -> "Off (n-gram guess-ahead is on)"
+        SpecSource.OFF -> if (attachedName != null) "Off \u2022 sidecar: $attachedName" else "Off"
+    }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -468,28 +490,50 @@ private fun ModelRow(
                 } else {
                     TextButton(onClick = onLoad, enabled = !busy) { Text("Load") }
                 }
+                // Rename renames the model itself, so it lives here and not inside the (optional) MTP section.
+                IconButton(onClick = { renameDialog = true }) {
+                    Icon(Icons.Default.Edit, contentDescription = "Rename model")
+                }
                 IconButton(onClick = onDelete, enabled = !busy) {
                     Icon(Icons.Default.Delete, contentDescription = "Remove model")
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { mtpExpanded = !mtpExpanded }.padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(Modifier.weight(1f)) {
                     Text("MTP draft", style = MaterialTheme.typography.labelMedium)
-                    Text(
-                        drafts.firstOrNull { it.path == attachedDraftPath }?.name ?: "No sidecar attached",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Text(mtpSummary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                androidx.compose.foundation.layout.Box {
-                    OutlinedButton(onClick = { draftMenu = true }) { Text("Attach") }
-                    DropdownMenu(expanded = draftMenu, onDismissRequest = { draftMenu = false }) {
-                        DropdownMenuItem(text = { Text("Use model's built-in MTP / none") }, onClick = { draftMenu = false; onAttachDraft(null) })
-                        drafts.forEach { d ->
-                            DropdownMenuItem(text = { Text(d.name) }, onClick = { draftMenu = false; onAttachDraft(d.path) })
+                Icon(
+                    imageVector = if (mtpExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (mtpExpanded) "Collapse MTP draft" else "Expand MTP draft",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            if (mtpExpanded) {
+                Text(
+                    "Note: MTP does not work with an mmproj (a vision / image projector). While Guess ahead is on, a message with an image is refused. Turn Guess ahead off to use images.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Separate MTP sidecar", style = MaterialTheme.typography.labelMedium)
+                        Text(attachedName ?: "No sidecar attached", style = MaterialTheme.typography.bodySmall)
+                    }
+                    androidx.compose.foundation.layout.Box {
+                        OutlinedButton(onClick = { draftMenu = true }) { Text("Attach") }
+                        DropdownMenu(expanded = draftMenu, onDismissRequest = { draftMenu = false }) {
+                            DropdownMenuItem(text = { Text("Use model's built-in MTP / none") }, onClick = { draftMenu = false; onAttachDraft(null) })
+                            drafts.forEach { d ->
+                                DropdownMenuItem(text = { Text(d.name) }, onClick = { draftMenu = false; onAttachDraft(d.path) })
+                            }
                         }
                     }
                 }
-                TextButton(onClick = { renameDialog = true }) { Text("Rename") }
+                MtpSettingsPanel(settings = settings, viewModel = viewModel)
             }
             if (!model.inAppStorage) Text("This file stays in its original folder; removing it here only unregisters it.", style = MaterialTheme.typography.labelSmall)
         }

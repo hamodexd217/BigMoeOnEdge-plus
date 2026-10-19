@@ -26,6 +26,17 @@ val bmoeCiCmakeArguments: List<String> = if (
 // A build made with a feature the phone lacks crashes on load (SIGILL), so the default stays the safe baseline.
 val bmoeArmArch: String? = providers.gradleProperty("bmoeArmArch").orNull?.trim()?.takeIf { it.isNotEmpty() }
 
+// android:appCategory written into the manifest (see AndroidManifest.xml). "game" matches the reference app;
+// pass -PbmoeAppCategory=undefined to build without the hint (the behaviour before this property existed).
+val bmoeAppCategory: String = (providers.gradleProperty("bmoeAppCategory").orNull ?: "game").trim().lowercase().also {
+    val allowed = setOf("accessibility", "audio", "game", "image", "maps", "news", "productivity", "social", "video", "undefined")
+    require(it in allowed) { "bmoeAppCategory must be one of $allowed, got '$it'" }
+}
+
+// Keep the engine's compute threads on the fast CPU cores with a small priority boost (see cpp/perf_tuning.h).
+// On by default; pass -PbmoePinFastCores=false to build without it.
+val bmoePinFastCores: Boolean = providers.gradleProperty("bmoePinFastCores").orNull?.trim()?.lowercase() != "false"
+
 val bmoeAbis: List<String> = (providers.gradleProperty("bmoeAbis").orNull ?: "arm64-v8a")
     .split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
@@ -39,8 +50,9 @@ android {
         // dependable from Android 10 (upstream uses 29); the NDK toolchain also links against this platform level.
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
+        manifestPlaceholders["bmoeAppCategory"] = bmoeAppCategory
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -54,7 +66,8 @@ android {
                     *listOf(
                         "-DANDROID_STL=c++_shared",
                         "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
-                        "-DBMOE_ENABLE_MULTIMODAL=" + (if (bmoeMultimodal) "ON" else "OFF")
+                        "-DBMOE_ENABLE_MULTIMODAL=" + (if (bmoeMultimodal) "ON" else "OFF"),
+                        "-DBMOE_PIN_FAST_CORES=" + (if (bmoePinFastCores) "ON" else "OFF")
                     ).plus(bmoeCiCmakeArguments)
                         .plus(if (bmoeArmArch != null) listOf("-DBMOE_ARM_ARCH=$bmoeArmArch") else emptyList())
                         .toTypedArray()

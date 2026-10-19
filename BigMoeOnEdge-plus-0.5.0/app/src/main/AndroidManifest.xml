@@ -16,9 +16,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
 
+    <!-- appCategory is a performance hint, not a claim about what the app is. The reference app
+         (BigMoeOnEdge 0.29.0) declares "game": some vendor performance layers read it to pick a CPU
+         governor profile (measured there on OxygenOS: foreground CPU ceiling 1.9/1.65 GHz -> 3.32/3.80 GHz).
+         The effect is vendor specific: neutral on stock Android, and Samsung's game service has been
+         reported to throttle apps it classifies this way. A manifest attribute is fixed at install time,
+         so it is a build-time choice, filled from the Gradle property bmoeAppCategory (default "game";
+         build with -PbmoeAppCategory=undefined for the previous behaviour). Measure per device. -->
     <application
         android:name=".OnEdgeApplication"
         android:allowBackup="false"
+        android:appCategory="${bmoeAppCategory}"
         android:largeHeap="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"

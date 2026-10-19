@@ -231,6 +231,12 @@ class ModelViewModel(
         }
     }
 
+    // MTP / "Guess ahead" settings. They moved here from Settings; same data-store calls, same limits.
+    fun updateSpec(v: com.bigmoe.onedge.core.SpecSource) { viewModelScope.launch { settingsDataStore.updateSpec(v) } }
+    fun updateDraftMax(v: Int) { viewModelScope.launch { settingsDataStore.updateDraftMax(v) } }
+    fun updateMtpPMinPct(v: Int) { viewModelScope.launch { settingsDataStore.updateMtpPMinPct(v) } }
+    fun updateSeparateMtpDraftEnabled(v: Boolean) { viewModelScope.launch { settingsDataStore.updateSeparateMtpDraftEnabled(v) } }
+
     fun setAutoLoad(enabled: Boolean) {
         viewModelScope.launch { settingsDataStore.updateAutoLoadLastModel(enabled) }
     }

@@ -97,6 +97,13 @@ if(BMOE_HEXAGON_ENABLED)
     target_compile_definitions(onedge-engine PRIVATE BMOE_HAVE_HEXAGON=1)
 endif()
 
+# Keep the engine's compute threads on the fast cores with a small priority boost (perf_tuning.h).
+# Placement/scheduling only: it cannot change CPU frequency. Fails safe when core info is unavailable.
+option(BMOE_PIN_FAST_CORES "Pin engine compute threads to the fast CPU cores" ON)
+if(BMOE_PIN_FAST_CORES)
+    target_compile_definitions(onedge-engine PRIVATE BMOE_PIN_FAST_CORES=1)
+endif()
+
 find_library(log-lib log)
 
 target_link_libraries(onedge-engine PRIVATE bmoe_core ${log-lib})

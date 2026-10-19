@@ -152,3 +152,74 @@ On the same device and OS build, use the same exact GGUF/mmproj and quantization
    ```
 
 No changes were pushed to a remote repository during this audit.
+
+## Addendum: `android:appCategory` (experimental, unverified on a device)
+
+The reference app (BigMoeOnEdge 0.29.0) declares `android:appCategory="game"`; this app did not. Per the
+reference's own notes, some vendor performance layers use the attribute to choose a CPU governor profile
+(on its OxygenOS test device the foreground CPU ceiling rose from 1.9/1.65 GHz to 3.32/3.80 GHz), while
+Samsung's game service has been reported to throttle apps it classifies this way. This build now writes the
+attribute from the Gradle property `bmoeAppCategory` (default `game`).
+
+Status: **measured by the app owner, not by the author of this change.** Reported (same device and settings,
+temperature 0, 4 threads, run counts not recorded): original app ~2.3 t/s, this app 1.3-1.4 t/s, this app with
+`appCategory="game"` ~1.7 t/s. So it is a real but PARTIAL lever (about 37% of the gap); roughly 0.6 t/s remains
+unexplained. The remaining candidates are listed under "Run stats" below.
+
+A/B procedure (same phone, same model, same prompt, same settings, >= 3 runs each, phone cool, plugged in or
+at the same battery level):
+
+1. Build/install with `-PbmoeAppCategory=undefined` (previous behaviour). While generating, run
+   `adb shell "cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"` a few times and note the highest values.
+   Note the decode tokens/second the app shows.
+2. Build/install with the default (`game`) after uninstalling the first build, and repeat.
+3. Keep `game` only if decode tokens/second improves and does not drop on your device.
+
+## Diagnostic logging (no behaviour change)
+
+Each generation now writes one line to logcat, and each model load writes a CPU-feature line:
+
+    adb logcat -s OnEdge-JNI
+
+* `Run stats: ... compute_s/tok io_s/tok stall_s/tok cpu_s/tok cores_busy majflt/tok cache_hit read_mib`
+  `cores_busy` = cpu_s/tok / wall s/tok. Near the thread count (4) = compute-bound; well below it = cores waiting
+  on flash (see `stall_s/tok`, `io_s/tok`) or throttled/preempted.
+* `CPU features compiled in: neon fp16_va dotprod i8mm` should read neon=1 fp16_va=1 dotprod=1 (i8mm=0 is the
+  intended baseline). dotprod=0 would explain a large slowdown on every quantized model.
+
+Compare these lines with the original app's Metrics screen (same fields) for the same model and prompt.
+
+## Addendum: fast-core pinning + priority (experimental, unverified on a device)
+
+Evidence that motivated it (one capture, Plus, 8-core phone: cpu0-2 max 2.016 GHz, cpu3-6 max 2.803 GHz, cpu7 max 3.187 GHz):
+the three little cores sat at their maximum clock in all 15 samples during generation, and CPU-seconds per token were about
+2x the original's for the same routed-expert work. ggml's compute threads synchronise at every graph step, so one thread on a
+slow core slows all of them. This is consistent with threads landing on little cores; it is NOT proven.
+
+What it does (`cpp/perf_tuning.h`, used from `native-bridge.cpp`): around each generate call, the engine's worker thread gets
+a CPU mask of the "fast" cores (max frequency >= 75% of the fastest core) and nice -4. ggml creates its compute threads from
+that thread on every graph compute and, at its defaults, leaves the inherited mask/priority alone, so they inherit both.
+Both are restored when the call returns. It does nothing (and logs why) if per-core frequencies are unreadable, the cores are
+homogeneous, there are fewer fast cores than compute threads, or the kernel refuses.
+
+What it cannot do: change CPU frequency, the governor, thermal limits or the vendor ceiling. That needs root.
+
+Log line (adb logcat -s OnEdge-JNI): `Engine thread tuning: fast cores {3,4,5,6,7} of 8 | affinity=1 nice=-4`.
+Disable at build time with `-PbmoePinFastCores=false` (CMake option `BMOE_PIN_FAST_CORES`).
+
+## Addendum: UI work while generating (experimental, unmeasured)
+
+The engine's cpu_s_per_token is process-wide CPU time. In the reference app the engine is its own process, so that figure
+excludes the UI; in this app the engine shares a process with the UI, so the figure includes UI threads. The earlier
+"about 2x CPU-seconds per token" comparison therefore overstated the difference somewhat (one `top` sample showed the main
+thread plus RenderThread at roughly a quarter of a core while generating; a single sample, not a measurement).
+
+The reference app runs no animation during generation. This app ran two infinite ones: the streaming cursor
+(`rememberInfiniteTransition`) and the live-status spinner (`CircularProgressIndicator`). An infinite animation invalidates the
+UI on every display frame (60-120 Hz) for as long as it is on screen, which keeps the main thread, RenderThread and the system
+compositor busy beside the engine's compute threads and adds heat.
+
+Change: `ui/chat/SlowBlink.kt` provides a flag that flips about twice a second and a small pulsing dot. The cursor and the
+live-status row use them: the same "something is happening" cue, about 2 UI updates a second instead of 60-120. Nothing else in
+the UI changes. Other screens' spinners (model loading, history drawer) are untouched.
+Not compiled or measured by the author of this change.

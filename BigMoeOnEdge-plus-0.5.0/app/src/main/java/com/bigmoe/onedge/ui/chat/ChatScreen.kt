@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.ui.history.HistoryViewModel
 import com.bigmoe.onedge.ui.home.ChatHistoryPanel
+import com.bigmoe.onedge.ui.models.ModelPickerButton
+import com.bigmoe.onedge.ui.models.ModelViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
@@ -88,6 +89,7 @@ fun ChatScreen(
     onNavigateHome: () -> Unit,
     onNavigateToModels: () -> Unit,
     onOpenFile: (String) -> Unit,
+    modelViewModel: ModelViewModel,
     wideMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -212,9 +214,12 @@ fun ChatScreen(
                     IconButton(onClick = { showFilesSheet = true }) {
                         Icon(imageVector = Icons.Default.FolderOpen, contentDescription = "Chat files")
                     }
-                    IconButton(onClick = onNavigateToModels) {
-                        Icon(imageVector = Icons.Default.Memory, contentDescription = "Models")
-                    }
+                    // Opens a small list of your models (load / unload) instead of jumping to the Models page.
+                    ModelPickerButton(
+                        viewModel = modelViewModel,
+                        isGenerating = uiState.isGenerating,
+                        onManageModels = onNavigateToModels
+                    )
                 }
             )
         },
@@ -550,7 +555,7 @@ private fun LiveStatusRow(text: String, telemetry: String? = null) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+        SlowBlinkDot()
         Text(text = text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         if (!telemetry.isNullOrBlank()) {
             Text("• $telemetry", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
