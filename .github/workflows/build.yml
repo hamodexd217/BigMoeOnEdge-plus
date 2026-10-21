@@ -1,0 +1,34 @@
+name: Update Release
+
+on:
+  push:
+    paths:
+      - '*.zip'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract and clean
+        run: |
+          ZIP=$(ls *.zip | head -1)
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' ! -name "$ZIP" -exec rm -rf {} +
+          unzip -o "$ZIP"
+          SUBDIR=$(unzip -Z1 "$ZIP" | head -1 | cut -d/ -f1)
+          if [ -d "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
+            cp -a "$SUBDIR"/. . && rm -rf "$SUBDIR"
+          fi
+          rm -f "$ZIP"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add -A
+          git commit -m "Update release from zip"
+          git push
