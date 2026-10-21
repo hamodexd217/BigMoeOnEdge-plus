@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.OpenInNew
@@ -45,6 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.ui.theme.AppTheme
 
@@ -102,8 +106,9 @@ private fun MarkdownParagraph(text: String, color: Color) {
                     3 -> MaterialTheme.typography.titleSmall
                     else -> MaterialTheme.typography.bodyLarge
                 }
-                androidx.compose.foundation.text.BasicText(
-                    text = inlineText(l.text, color),
+                LinkedInlineText(
+                    text = l.text,
+                    color = color,
                     style = style.copy(color = color, fontWeight = FontWeight.SemiBold)
                 )
             }
@@ -135,8 +140,9 @@ private fun MarkdownParagraph(text: String, color: Color) {
                     }
                 }
                 Spacer(Modifier.width(8.dp))
-                androidx.compose.foundation.text.BasicText(
-                    text = inlineText(l.text, color),
+                LinkedInlineText(
+                    text = l.text,
+                    color = color,
                     style = bodyStyle(color),
                     modifier = Modifier.weight(1f)
                 )
@@ -144,8 +150,9 @@ private fun MarkdownParagraph(text: String, color: Color) {
             is MdLine.Quote -> Row(modifier = Modifier.height(IntrinsicSize.Min).padding(start = ((l.depth - 1) * 12).dp)) {
                 Box(modifier = Modifier.width(3.dp).fillMaxHeight().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)))
                 Spacer(Modifier.width(8.dp))
-                androidx.compose.foundation.text.BasicText(
-                    text = inlineText(l.text, color),
+                LinkedInlineText(
+                    text = l.text,
+                    color = color,
                     style = bodyStyle(color).copy(fontStyle = FontStyle.Italic),
                     modifier = Modifier.weight(1f)
                 )
@@ -153,8 +160,9 @@ private fun MarkdownParagraph(text: String, color: Color) {
             MdLine.Rule -> Box(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).height(1.dp).background(color.copy(alpha = 0.25f))
             )
-            is MdLine.Plain -> androidx.compose.foundation.text.BasicText(
-                text = inlineText(l.text, color),
+            is MdLine.Plain -> LinkedInlineText(
+                text = l.text,
+                color = color,
                 style = bodyStyle(color)
             )
         }
@@ -196,8 +204,9 @@ private fun TableText(rows: List<List<String>>, color: Color) {
                                 .background(if (rowIndex == 0) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent)
                                 .padding(horizontal = 10.dp, vertical = 9.dp)
                         ) {
-                            androidx.compose.foundation.text.BasicText(
-                                text = inlineText(row.getOrElse(col) { "" }, color),
+                            LinkedInlineText(
+                                text = row.getOrElse(col) { "" },
+                                color = color,
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = color,
                                     fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal
@@ -211,37 +220,112 @@ private fun TableText(rows: List<List<String>>, color: Color) {
     }
 }
 
+private val BARE_WEB_URL = Regex("""(?i)https?://[^\s<>()]+""")
+private const val URL_ANNOTATION = "bmoe-url"
+
+/** Text renderer whose URL annotations are handled by Compose tap events, never by the enclosing chat bubble. */
+@Composable
+internal fun LinkedInlineText(
+    text: String,
+    color: Color,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip
+) {
+    val annotated = inlineText(text, color)
+    val hasWebLinks = annotated.length > 0 && annotated.getStringAnnotations(URL_ANNOTATION, 0, annotated.length).isNotEmpty()
+    if (!hasWebLinks) {
+        // Keep the ordinary, non-link text on the lighter BasicText path.
+        androidx.compose.foundation.text.BasicText(
+            text = annotated,
+            style = style,
+            modifier = modifier,
+            maxLines = maxLines,
+            overflow = overflow
+        )
+    } else {
+        val uriHandler = LocalUriHandler.current
+        ClickableText(
+            text = annotated,
+            style = style,
+            modifier = modifier,
+            maxLines = maxLines,
+            overflow = overflow,
+            onClick = { offset ->
+                val target = annotated.getStringAnnotations(URL_ANNOTATION, offset, offset).firstOrNull()?.item
+                    ?: return@ClickableText
+                val safe = target.trim().trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}')
+                if (safe.startsWith("https://", true) || safe.startsWith("http://", true)) {
+                    runCatching { uriHandler.openUri(safe) }
+                }
+            }
+        )
+    }
+}
+
 @Composable
 private fun inlineText(text: String, color: Color): AnnotatedString {
     val spans = remember(text) { InlineMarkdown.parse(text) }
     val codeBackground = AppTheme.colors.codeBlock
     val codeColor = AppTheme.colors.onCodeBlock
     val linkColor = MaterialTheme.colorScheme.primary
-    val builder = AnnotatedString.Builder()
-    for (s in spans) {
-        val style = SpanStyle(
-            fontWeight = if (s.bold) FontWeight.Bold else null,
-            fontStyle = if (s.italic) FontStyle.Italic else null,
-            textDecoration = when {
-                s.strike -> TextDecoration.LineThrough
-                s.link -> TextDecoration.Underline
-                else -> null
-            },
-            fontFamily = when {
-                s.code -> FontFamily.Monospace
-                s.math -> FontFamily.Serif
-                else -> null
-            },
-            background = if (s.code) codeBackground else Color.Unspecified,
-            color = when {
-                s.code -> codeColor
-                s.link -> linkColor
-                else -> color
+    return remember(text, color, codeBackground, codeColor, linkColor, spans) {
+        val builder = AnnotatedString.Builder()
+
+        fun appendLinked(label: String, target: String, style: SpanStyle) {
+            if (!target.startsWith("https://", true) && !target.startsWith("http://", true)) {
+                builder.withStyle(style) { append(label) }
+                return
             }
-        )
-        builder.withStyle(style) { append(s.text) }
+            builder.pushStringAnnotation(URL_ANNOTATION, target)
+            builder.withStyle(style.copy(color = linkColor, textDecoration = TextDecoration.Underline)) { append(label) }
+            builder.pop()
+        }
+
+        for (span in spans) {
+            val style = SpanStyle(
+                fontWeight = if (span.bold) FontWeight.Bold else null,
+                fontStyle = if (span.italic) FontStyle.Italic else null,
+                textDecoration = when {
+                    span.strike -> TextDecoration.LineThrough
+                    span.linkTarget != null -> TextDecoration.Underline
+                    else -> null
+                },
+                fontFamily = when {
+                    span.code -> FontFamily.Monospace
+                    span.math -> FontFamily.Serif
+                    else -> null
+                },
+                background = if (span.code) codeBackground else Color.Unspecified,
+                color = when {
+                    span.code -> codeColor
+                    span.linkTarget != null -> linkColor
+                    else -> color
+                }
+            )
+            val target = span.linkTarget
+            if (target != null) {
+                appendLinked(span.text, target, style)
+            } else if (!span.code && !span.math) {
+                // Plain URLs (not just Markdown [label](url)) are clickable too. Trailing punctuation is left outside the target.
+                var cursor = 0
+                for (match in BARE_WEB_URL.findAll(span.text)) {
+                    val clean = match.value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}')
+                    if (clean.isEmpty()) continue
+                    val begin = match.range.first
+                    val end = begin + clean.length
+                    if (begin > cursor) builder.withStyle(style) { append(span.text.substring(cursor, begin)) }
+                    appendLinked(clean, clean, style)
+                    cursor = end
+                }
+                if (cursor < span.text.length) builder.withStyle(style) { append(span.text.substring(cursor)) }
+            } else {
+                builder.withStyle(style) { append(span.text) }
+            }
+        }
+        builder.toAnnotatedString()
     }
-    return builder.toAnnotatedString()
 }
 
 @Composable
@@ -291,13 +375,21 @@ private fun CodeBlock(block: MarkdownBlock.Code, onOpenAsArtifact: (language: St
                     Spacer(Modifier.padding(start = 4.dp))
                     Text(if (copied) "Copied" else "Copy")
                 }
-                if (block.closed) {
+                if (block.closed && !language.equals("python", ignoreCase = true)) {
                     TextButton(onClick = { onOpenAsArtifact(language, block.code) }) {
                         Icon(Icons.Default.OpenInNew, contentDescription = "Open as artifact")
                         Spacer(Modifier.padding(start = 4.dp))
                         Text("Artifact")
                     }
                 }
+            }
+            if (language.equals("python", ignoreCase = true)) {
+                Text(
+                    "Python is shown as copyable source only; this app does not include a Python runtime.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.onCodeBlock.copy(alpha = 0.82f),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
             }
             Spacer(Modifier.padding(top = 4.dp))
             SelectionContainer {

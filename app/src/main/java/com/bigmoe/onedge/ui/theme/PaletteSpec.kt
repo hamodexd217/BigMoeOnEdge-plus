@@ -131,8 +131,7 @@ object PalettePresets {
 
     /** A small, hand-picked set shown in the palette picker. All legacy presets remain in [all] so saved themes keep working. */
     val featured: List<PaletteSpec> = listOf(
-        "paper", "sand", "sage", "latte", "pearl", "ocean",
-        "chatgpt_dark", "claude_warm_dark", "gemini_dark", "midnight", "amoled", "coffee"
+        "paper", "pearl", "mint", "graphite", "ocean"
     ).mapNotNull { id -> all.firstOrNull { it.id == id } }
 
     fun byId(id: String): PaletteSpec? = all.firstOrNull { it.id == id }

@@ -72,6 +72,8 @@ fun ModelScreen(
     val context = LocalContext.current
     var sharedPathAccessGranted by remember { mutableStateOf(hasSharedPathAccess(context)) }
     var showAdvancedPath by remember { mutableStateOf(false) }
+    var targetIncompleteImportId by remember { mutableStateOf<String?>(null) }
+    var targetMtpModelPath by remember { mutableStateOf<String?>(null) }
 
     // MANAGE_EXTERNAL_STORAGE is a special Settings grant, not a normal runtime prompt.
     // When the user returns, retry registration automatically so the path is not copied.
@@ -129,7 +131,19 @@ fun ModelScreen(
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) viewModel.importModels(context.contentResolver, uris)
+        val targetId = targetIncompleteImportId
+        targetIncompleteImportId = null
+        if (uris.isNotEmpty()) viewModel.importModels(context.contentResolver, uris, targetId)
+    }
+
+    // A sidecar is chosen independently from ordinary models. Copy it privately so the native loader
+    // receives a stable filesystem path even when the original lives behind a SAF/cloud provider URI.
+    val mtpPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val modelPath = targetMtpModelPath
+        targetMtpModelPath = null
+        if (uri != null && modelPath != null) {
+            viewModel.importAndAttachDraft(context.contentResolver, uri, modelPath)
+        }
     }
 
     Scaffold(
@@ -279,7 +293,40 @@ fun ModelScreen(
                     }
                 }
             }
-            if (ui.models.isEmpty()) {
+            if (ui.incompleteImports.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Incomplete split models", style = MaterialTheme.typography.titleMedium)
+                        Text("These imports are saved privately and survive app restarts. They cannot be loaded until every shard passes validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                items(ui.incompleteImports, key = { "incomplete:${it.id}" }) { pending ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(pending.displayName, style = MaterialTheme.typography.titleSmall)
+                            Text("${pending.presentShardIndices.size}/${pending.expectedShardCount} shards imported • ${ModelManager.formatBytes(pending.totalSizeBytes)}", style = MaterialTheme.typography.bodySmall)
+                            Text("Missing shard indices: " + pending.missingShardIndices.joinToString { it.toString().padStart(5, '0') }.ifBlank { "none" }, style = MaterialTheme.typography.bodySmall)
+                            Text("Status: ${pending.status}", style = MaterialTheme.typography.labelMedium, color = if (pending.validationMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
+                            pending.validationMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = {
+                                        targetIncompleteImportId = pending.id
+                                        picker.launch(arrayOf("*/*"))
+                                    },
+                                    enabled = ui.importProgress == null && pending.missingShardIndices.isNotEmpty() && pending.status != "Validation failed",
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Add missing files") }
+                                OutlinedButton(
+                                    onClick = { viewModel.removeIncompleteImport(pending.id) },
+                                    enabled = ui.importProgress == null
+                                ) { Text("Remove") }
+                            }
+                        }
+                    }
+                }
+            }
+            if (ui.models.isEmpty() && ui.incompleteImports.isEmpty()) {
                 item { Text("No models yet.", color = MaterialTheme.colorScheme.secondary) }
             }
             items(ui.models.filterNot { ModelManager.isProjectorName(it.name) }, key = { it.path }) { model ->
@@ -292,6 +339,10 @@ fun ModelScreen(
                     drafts = ui.drafts,
                     attachedDraftPath = ui.modelDrafts[model.path],
                     onAttachDraft = { viewModel.attachDraft(model.path, it) },
+                    onPickDraft = {
+                        targetMtpModelPath = model.path
+                        mtpPicker.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
                     onRename = { viewModel.rename(model.path, it) },
                     settings = settings,
                     viewModel = viewModel
@@ -463,13 +514,14 @@ private fun ModelRow(
     drafts: List<ModelFile>,
     attachedDraftPath: String?,
     onAttachDraft: (String?) -> Unit,
+    onPickDraft: () -> Unit,
     onRename: (String) -> Unit,
     settings: EngineSettings,
     viewModel: ModelViewModel
 ) {
     var draftMenu by remember { mutableStateOf(false) }
     var renameDialog by remember { mutableStateOf(false) }
-    var renameText by remember(model.path) { mutableStateOf(model.name) }
+    var renameText by remember(model.path, model.displayName) { mutableStateOf(model.displayName) }
     // MTP is optional and most people never use it, so its section stays folded until the arrow is pressed.
     var mtpExpanded by remember(model.path) { mutableStateOf(false) }
     val attachedName = drafts.firstOrNull { it.path == attachedDraftPath }?.name
@@ -482,7 +534,7 @@ private fun ModelRow(
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(model.name, style = MaterialTheme.typography.titleSmall)
+                    Text(model.displayName, style = MaterialTheme.typography.titleSmall)
                     Text("${ModelManager.formatBytes(model.sizeBytes)} • " + if (model.inAppStorage) "App storage" else "Registered path (no copy)", style = MaterialTheme.typography.labelSmall)
                 }
                 if (isLoaded) {
@@ -526,6 +578,10 @@ private fun ModelRow(
                     androidx.compose.foundation.layout.Box {
                         OutlinedButton(onClick = { draftMenu = true }) { Text("Attach") }
                         DropdownMenu(expanded = draftMenu, onDismissRequest = { draftMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Choose separate MTP GGUF…") },
+                                onClick = { draftMenu = false; onPickDraft() }
+                            )
                             DropdownMenuItem(text = { Text("Use model's built-in MTP / none") }, onClick = { draftMenu = false; onAttachDraft(null) })
                             drafts.forEach { d ->
                                 DropdownMenuItem(text = { Text(d.name) }, onClick = { draftMenu = false; onAttachDraft(d.path) })
@@ -546,7 +602,7 @@ private fun ModelRow(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true, label = { Text("New name") })
                     if (model.name.contains(Regex("-\\d{5}-of-\\d{5}\\.gguf$", RegexOption.IGNORE_CASE))) {
-                        Text("All shards will be renamed together; GGUF split numbering is preserved.", style = MaterialTheme.typography.bodySmall)
+                        Text("This changes only the model display name. The original shard filenames stay unchanged so llama.cpp can discover every part.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },

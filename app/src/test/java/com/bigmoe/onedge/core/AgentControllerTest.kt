@@ -309,15 +309,18 @@ class AgentControllerTest {
     @Test
     fun alwaysModeSearchesFirstAndHandsResultsToTheModelInOneTurn() = runTest {
         val e = env(this)
+        e.fake.script.add(ScriptedTurn(tokens = listOf("latest Among Us roles 2026")))
         e.fake.script.add(ScriptedTurn(tokens = listOf("According to the results, yes.")))
         val always = EngineSettings(isWebSearchEnabled = true, webSearchMode = WebSearchMode.ALWAYS)
         val events = e.agent.runAgentLoop(req(prompt = "is the sky blue?", s = always), e.sink).toList()
 
-        assertEquals("is the sky blue?", e.tool.calls.single().getString("query"))
+        assertEquals("latest Among Us roles 2026", e.tool.calls.single().getString("query"))
         assertTrue(events.any { it is AgentEvent.ToolStarted })
         // saved: TOOL (search results) then the answer
         assertEquals(listOf(MessageRole.TOOL, MessageRole.ASSISTANT), e.sink.saved.map { it.role })
-        val call = e.fake.calls.single()
+        assertEquals(2, e.fake.calls.size) // hidden query-generation pass + normal answer pass
+        assertTrue(e.fake.calls[0].prompt.contains("Latest user request:"))
+        val call = e.fake.calls[1]
         assertTrue(call.prompt.startsWith("is the sky blue?"))
         assertTrue(call.prompt.contains("<tool_response>"))
         assertTrue(call.prompt.contains("RESULT-TEXT"))

@@ -22,7 +22,7 @@ class ArtifactDetectionTest {
     private val cases = listOf(
         "html" to "html", "css" to "css", "javascript" to "javascript", "js" to "javascript", "typescript" to "typescript",
         "ts" to "typescript", "json" to "json", "xml" to "xml", "markdown" to "markdown", "md" to "markdown",
-        "python" to "python", "py" to "python", "kotlin" to "kotlin", "kt" to "kotlin", "java" to "java", "c" to "c",
+        "kotlin" to "kotlin", "kt" to "kotlin", "java" to "java", "c" to "c",
         "cpp" to "cpp", "c++" to "cpp", "csharp" to "csharp", "c#" to "csharp", "cs" to "csharp", "rust" to "rust",
         "rs" to "rust", "go" to "go", "golang" to "go", "swift" to "swift", "bash" to "bash", "sh" to "bash",
         "shell" to "bash", "zsh" to "bash", "sql" to "sql", "yaml" to "yaml", "yml" to "yaml",
@@ -44,7 +44,14 @@ class ArtifactDetectionTest {
     @Test
     fun requiredLanguagesAllResolve() {
         for (lang in ArtifactLanguages.REQUIRED) assertEquals(lang, ArtifactLanguages.canonical(lang))
-        assertEquals(19, ArtifactLanguages.REQUIRED.size)
+        assertEquals(18, ArtifactLanguages.REQUIRED.size)
+    }
+
+    @Test
+    fun pythonRemainsCopyableChatCodeButIsNotAdvertisedAsAnArtifact() {
+        assertTrue(detect("```python\nprint(1)\n```").isEmpty())
+        assertTrue(detect("```py\nprint(1)\n```").isEmpty())
+        assertFalse(ArtifactLanguages.REQUIRED.contains("python"))
     }
 
     @Test
@@ -73,9 +80,7 @@ class ArtifactDetectionTest {
     @Test
     fun windowsLineEndingsAndIndentedFences() {
         assertEquals("let a = 1;", detect("```javascript\r\nlet a = 1;\r\n```").single().content)
-        val indented = detect("- step\n  ```python\n  print(1)\n  ```\n").single()
-        assertEquals("python", indented.language)
-        assertEquals("print(1)", indented.content)
+        assertTrue(detect("- step\n  ```python\n  print(1)\n  ```\n").isEmpty())
     }
 
     @Test

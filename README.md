@@ -31,7 +31,7 @@
 
 > **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
 
-> **Project update:** v0.5.0 (performance-investigation release). Check the repository's [Releases page](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases) for the latest APK and release notes.
+> **Project update:** v0.5.5 adds incremental multi-file split-GGUF import and validation. Check the repository's [Releases page](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases) for APK availability and release notes.
 
 ## What is BigMoeOnEdge+?
 
@@ -55,29 +55,44 @@ More screenshots and demo media are in [`docs/assets`](docs/assets).
   <img src="docs/assets/models.jpg" alt="BigMoeOnEdge+ model manager" width="900">
 </p>
 
-The model manager loads GGUF models and `mmproj` projector files, and detects whether a model is Mixture-of-Experts or dense.
+The model manager loads GGUF models and `mmproj` projector files, detects whether a model is Mixture-of-Experts or dense, and groups standard split GGUF shards into one model entry.
 
 ## Highlights
 
 | Area | Details |
 | --- | --- |
 | Local inference | GGUF models through the native BigMoeOnEdge engine |
-| Model support | Mixture-of-Experts and dense models, with automatic detection |
+| Model support | Mixture-of-Experts and dense models; incremental multi-shard GGUF import with persisted incomplete states and metadata validation |
 | Conversations | Persistent Room-backed chats, with per-chat drafts |
 | Generation | Live token streaming and a stop control |
 | Reasoning | Streaming "Thinking" / reasoning display |
-| Web | Web search integrated into the chat workflow, with optional Wikimedia Commons image search when web search is enabled |
+| Web | Web search with model-generated search queries in automatic mode, plus optional Wikimedia Commons image search |
 | Tools | File, code, web, and utility tools behind an approval flow |
 | Attachments | Text, code, archives, documents, images, and video |
 | Vision | `mmproj` support for multimodal models |
-| Artifacts | HTML, SVG, Mermaid, Markdown, and highlighted source code; improved Markdown list and table rendering |
+| Artifacts | Interactive HTML, SVG, Mermaid preview, and copyable/highlighted source code; HTTP(S) links open externally; Python is code-only, not executed |
 | Workspace | Browse, open, edit, save, copy, share, and download generated files |
 | Chat controls | Edit and copy messages; copy raw code blocks; assistant bubbles wrap to content width; user and assistant messages stay on their intended sides |
 | Telemetry | Per-message statistics such as tokens/s, prefill, and cache information |
 | Settings | Context, sampling, expert cache, I/O and compute overlap, media, and tool controls; streamlined defaults |
-| Wide screens | Persistent chat-history panel |
+| Wide screens | Persistent chat-history panel with a chat-only / split-pane toggle |
 | Local API server | Optional on-device server (Anthropic Messages + OpenAI chat APIs) so other apps, such as Claude Code, can use the loaded model |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
+
+## What's new in v0.5.5
+
+* **Incremental split-GGUF import:** select one shard or several at a time; imported shards are copied into private app storage and the import state survives app restarts.
+* **One logical model:** incomplete groups stay out of the model selector. The Models page shows the number of imported shards, total size, missing indices, validation errors, and controls to add missing files or remove the partial import.
+* **Header and shard validation:** checks standard `-00001-of-000NN.gguf` naming, `split.count`, zero-based `split.no` expected by this vendored llama.cpp loader, architecture and shared model metadata, and the GGUF tensor-descriptor table without reading tensor weights.
+* **No physical merge:** when complete, the app promotes the numbered files into its managed model directory and opens the first shard; llama.cpp discovers the remaining shards by its supported naming convention.
+* **Display-name-only rename:** renaming a ready split model updates its manifest instead of changing the filenames required by llama.cpp.
+* **Separate MTP sidecars:** each model can choose a new MTP GGUF from Android's document picker. The app copies it into private model storage, validates its GGUF header, marks it as an auxiliary draft, and attaches it to the chosen target model. The original provider file is never modified. Split MTP sidecars remain unsupported and are rejected explicitly.
+* **Clickable links and sources:** HTTP(S) links in assistant Markdown and tool results open in the default browser. A compact source-count chip appears under the assistant message actions when the answer or its preceding web-tool results contain URLs; tap it to choose a source.
+* **Tablet chat layout:** the wide-screen chat header now toggles the persistent chat-history pane on/off, so the conversation can use the full width or show Chats beside it.
+* **Artifact preview boundaries:** HTML, SVG, and Mermaid are rendered as previews (HTML JavaScript is sandboxed/offline except for Mermaid's required script). Other supported languages use copyable source artifacts. Python fenced code remains a normal copyable code block and is deliberately not offered as an Artifact action, because this app does not bundle a Python runtime. External links opened from an HTML preview go to the device browser instead of navigating the sandbox WebView.
+* **Version:** Android `versionName` remains `0.5.5` (`versionCode` 6); native engine version remains BigMoeOnEdge 0.28.0.
+
+Implementation details: [`docs/MULTI_FILE_GGUF_IMPORT_0.5.5.md`](docs/MULTI_FILE_GGUF_IMPORT_0.5.5.md) and [`docs/UI_FOLLOWUP_0.5.5.md`](docs/UI_FOLLOWUP_0.5.5.md). The original split-import Kotlin host harness passed 40/40 tests before these UI follow-up edits. The newly added UI unit tests and a full Android Gradle/NDK build still require running in an environment that can download Gradle 8.9; real-device MTP loading and link interaction must also be verified.
 
 ## What's new in v0.5.0
 
@@ -89,7 +104,9 @@ original BigMoeOnEdge 0.29.0, on every model tried. v0.5.0 recovers part of that
 * **Fast-core pinning and a small priority boost** for the engine's compute threads (`perf_tuning.h`). Experimental and unmeasured. It cannot raise CPU clocks, which needs root. Disable with `-PbmoePinFastCores=false`.
 * **Less UI work while generating:** the streaming cursor and status indicator no longer run per-frame animations; they blink about twice a second. Experimental and unmeasured.
 * **Model picker in the chat:** the chip button in the chat's top bar now opens a list of your models. Tap one to load it (the usual memory check and projector choice follow) or tap the loaded one to unload it; "Manage models..." still opens the Models page.
-* **MTP folded away on the Models page:** each model card has a collapsible "MTP draft" section (arrow). Expanded, it holds the sidecar Attach control, a note that **MTP does not work with an mmproj** (the engine refuses an image turn while Guess ahead is on), and the MTP / Guess ahead settings, which moved here from Settings. Rename is now a pencil icon on the model row.
+* **MTP folded away on the Models page:** each model card has a collapsible "MTP draft" section (arrow). Expanded, it holds the sidecar Attach control, a note that **MTP does not work with an mmproj** (the engine refuses an image turn while Guess ahead is on), and the MTP / Guess ahead settings, which moved here from Settings. The Attach menu now includes **Choose separate MTP GGUF…**; selected sidecars are copied/validated and attached to that exact model. Rename is a pencil icon on the model row.
+* **Clickable message links and source chip:** HTTP(S) URLs in Markdown and tool results open in the device browser. Assistant replies that include links or follow a web-search result show a small link-count chip under their message actions; open it to pick a source.
+* **Tablet chat layout toggle:** tap the chat header's menu icon to hide/show the Chat history pane and switch between split and full-width conversation views.
 * **Performance & engine is now the first section in Settings.**
 * **Diagnostics:** one `Run stats:` logcat line per generation and a `CPU features compiled in:` line (`adb logcat -s OnEdge-JNI`), plus `scripts/bmoe-capture.sh` for A/B captures of CPU clocks, memory pressure and thermals.
 * **Version:** app version is now 0.5.0 (the Gradle `versionName` previously still read 0.4.0). The engine stays BigMoeOnEdge 0.28.0.
@@ -143,9 +160,13 @@ The latest release includes an installable Android APK:
 
 **[Download the latest APK](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest)**
 
-Current release: **BigMoeOnEdge+ v0.5.0**.
+Current source version: **BigMoeOnEdge+ v0.5.5**. Check the Releases page above for whether an APK artifact has been published.
 
 The app version and engine version (BigMoeOnEdge 0.28.0) are versioned separately.
+
+## Settings and appearance
+
+Settings are grouped into expandable sections for engine performance, model loading, appearance, chat, media, tools, web search, and diagnostics/workspace. The appearance picker shows five recommended palettes first (Paper, Pearl, Mint, Graphite, and Ocean), followed by the remaining built-in and user-created palettes in a colour-swatch grid. On wide screens, the chat-history pane uses a short slide/fade transition when toggled.
 
 ## Requirements
 
@@ -246,19 +267,19 @@ Generated files and code are handled as artifacts instead of plain chat text:
 
 * HTML, SVG, and Mermaid previews
 
-* Rendered Markdown
+* Markdown-formatted text in chat responses
 
-* Highlighted source-code artifacts
+* Highlighted, copyable source-code artifacts
 
 * Copyable code
 
-* Offline JavaScript execution, only when explicitly requested
+* JavaScript execution only through an explicit, approved tool flow; code artifacts themselves are not implicitly executed
 
 * Workspace browsing and file management
 
 * Saving, editing, sharing, and downloading files
 
-Common source formats such as Kotlin, Java, Python, C/C++, JavaScript/TypeScript, JSON, YAML, shell, Dockerfile, and SQL are saved as code artifacts. Languages that need an external interpreter, such as Python, are not executed by the app.
+Common source formats such as Kotlin, Java, Python, C/C++, JavaScript/TypeScript, JSON, YAML, shell, Dockerfile, and SQL can be shown as code. Languages that need an external interpreter, such as Python, are highlighted, copyable code blocks only; Python fences are not turned into artifact chips and are not executed by the app. HTML/SVG and Mermaid artifacts have dedicated previews. HTTP(S) links from the chat open in the system browser; links clicked inside a sandboxed artifact preview also leave the preview and open externally.
 
 ### Chat and attachments
 
@@ -368,7 +389,7 @@ The local API server is the newest feature and has had the least real-world test
 **v0.5.0 status:** the changes in v0.5.0 were validated statically only. The `appCategory` change was measured by the app owner on one phone (about 1.3-1.4 ->
 about 1.7 tokens/s; run counts and thermal state not controlled). The fast-core pinning and UI changes were not measured. Host checks that were run: patch application,
 unit tests of the core-selection logic (9 checks), compilation of the new native helper code with `-Wall -Wextra -Wformat=2`, and `scripts/kt_lint.py` (unchanged findings).
-The UI changes (model picker, collapsible MTP section, Settings order) were checked with the offline linter, bracket balance and import resolution only; they have not been compiled or seen on a device by their author.
+The current follow-up UI changes (external link taps/source chip, SAF MTP import, and wide-screen chat-pane toggle) need a fresh Android build and device check before release; the repository's own testing status is kept explicit below and in the release notes.
 **Not run:** an Android NDK/Gradle build, a Kotlin compile, any benchmark by the author.
 
 ### Known limitations

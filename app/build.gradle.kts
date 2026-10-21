@@ -34,8 +34,9 @@ val bmoeAppCategory: String = (providers.gradleProperty("bmoeAppCategory").orNul
 }
 
 // Keep the engine's compute threads on the fast CPU cores with a small priority boost (see cpp/perf_tuning.h).
-// On by default; pass -PbmoePinFastCores=false to build without it.
-val bmoePinFastCores: Boolean = providers.gradleProperty("bmoePinFastCores").orNull?.trim()?.lowercase() != "false"
+// Off by default: pinning the JNI caller is not guaranteed to pin an already-created ggml worker pool,
+ // and can contend with the worker pool on heterogeneous Android CPUs. Opt in for device-specific A/B tests.
+val bmoePinFastCores: Boolean = providers.gradleProperty("bmoePinFastCores").orNull?.trim()?.lowercase() == "true"
 
 val bmoeAbis: List<String> = (providers.gradleProperty("bmoeAbis").orNull ?: "arm64-v8a")
     .split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -50,8 +51,8 @@ android {
         // dependable from Android 10 (upstream uses 29); the NDK toolchain also links against this platform level.
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.5.5"
         manifestPlaceholders["bmoeAppCategory"] = bmoeAppCategory
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -178,6 +179,7 @@ dependencies {
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
+    implementation("androidx.compose.animation:animation")
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)

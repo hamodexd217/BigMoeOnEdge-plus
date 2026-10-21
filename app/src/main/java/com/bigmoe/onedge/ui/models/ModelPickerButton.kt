@@ -73,7 +73,7 @@ fun ModelPickerButton(
                 DropdownMenuItem(
                     text = {
                         Column {
-                            Text(model.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                            Text(model.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                             Text(
                                 ModelManager.formatBytes(model.sizeBytes) + if (isLoaded) " \u2022 Loaded" else "",
                                 style = MaterialTheme.typography.labelSmall,

@@ -141,6 +141,9 @@ class StreamOutputParser(private val idProvider: () -> String = { java.util.UUID
     private fun toArtifact(block: FencedBlock): ArtifactModel? {
         // Priority: fence language tag, then the file name's extension (ArtifactLanguages.resolve).
         val language = ArtifactLanguages.resolve(block.tag, block.fileName) ?: return null
+        // Python is intentionally not exposed as an artifact: this app has no Python runtime.
+        // It remains visible as a copyable code block in chat, without a misleading Artifact action.
+        if (language.equals("python", ignoreCase = true)) return null
         if (block.code.isBlank()) return null
         return ArtifactModel(
             id = idProvider(),

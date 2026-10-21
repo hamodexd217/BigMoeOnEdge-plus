@@ -55,6 +55,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -91,6 +92,8 @@ fun ChatScreen(
     onOpenFile: (String) -> Unit,
     modelViewModel: ModelViewModel,
     wideMode: Boolean = false,
+    historyPaneVisible: Boolean = true,
+    onToggleHistoryPane: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -115,6 +118,22 @@ fun ChatScreen(
     // can think for a while before the first answer token), and so does a running tool.
     val showLiveBubble = uiState.isGenerating
     val itemCount = uiState.messages.size + if (showLiveBubble) 1 else 0
+
+    // Build web-source associations once per message-list update. Doing indexOfFirst/subList
+    // inside each lazy row made source discovery quadratic and repeated it during recomposition.
+    val sourcesByAssistantId = remember(uiState.messages) {
+        val result = HashMap<String, List<String>>()
+        var currentTurnSources = linkedSetOf<String>()
+        uiState.messages.forEach { item ->
+            when (item.role) {
+                MessageRole.USER -> currentTurnSources = linkedSetOf()
+                MessageRole.TOOL -> currentTurnSources.addAll(extractWebSources(item.text).map { it.first })
+                MessageRole.ASSISTANT -> result[item.id] = currentTurnSources.toList()
+                MessageRole.SYSTEM, MessageRole.CONTEXT -> Unit
+            }
+        }
+        result
+    }
 
     // "Follow" = the list sticks to the newest text while the model writes. The moment the person drags the list
     // up to read something, following stops (the model keeps writing below); the arrow button or reaching the
@@ -203,6 +222,13 @@ fun ChatScreen(
                         IconButton(onClick = { drawerScope.launch { chatsDrawerState.open() } }) {
                             Icon(imageVector = Icons.Default.Menu, contentDescription = "Open chats")
                         }
+                    } else {
+                        IconButton(onClick = onToggleHistoryPane) {
+                            Icon(
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = if (historyPaneVisible) "Hide chat history pane" else "Show chat history pane"
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -247,9 +273,13 @@ fun ChatScreen(
                                 }
                             } else {
                                 val messageAttachments = uiState.attachments.filter { it.messageId == message.id }
+                                val turnTools = if (message.role == MessageRole.ASSISTANT) {
+                                    sourcesByAssistantId[message.id].orEmpty()
+                                } else emptyList()
                                 ChatMessageBubble(
                                     text = message.text,
                                     isUser = message.role == MessageRole.USER,
+                                    additionalSources = turnTools,
                                     reasoning = message.reasoning,
                                     toolCalls = message.toolCalls,
                                     artifacts = message.artifacts,
@@ -496,7 +526,11 @@ private fun EngineBanner(state: EngineState, onOpenModels: () -> Unit) {
             action = "Models",
             onAction = onOpenModels
         )
-        EngineState.Unloaded -> BannerRow(text = "No model loaded.", action = "Load a model", onAction = onOpenModels)
+        EngineState.Unloaded -> BannerRow(
+            text = "No model loaded • Tap the model icon in the top-right to load one.",
+            action = null,
+            onAction = onOpenModels
+        )
     }
 }
 
@@ -507,9 +541,14 @@ private fun BannerRow(
     onAction: () -> Unit,
     showSpinner: Boolean = false
 ) {
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -517,7 +556,7 @@ private fun BannerRow(
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
                 modifier = Modifier.weight(1f)
             )
             if (action != null) TextButton(onClick = onAction) { Text(action) }

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
@@ -33,6 +34,8 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Visibility
@@ -50,8 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.parser.ArtifactModel
@@ -76,9 +79,22 @@ fun ChatMessageBubble(
     /** Long-press menu: Edit (user messages only). Null hides the entry. */
     onEdit: (() -> Unit)? = null,
     /** Long-press menu and the Copy button under assistant messages. Copies the complete raw message. */
-    onCopy: (() -> Unit)? = null
+    onCopy: (() -> Unit)? = null,
+    /** URLs returned by web-search/tool messages for the same user turn. */
+    additionalSources: List<String> = emptyList()
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var sourcesOpen by remember { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    val sourceTextKey = if (isStreaming) null else text
+    val sources = remember(sourceTextKey, additionalSources) {
+        val finalText = sourceTextKey
+        if (finalText == null) emptyList() else {
+            (extractWebSources(finalText) + additionalSources.mapNotNull { url -> normalizeWebUrl(url)?.let { it to sourceLabel(it) } })
+                .distinctBy { it.first }
+                .take(12)
+        }
+    }
     val hasMenu = onEdit != null || onCopy != null
     val alignment = if (isUser) Alignment.End else Alignment.Start
     val bubbleShape = if (isUser) {
@@ -144,21 +160,8 @@ fun ChatMessageBubble(
                         isStreaming = isStreaming,
                         onOpenAsArtifact = onOpenCodeArtifact
                     )
-                    if (isStreaming) {
-                        // A slow on/off blink (state flips twice a second) instead of an infinite animation,
-                        // which invalidated the UI on every display frame for the whole generation.
-                        val cursorOn by rememberSlowBlink()
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 4.dp)
-                                .size(width = 8.dp, height = 18.dp)
-                                // Read in the draw phase: .alpha(cursorAlpha) read the animated value during composition,
-                                // so the whole bubble content recomposed on every animation frame while streaming.
-                                .graphicsLayer { this.alpha = if (cursorOn) 1f else 0f }
-                                .background(textColor)
-                        )
-                    }
+                    // No separate block cursor: it appeared on its own line beneath short streamed replies.
+                    // Live text updates already indicate progress without adding a stray rectangle.
                 }
               }
             }
@@ -203,7 +206,7 @@ fun ChatMessageBubble(
             )
         }
 
-        if (!isUser && (stats != null || (onCopy != null && !isStreaming))) {
+        if (!isUser && (stats != null || (onCopy != null && !isStreaming) || (sources.isNotEmpty() && !isStreaming))) {
             Spacer(modifier = Modifier.height(4.dp))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -255,9 +258,69 @@ fun ChatMessageBubble(
                     }
                 }
             }
+            if (sources.isNotEmpty() && !isStreaming) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Box {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.size(30.dp).clickable { sourcesOpen = true }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                                Icon(Icons.Default.Link, contentDescription = "Sources", modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
+                                Text(sources.size.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                    DropdownMenu(expanded = sourcesOpen, onDismissRequest = { sourcesOpen = false }) {
+                        sources.forEach { (url, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                                onClick = {
+                                    sourcesOpen = false
+                                    if (url.startsWith("https://", true) || url.startsWith("http://", true)) {
+                                        runCatching { uriHandler.openUri(url) }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
+
+/** Extract explicit markdown destinations and plain HTTP(S) URLs from a message/tool result. */
+internal fun extractWebSources(text: String): List<Pair<String, String>> {
+    val found = LinkedHashMap<String, String>()
+    val markdown = Regex("""\[(.+?)\]\((https?://[^)\s]+)\)""", RegexOption.IGNORE_CASE)
+    markdown.findAll(text).forEach { match ->
+        val url = normalizeWebUrl(match.groupValues[2]) ?: return@forEach
+        found.putIfAbsent(url, match.groupValues[1].trim().ifBlank { sourceLabel(url) })
+    }
+    val bare = Regex("""(?i)https?://[^\s<>()]+""")
+    bare.findAll(text).forEach { match ->
+        val url = normalizeWebUrl(match.value) ?: return@forEach
+        found.putIfAbsent(url, sourceLabel(url))
+    }
+    return found.map { it.key to it.value }.toList()
+}
+
+private fun normalizeWebUrl(raw: String): String? {
+    val clean = raw.trim().trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}')
+    if (!(clean.startsWith("https://", true) || clean.startsWith("http://", true))) return null
+    val parsed = runCatching { java.net.URI(clean) }.getOrNull() ?: return null
+    if (parsed.host.isNullOrBlank() || !parsed.scheme.equals("https", true) && !parsed.scheme.equals("http", true)) return null
+    return clean
+}
+
+private fun sourceLabel(url: String): String = runCatching {
+    java.net.URI(url).host?.removePrefix("www.") ?: url
+}.getOrDefault(url).take(90)
 
 /** A tool result fed back to the model. Collapsed to a few lines by default. */
 @Composable
@@ -276,11 +339,13 @@ fun ToolResultCard(body: String, modifier: Modifier = Modifier) {
         ) {
             Column(
                 modifier = Modifier
-                    .clickable { expanded = !expanded }
                     .animateContentSize()
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Icon(
                         imageVector = Icons.Default.Build,
                         contentDescription = null,
@@ -302,10 +367,10 @@ fun ToolResultCard(body: String, modifier: Modifier = Modifier) {
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
+                LinkedInlineText(
                     text = body,
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
                     maxLines = if (expanded) Int.MAX_VALUE else 3,
                     overflow = TextOverflow.Ellipsis
                 )

@@ -47,7 +47,7 @@ data class EngineSettings(
     val cacheFloorMb: Int = 1536,
     val ioThreads: Int = 4,
     val oDirect: Boolean = true,
-    val overlap: Boolean = true,
+    val overlap: Boolean = false,
     val denseWeights: DenseWeights = DenseWeights.ANONYMOUS,
     val nExpertUsed: Int = 0,
     val dropColdPct: Int = 75,

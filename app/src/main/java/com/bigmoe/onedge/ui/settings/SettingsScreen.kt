@@ -7,11 +7,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -165,6 +167,14 @@ private fun SettingsContent(
     val contextValid = ContextInput.parse(contextText) != null
     var experimental by remember { mutableStateOf(false) }
     var performanceExpanded by remember { mutableStateOf(false) }
+    var toolsMediaExpanded by remember { mutableStateOf(false) }
+    var modelExpanded by remember { mutableStateOf(false) }
+    var appearanceExpanded by remember { mutableStateOf(true) }
+    var chatExpanded by remember { mutableStateOf(false) }
+    var mediaExpanded by remember { mutableStateOf(false) }
+    var toolsExpanded by remember { mutableStateOf(false) }
+    var searchExpanded by remember { mutableStateOf(false) }
+    var workspaceExpanded by remember { mutableStateOf(false) }
     var editingPalette by remember { mutableStateOf<PaletteSpec?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
 
@@ -187,9 +197,147 @@ private fun SettingsContent(
     }
 
     Column(modifier = modifier.padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
-        // Performance & engine is the first thing in Settings.
+        // Settings are grouped in the requested order: appearance, model, engine, tools/media, diagnostics.
         SettingsFoldout(
-            title = "Performance & engine",
+            title = "Appearance", subtitle = "Theme palettes and custom colours", expanded = appearanceExpanded,
+            onToggle = { appearanceExpanded = !appearanceExpanded }
+        )
+        androidx.compose.animation.AnimatedVisibility(visible = appearanceExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ appearance
+            val custom = PaletteStore.parse(settings.customPalettesJson)
+            val selectedCustom = custom.firstOrNull { it.id == settings.themeId }
+            val recommendedIds = listOf("paper", "pearl", "mint", "graphite", "ocean")
+            val recommended = recommendedIds.mapNotNull { PalettePresets.byId(it) }
+            val otherPresets = PalettePresets.all.filterNot { p -> recommendedIds.contains(p.id) }
+            Text("Recommended", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(6.dp))
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                recommended.forEach { palette ->
+                    PaletteChip(
+                        palette = palette, selected = settings.themeId == palette.id,
+                        onClick = { viewModel.selectTheme(palette.id) },
+                        modifier = Modifier.width(150.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("More palettes", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(6.dp))
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                otherPresets.forEach { palette ->
+                    PaletteChip(
+                        palette = palette, selected = settings.themeId == palette.id,
+                        onClick = { viewModel.selectTheme(palette.id) },
+                        modifier = Modifier.width(150.dp)
+                    )
+                }
+                custom.forEach { palette ->
+                    PaletteChip(
+                        palette = palette, selected = settings.themeId == palette.id,
+                        onClick = { viewModel.selectTheme(palette.id) },
+                        modifier = Modifier.width(150.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = {
+                    val base = PaletteStore.resolve(settings.themeId, custom, false)
+                    editingPalette = base.copy(id = PaletteStore.newId(custom), name = "My palette", custom = true)
+                    editingIsNew = true
+                }) { Text("+ New custom palette") }
+                if (selectedCustom != null) {
+                    OutlinedButton(onClick = { editingPalette = selectedCustom; editingIsNew = false }) { Text("Edit selected") }
+                }
+            }
+            Hint("Recommended: Paper, Pearl, Mint, Graphite and Ocean. Custom palettes stay saved on this device.")
+            Divider()
+
+
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        SettingsFoldout(
+            title = "Model & loading", subtitle = "Current model status and model-management shortcuts", expanded = modelExpanded,
+            onToggle = { modelExpanded = !modelExpanded }
+        )
+        androidx.compose.animation.AnimatedVisibility(visible = modelExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ model
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = when (engine) {
+                        is EngineState.Ready -> "Loaded: ${engine.info.name}"
+                        is EngineState.Loading -> "Loading…"
+                        is EngineState.Failed -> "Last load failed"
+                        EngineState.Unloaded -> "No model loaded"
+                    },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                OutlinedButton(onClick = onOpenModels) { Text("Manage models") }
+            }
+            if (readyInfo != null) {
+                Hint(
+                    if (readyInfo.config.mmapBaseline) "Regular (non-MoE) model: loaded the ordinary way, expert streaming is off automatically"
+                    else "Expert streaming ON • I/O–compute overlap: " + if (readyInfo.overlapActive) "active" else "not active"
+                )
+            }
+            if (reloadNeeded) {
+                Spacer(Modifier.height(8.dp))
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "Engine settings changed since the model was loaded. The engine fixes them when it opens the model.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Button(onClick = { viewModel.reloadModel() }) { Text("Reload model now") }
+                    }
+                }
+            }
+            Divider()
+
+
+        SettingsFoldout(
+            title = "Chat", subtitle = "System prompt and response length", expanded = chatExpanded,
+            onToggle = { chatExpanded = !chatExpanded }
+        )
+        androidx.compose.animation.AnimatedVisibility(visible = chatExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ chat (per message)
+            Text("System prompt", style = MaterialTheme.typography.labelMedium)
+            OutlinedTextField(
+                value = systemPrompt,
+                onValueChange = { systemPrompt = it },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 3
+            )
+            Hint("Applies to the next message. Changing it makes the engine re-read the conversation once.")
+            Spacer(Modifier.height(12.dp))
+            ChoiceSetting("Tokens to generate", Choices.NPREDICT.map { it to if (it < 0) "Unlimited (until the context is full)" else it.toString() },
+                selected = if (settings.maxTokens <= 0) -1 else settings.maxTokens) { viewModel.updateMaxTokens(it) }
+            Divider()
+
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        SettingsFoldout(
+            title = "Engine performance",
             subtitle = "Expert streaming, cache, compute and context controls",
             expanded = performanceExpanded,
             onToggle = { performanceExpanded = !performanceExpanded }
@@ -387,202 +535,175 @@ private fun SettingsContent(
             Divider()
         }
 
-        // ------------------------------------------------------------ model
-        Section("Model")
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = when (engine) {
-                    is EngineState.Ready -> "Loaded: ${engine.info.name}"
-                    is EngineState.Loading -> "Loading…"
-                    is EngineState.Failed -> "Last load failed"
-                    EngineState.Unloaded -> "No model loaded"
-                },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium
-            )
-            OutlinedButton(onClick = onOpenModels) { Text("Manage models") }
-        }
-        if (readyInfo != null) {
-            Hint(
-                if (readyInfo.config.mmapBaseline) "Regular (non-MoE) model: loaded the ordinary way, expert streaming is off automatically"
-                else "Expert streaming ON • I/O–compute overlap: " + if (readyInfo.overlapActive) "active" else "not active"
-            )
-        }
-        if (reloadNeeded) {
-            Spacer(Modifier.height(8.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        "Engine settings changed since the model was loaded. The engine fixes them when it opens the model.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Button(onClick = { viewModel.reloadModel() }) { Text("Reload model now") }
-                }
+        SettingsFoldout(
+            title = "Tools, web search, pictures & videos",
+            subtitle = "Multimodal input, online search and tool permissions",
+            expanded = toolsMediaExpanded,
+            onToggle = { toolsMediaExpanded = !toolsMediaExpanded }
+        )
+        androidx.compose.animation.AnimatedVisibility(visible = toolsMediaExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        SettingsFoldout(
+            title = "Pictures & video", subtitle = "Image dimensions and sampled video frames", expanded = mediaExpanded,
+            onToggle = { mediaExpanded = !mediaExpanded }
+        )
+        androidx.compose.animation.AnimatedVisibility(visible = mediaExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ pictures/video
+            ChoiceSetting(
+                "Picture max dimension",
+                Choices.IMAGE_DIM.map { it to "$it px" },
+                settings.imageMaxDim
+            ) { viewModel.updateImageMaxDim(it) }
+            Hint("Higher dimensions preserve more detail but increase vision token and memory use. The active model must have an mmproj.")
+            ChoiceSetting(
+                "Video sampled frames",
+                Choices.VIDEO_FRAMES.map { it to it.toString() },
+                settings.videoFrames
+            ) { viewModel.updateVideoFrames(it) }
+            Hint("Frames are sampled evenly from the attached video. Images/video stay disabled in the chat until a vision projector is loaded.")
+            Divider()
+
             }
         }
-        Divider()
+        Spacer(Modifier.height(8.dp))
 
-        // ------------------------------------------------------------ appearance
-        Section("Appearance")
-        val custom = PaletteStore.parse(settings.customPalettesJson)
-        Text("Palettes", style = MaterialTheme.typography.labelMedium)
-        Spacer(Modifier.height(6.dp))
-        val selectedCustom = custom.firstOrNull { it.id == settings.themeId }
-        val featuredPresets = PalettePresets.featured
-        val selectedLegacyPreset = PalettePresets.byId(settings.themeId)?.takeIf { selected ->
-            featuredPresets.none { it.id == selected.id }
+        SettingsFoldout(
+            title = "Tools", subtitle = "Permissions and tool-result behaviour", expanded = toolsExpanded,
+            onToggle = { toolsExpanded = !toolsExpanded }
+        )
+        androidx.compose.animation.AnimatedVisibility(visible = toolsExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ tool access
+            Hint("What the AI may use on its own when it needs it. Anything that changes or deletes a file still asks you first. The same switches are in the chat, under the wrench button.")
+            SwitchRow(
+                "Files",
+                "Create folders and files, read, search, edit, rename, delete, zip. Everything stays in this chat's files.",
+                settings.toolsFilesEnabled
+            ) { viewModel.updateToolsFilesEnabled(it) }
+            SwitchRow(
+                "Code",
+                "Search and analyse source files, and run JavaScript in an offline sandbox to compute or test.",
+                settings.toolsCodeEnabled
+            ) { viewModel.updateToolsCodeEnabled(it) }
+            SwitchRow(
+                "Utilities",
+                "Offline helpers: date and time, calculator, unit converter, random numbers, battery / storage / memory of this phone.",
+                settings.toolsUtilitiesEnabled
+            ) { viewModel.updateToolsUtilitiesEnabled(it) }
+            ChoiceSetting(
+                "Longest tool result",
+                listOf(
+                    1500 to "1,500 characters (fastest)",
+                    2500 to "2,500 characters",
+                    3500 to "3,500 characters (default)",
+                    6000 to "6,000 characters (slowest)"
+                ),
+                selected = settings.toolResultChars
+            ) { viewModel.updateToolResultChars(it) }
+            Hint(
+                "The model reads everything a tool returns before it can continue, at the speed of prompt processing " +
+                    "(tens of tokens per second on a phone). A shorter limit makes each tool round much faster. " +
+                    "When a result is cut, the model is told how much was left so it can ask for the rest."
+            )
+            SwitchRow(
+                "Think after tool results",
+                "Off (default): once the model has a tool result it answers directly, which saves minutes on a slow device. " +
+                    "On: it reasons again after every result.",
+                settings.thinkAfterTools
+            ) { viewModel.updateThinkAfterTools(it) }
+            Hint("Web search, image search, and web-page reading are controlled by the globe button in the chat. These tools are off by default.")
+            Divider()
+
+            }
         }
-        PaletteDropdown(
-            selectedId = settings.themeId,
-            presets = if (selectedLegacyPreset == null) featuredPresets else featuredPresets + selectedLegacyPreset,
-            custom = custom,
-            onSelect = { viewModel.selectTheme(it) },
-            onNewCustom = {
-                val base = PaletteStore.resolve(settings.themeId, custom, false)
-                editingPalette = base.copy(id = PaletteStore.newId(custom), name = "My palette", custom = true)
-                editingIsNew = true
-            },
-            onEditSelected = if (selectedCustom != null) ({ editingPalette = selectedCustom; editingIsNew = false }) else null
-        )
-        Hint("A custom palette starts as a copy of the current one. All nine colours are editable and it is saved on the device.")
-        Divider()
-
-
-        // ------------------------------------------------------------ chat (per message)
-        Section("Chat")
-        Text("System prompt", style = MaterialTheme.typography.labelMedium)
-        OutlinedTextField(
-            value = systemPrompt,
-            onValueChange = { systemPrompt = it },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 3
-        )
-        Hint("Applies to the next message. Changing it makes the engine re-read the conversation once.")
-        Spacer(Modifier.height(12.dp))
-        ChoiceSetting("Tokens to generate", Choices.NPREDICT.map { it to if (it < 0) "Unlimited (until the context is full)" else it.toString() },
-            selected = if (settings.maxTokens <= 0) -1 else settings.maxTokens) { viewModel.updateMaxTokens(it) }
-        Divider()
-
-        // ------------------------------------------------------------ pictures/video
-        Section("Pictures & video")
-        ChoiceSetting(
-            "Picture max dimension",
-            Choices.IMAGE_DIM.map { it to "$it px" },
-            settings.imageMaxDim
-        ) { viewModel.updateImageMaxDim(it) }
-        Hint("Higher dimensions preserve more detail but increase vision token and memory use. The active model must have an mmproj.")
-        ChoiceSetting(
-            "Video sampled frames",
-            Choices.VIDEO_FRAMES.map { it to it.toString() },
-            settings.videoFrames
-        ) { viewModel.updateVideoFrames(it) }
-        Hint("Frames are sampled evenly from the attached video. Images/video stay disabled in the chat until a vision projector is loaded.")
-        Divider()
-
-        // ------------------------------------------------------------ tool access
-        Section("Tool access")
-        Hint("What the AI may use on its own when it needs it. Anything that changes or deletes a file still asks you first. The same switches are in the chat, under the wrench button.")
-        SwitchRow(
-            "Files",
-            "Create folders and files, read, search, edit, rename, delete, zip. Everything stays in this chat's files.",
-            settings.toolsFilesEnabled
-        ) { viewModel.updateToolsFilesEnabled(it) }
-        SwitchRow(
-            "Code",
-            "Search and analyse source files, and run JavaScript in an offline sandbox to compute or test.",
-            settings.toolsCodeEnabled
-        ) { viewModel.updateToolsCodeEnabled(it) }
-        SwitchRow(
-            "Utilities",
-            "Offline helpers: date and time, calculator, unit converter, random numbers, battery / storage / memory of this phone.",
-            settings.toolsUtilitiesEnabled
-        ) { viewModel.updateToolsUtilitiesEnabled(it) }
-        ChoiceSetting(
-            "Longest tool result",
-            listOf(
-                1500 to "1,500 characters (fastest)",
-                2500 to "2,500 characters",
-                3500 to "3,500 characters (default)",
-                6000 to "6,000 characters (slowest)"
-            ),
-            selected = settings.toolResultChars
-        ) { viewModel.updateToolResultChars(it) }
-        Hint(
-            "The model reads everything a tool returns before it can continue, at the speed of prompt processing " +
-                "(tens of tokens per second on a phone). A shorter limit makes each tool round much faster. " +
-                "When a result is cut, the model is told how much was left so it can ask for the rest."
-        )
-        SwitchRow(
-            "Think after tool results",
-            "Off (default): once the model has a tool result it answers directly, which saves minutes on a slow device. " +
-                "On: it reasons again after every result.",
-            settings.thinkAfterTools
-        ) { viewModel.updateThinkAfterTools(it) }
-        Hint("Web search, image search, and web-page reading are controlled by the globe button in the chat. These tools are off by default.")
-        Divider()
-
-        // ------------------------------------------------------------ web search
-        Section("Web and image search")
-        ChoiceSetting(
-            "When to search",
-            listOf(
-                WebSearchMode.ALWAYS to "Every message (most reliable)",
-                WebSearchMode.AUTO to "Only when the model asks for it"
-            ),
-            selected = settings.webSearchMode
-        ) { viewModel.updateWebSearchMode(it) }
-        Hint("Web and image search are switched on and off with the globe button in the chat.")
-        Hint(
-            if (settings.webSearchMode == WebSearchMode.ALWAYS)
-                "Every message you send is searched first; the results are given to the model together with your message. Works with any model."
-            else
-                "The model is told it may search and decides by itself. Small models often never do; switch to \"Every message\" if nothing happens."
-        )
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = braveKey,
-            onValueChange = { braveKey = it },
-            label = { Text("Brave Search API key (optional)") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+
+        SettingsFoldout(
+            title = "Web search", subtitle = "Search provider and automatic-search behaviour", expanded = searchExpanded,
+            onToggle = { searchExpanded = !searchExpanded }
         )
+        androidx.compose.animation.AnimatedVisibility(visible = searchExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ web search
+            ChoiceSetting(
+                "When to search",
+                listOf(
+                    WebSearchMode.ALWAYS to "Every message (most reliable)",
+                    WebSearchMode.AUTO to "Only when the model asks for it"
+                ),
+                selected = settings.webSearchMode
+            ) { viewModel.updateWebSearchMode(it) }
+            Hint("Web and image search are switched on and off with the globe button in the chat.")
+            Hint(
+                if (settings.webSearchMode == WebSearchMode.ALWAYS)
+                    "Every message you send is searched first; the results are given to the model together with your message. Works with any model."
+                else
+                    "The model is told it may search and decides by itself. Small models often never do; switch to \"Every message\" if nothing happens."
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = braveKey,
+                onValueChange = { braveKey = it },
+                label = { Text("Brave Search API key (optional)") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = searxUrl,
+                onValueChange = { searxUrl = it },
+                label = { Text("SearXNG URL (optional)") },
+                placeholder = { Text("https://searx.example.org") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Hint("No key needed: without a Brave key or SearXNG address the app uses DuckDuckGo, then Wikipedia. A SearXNG address must be https:// and allow the JSON format.")
+            Divider()
+
+            }
+        }
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = searxUrl,
-            onValueChange = { searxUrl = it },
-            label = { Text("SearXNG URL (optional)") },
-            placeholder = { Text("https://searx.example.org") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            modifier = Modifier.fillMaxWidth()
+
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        SettingsFoldout(
+            title = "Diagnostics & workspace", subtitle = "Metrics, workspace files, capabilities and local API server", expanded = workspaceExpanded,
+            onToggle = { workspaceExpanded = !workspaceExpanded }
         )
-        Hint("No key needed: without a Brave key or SearXNG address the app uses DuckDuckGo, then Wikipedia. A SearXNG address must be https:// and allow the JSON format.")
-        Divider()
+        androidx.compose.animation.AnimatedVisibility(visible = workspaceExpanded, enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(), exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // ------------------------------------------------------------ diagnostics
+            Section("Diagnostics")
+            SwitchRow(
+                "Metrics CSV",
+                "Optional per-token timings, faults, cache and memory snapshots. Adds profiling and file-I/O work, so leave off for normal use and enable when diagnosing a run. Takes effect the next time a model is loaded.",
+                settings.metricsCsv
+            ) { viewModel.updateMetricsCsv(it) }
+            OutlinedButton(onClick = { shareLatestCsv(context) }) { Text("Share latest metrics CSV") }
+            Divider()
 
-        // ------------------------------------------------------------ diagnostics
-        Section("Diagnostics")
-        SwitchRow(
-            "Metrics CSV",
-            "Optional per-token timings, faults, cache and memory snapshots. Adds profiling and file-I/O work, so leave off for normal use and enable when diagnosing a run. Takes effect the next time a model is loaded.",
-            settings.metricsCsv
-        ) { viewModel.updateMetricsCsv(it) }
-        OutlinedButton(onClick = { shareLatestCsv(context) }) { Text("Share latest metrics CSV") }
-        Divider()
+            // ------------------------------------------------------------ workspace
+            Section("Workspace")
+            Text("Files attached to chats and files created by the AI live in the private workspace.", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenWorkspace) { Text("Workspace files") }
+            Divider()
 
-        // ------------------------------------------------------------ workspace
-        Section("Workspace")
-        Text("Files attached to chats and files created by the AI live in the private workspace.", style = MaterialTheme.typography.bodySmall)
+            Section("Capabilities")
+            Hint("Implemented: file attachments and reading, workspace/artifacts, file/code/utility/web tools, image/video attachment plumbing with mmproj support, thinking and web toggles. Voice input is not part of this project.")
+            Divider()
+
+            // ------------------------------------------------------------ local API server (last, collapsed by default)
+            ApiServerSection(settings = settings, readyInfo = readyInfo, viewModel = viewModel)
+            }
+        }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onOpenWorkspace) { Text("Workspace files") }
-        Divider()
 
-        Section("Capabilities")
-        Hint("Implemented: file attachments and reading, workspace/artifacts, file/code/utility/web tools, image/video attachment plumbing with mmproj support, thinking and web toggles. Voice input is not part of this project.")
-        Divider()
-
-        // ------------------------------------------------------------ local API server (last, collapsed by default)
-        ApiServerSection(settings = settings, readyInfo = readyInfo, viewModel = viewModel)
         Spacer(Modifier.height(120.dp)) // clear of the floating navigation bar
     }
 

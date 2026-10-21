@@ -14,7 +14,7 @@ class ModelManagerTest {
     private val gib = 1024L * 1024 * 1024
 
     private fun tempGguf(header: ByteArray = "GGUF".toByteArray(), size: Int = 64): File =
-        File.createTempFile("m", ".gguf").apply {
+        File.createTempFile("model", ".gguf").apply {
             deleteOnExit()
             writeBytes(header + ByteArray(size))
         }
@@ -98,15 +98,19 @@ class ModelManagerTest {
     }
 
     @Test
-    fun renameSplitSetRenamesEveryShardAndKeepsNumbering() = kotlinx.coroutines.runBlocking {
+    fun renamingSplitModelChangesDisplayNameButPreservesShardFiles() = kotlinx.coroutines.runBlocking {
         val dir = File.createTempFile("splitrename", "").apply { delete(); mkdirs(); deleteOnExit() }
         val first = File(dir, "Qwen-00001-of-00002.gguf").apply { writeMinimalGguf(0, 2) }
-        File(dir, "Qwen-00002-of-00002.gguf").writeMinimalGguf(1, 2)
-        val renamed = ModelManager(dir).rename(first.path, "Flash-Next.gguf")
-        assertEquals("Flash-Next-00001-of-00002.gguf", renamed.name)
-        assertTrue(File(dir, "Flash-Next-00002-of-00002.gguf").isFile)
-        assertFalse(first.exists())
-        assertFalse(File(dir, "Qwen-00002-of-00002.gguf").exists())
+        val second = File(dir, "Qwen-00002-of-00002.gguf").apply { writeMinimalGguf(1, 2) }
+        val manager = ModelManager(dir)
+        val renamed = manager.rename(first.path, "Flash-Next")
+        assertEquals("Qwen-00001-of-00002.gguf", renamed.name)
+        assertEquals("Flash-Next", renamed.displayName)
+        assertTrue(first.isFile)
+        assertTrue(second.isFile)
+        val listed = manager.listModels().single()
+        assertEquals("Flash-Next", listed.displayName)
+        assertEquals(first.canonicalPath, listed.path)
     }
 
     @Test
@@ -119,16 +123,268 @@ class ModelManagerTest {
         assertFalse(second.exists())
     }
 
-    private fun File.writeMinimalGguf(splitNo: Long? = null, splitCount: Long? = null) {
-        val entries = 1 + (if (splitNo != null) 1 else 0) + (if (splitCount != null) 1 else 0)
-        val b = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN)
+    private fun File.writeMinimalGguf(
+        splitNo: Long? = null,
+        splitCount: Long? = null,
+        architecture: String = "qwen4exp",
+        modelName: String? = null,
+        fullMetadata: Boolean = false
+    ) {
+        val hasModelMetadata = splitNo == null || splitNo == 0L || fullMetadata
+        val entries = (if (hasModelMetadata) 1 + (if (modelName != null) 1 else 0) else 0) +
+            (if (splitNo != null) 1 else 0) + (if (splitCount != null) 1 else 0) + (if (splitCount != null) 1 else 0)
+        val b = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN)
         b.put("GGUF".toByteArray())
-        b.putInt(3); b.putLong(0); b.putLong(entries.toLong())
+        b.putInt(3); b.putLong(1); b.putLong(entries.toLong())
         fun str(v: String) { val bytes = v.toByteArray(Charsets.UTF_8); b.putLong(bytes.size.toLong()); b.put(bytes) }
-        str("general.architecture"); b.putInt(8); str("qwen4exp")
+        if (hasModelMetadata) {
+            str("general.architecture"); b.putInt(8); str(architecture)
+            if (modelName != null) { str("general.name"); b.putInt(8); str(modelName) }
+        }
         if (splitNo != null) { str("split.no"); b.putInt(10); b.putLong(splitNo) }
-        if (splitCount != null) { str("split.count"); b.putInt(10); b.putLong(splitCount) }
+        if (splitCount != null) {
+            str("split.count"); b.putInt(10); b.putLong(splitCount)
+            str("split.tensors.count"); b.putInt(5); b.putInt(splitCount.toInt())
+        }
+        str("test.tensor"); b.putInt(1); b.putLong(1); b.putInt(0); b.putLong(0)
         outputStream().use { it.write(b.array(), 0, b.position()); it.write(ByteArray(8)) }
+    }
+
+    private fun tempDirectory(prefix: String): File =
+        File.createTempFile(prefix, "").apply { delete(); mkdirs(); deleteOnExit() }
+
+    private fun shardSource(file: File): SplitShardSource =
+        SplitShardSource(file.name, file.length()) { file.inputStream() }
+
+    private fun createSplitShards(
+        dir: File,
+        prefix: String,
+        count: Int,
+        architecture: String = "qwen4exp",
+        modelName: String = "test model"
+    ): List<File> = (1..count).map { index ->
+        File(dir, "$prefix-${index.toString().padStart(5, '0')}-of-${count.toString().padStart(5, '0')}.gguf")
+            .apply { writeMinimalGguf((index - 1).toLong(), count.toLong(), architecture, modelName) }
+    }
+
+    private fun expectIOException(block: () -> Unit): java.io.IOException {
+        try {
+            block()
+        } catch (e: java.io.IOException) {
+            return e
+        }
+        throw AssertionError("Expected IOException")
+    }
+
+    @Test
+    fun incrementalImportSurvivesNewManagerInstanceAndRegistersOneLogicalModel() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modinc")
+        val sourceDir = tempDirectory("srcinc")
+        val sourceShards = createSplitShards(sourceDir, "Qwen-Next", 3)
+        val firstManager = ModelManager(modelsDir)
+        val first = firstManager.importSplitShardSources(listOf(shardSource(sourceShards[1])))
+        assertTrue(first.importedModels.isEmpty())
+        assertEquals(listOf(2), first.incompleteImport?.presentShardIndices)
+        assertEquals(listOf(1, 3), first.incompleteImport?.missingShardIndices)
+        assertTrue(firstManager.listModels().isEmpty())
+
+        val managerAfterRestart = ModelManager(modelsDir)
+        assertEquals(listOf(2), managerAfterRestart.listIncompleteImports().single().presentShardIndices)
+        val finished = managerAfterRestart.importSplitShardSources(listOf(shardSource(sourceShards[2]), shardSource(sourceShards[0])))
+        assertEquals(1, finished.importedModels.size)
+        assertEquals("Qwen-Next", finished.importedModels.single().displayName)
+        assertEquals(sourceShards.sumOf { it.length() }, finished.importedModels.single().sizeBytes)
+        assertEquals(1, managerAfterRestart.listModels().size)
+        assertEquals("Qwen-Next", managerAfterRestart.listModels().single().displayName)
+        assertTrue(File(modelsDir, "Qwen-Next-00002-of-00003.gguf").isFile)
+        assertTrue(managerAfterRestart.listIncompleteImports().isEmpty())
+        val completedManifest = File(modelsDir, ".model-manifests").listFiles()!!.single()
+        val manifestProperties = java.util.Properties().also { completedManifest.inputStream().use(it::load) }
+        assertEquals("READY", manifestProperties.getProperty("status"))
+        assertEquals("1,2,3", manifestProperties.getProperty("presentShardIndices"))
+        assertTrue(manifestProperties.getProperty("shard.3.path").orEmpty().endsWith("Qwen-Next-00003-of-00003.gguf"))
+    }
+
+    @Test
+    fun completeFourShardImportAcceptsOutOfOrderSelection() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modfour")
+        val sourceDir = tempDirectory("srcfour")
+        val shards = createSplitShards(sourceDir, "BigModel", 4)
+        val result = ModelManager(modelsDir).importSplitShardSources(shards.reversed().map(::shardSource))
+        assertEquals(1, result.importedModels.size)
+        assertEquals(4, (1..4).count { File(modelsDir, "BigModel-${it.toString().padStart(5, '0')}-of-00004.gguf").isFile })
+    }
+
+    @Test
+    fun duplicateShardIsRejectedWithoutOverwritingExistingPartialShard() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("moddup")
+        val sourceDir = tempDirectory("srcdup")
+        val shards = createSplitShards(sourceDir, "DupModel", 2)
+        val manager = ModelManager(modelsDir)
+        val e = expectIOException { kotlinx.coroutines.runBlocking { manager.importSplitShardSources(listOf(shardSource(shards[0]), shardSource(shards[0]))) } }
+        assertTrue(e.message.orEmpty().contains("Duplicate shard"))
+        val first = manager.importSplitShardSources(listOf(shardSource(shards[0])))
+        assertTrue(first.incompleteImport != null)
+        val duplicate = expectIOException { kotlinx.coroutines.runBlocking { manager.importSplitShardSources(listOf(shardSource(shards[0]))) } }
+        assertTrue(duplicate.message.orEmpty().contains("already imported"))
+    }
+
+    @Test
+    fun conflictingShardTotalIsRejectedWhenSamePrefixIsAlreadyComplete() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modreadyconflict")
+        val sourceDir = tempDirectory("srcreadyconflict")
+        val two = createSplitShards(sourceDir, "SamePrefix", 2)
+        val three = createSplitShards(sourceDir, "SamePrefix", 3)
+        val manager = ModelManager(modelsDir)
+        val complete = manager.importSplitShardSources(two.map(::shardSource))
+        assertEquals(1, complete.importedModels.size)
+        val error = expectIOException { kotlinx.coroutines.runBlocking { manager.importSplitShardSources(listOf(shardSource(three[0]))) } }
+        assertTrue(error.message.orEmpty().contains("already exists with 2 shards"))
+        assertEquals(1, manager.listModels().size)
+    }
+
+    @Test
+    fun conflictingTotalsAreRejected() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modconf")
+        val sourceDir = tempDirectory("srcconf")
+        val three = createSplitShards(sourceDir, "Conflict", 3)
+        val four = File(sourceDir, "Conflict-00002-of-00004.gguf").apply { writeMinimalGguf(1, 4, modelName = "test model") }
+        val manager = ModelManager(modelsDir)
+        manager.importSplitShardSources(listOf(shardSource(three[0])))
+        val e = expectIOException { kotlinx.coroutines.runBlocking { manager.importSplitShardSources(listOf(shardSource(four))) } }
+        assertTrue(e.message.orEmpty().contains("expects 3 shards") || e.message.orEmpty().contains("expects 3"))
+    }
+
+    @Test
+    fun incompatibleIdentityMetadataDoesNotCombineSimilarNames() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modmeta")
+        val sourceDir = tempDirectory("srcmeta")
+        val first = File(sourceDir, "Similar-00001-of-00002.gguf").apply { writeMinimalGguf(0, 2, modelName = "Model A") }
+        val other = File(sourceDir, "Similar-00002-of-00002.gguf").apply { writeMinimalGguf(1, 2, modelName = "Model B", fullMetadata = true) }
+        val manager = ModelManager(modelsDir)
+        manager.importSplitShardSources(listOf(shardSource(first)))
+        val e = expectIOException { kotlinx.coroutines.runBlocking { manager.importSplitShardSources(listOf(shardSource(other))) } }
+        assertTrue(e.message.orEmpty().contains("general.name"))
+        assertEquals(listOf(1), manager.listIncompleteImports().single().presentShardIndices)
+    }
+
+    @Test
+    fun incompleteSplitIsNotLoadableAndCanBeRemovedSafely() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modload")
+        val sourceDir = tempDirectory("srcload")
+        val shards = createSplitShards(sourceDir, "WaitModel", 2)
+        val manager = ModelManager(modelsDir)
+        val incomplete = manager.importSplitShardSources(listOf(shardSource(shards[0]))).incompleteImport!!
+        val stagedFirst = File(modelsDir, ".incomplete-split-imports/${incomplete.id}/${shards[0].name}")
+        assertFalse(ModelManager.adviseLoad(stagedFirst, 16 * gib, cfg).canLoad)
+        assertTrue(manager.removeIncompleteImport(incomplete.id))
+        assertTrue(manager.listIncompleteImports().isEmpty())
+        assertTrue("Only app-owned copies are removed", shards[0].isFile)
+    }
+
+    @Test
+    fun inaccessibleAdditionalShardKeepsEarlierShardAndPersistsErrorState() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modaccess")
+        val sourceDir = tempDirectory("srcaccess")
+        val shards = createSplitShards(sourceDir, "AccessModel", 2)
+        val manager = ModelManager(modelsDir)
+        val firstResult = manager.importSplitShardSources(listOf(shardSource(shards[0])))
+        val pending = firstResult.incompleteImport!!
+        val blocked = SplitShardSource(shards[1].name, shards[1].length()) {
+            throw java.io.FileNotFoundException("SAF permission revoked")
+        }
+        val error = expectIOException {
+            kotlinx.coroutines.runBlocking {
+                manager.importSplitShardSources(listOf(blocked), targetImportId = pending.id)
+            }
+        }
+        assertTrue(error.message.orEmpty().contains("SAF permission revoked"))
+        val stillPending = manager.listIncompleteImports().single()
+        assertEquals(listOf(1), stillPending.presentShardIndices)
+        assertTrue(stillPending.validationMessage.orEmpty().contains("SAF permission revoked"))
+        val manifest = File(modelsDir, ".incomplete-split-imports/${pending.id}/manifest.properties")
+        val properties = java.util.Properties().also { manifest.inputStream().use(it::load) }
+        assertEquals("1", properties.getProperty("presentShardIndices"))
+        assertTrue(properties.getProperty("shard.1.path").orEmpty().endsWith(shards[0].name))
+        assertTrue(shards[1].isFile) // An original SAF/source file is never removed by a failed import.
+    }
+
+
+    @Test
+    fun interruptedPromotionIsRecoveredAndCompletedBeforeModelListing() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modrecoverpromote")
+        val sourceDir = tempDirectory("srcrecoverpromote")
+        val shards = createSplitShards(sourceDir, "RecoverModel", 2)
+        val manager = ModelManager(modelsDir)
+        val pending = manager.importSplitShardSources(listOf(shardSource(shards[0]))).incompleteImport!!
+        val pendingDir = File(modelsDir, ".incomplete-split-imports/${pending.id}")
+        val stagedSecond = File(pendingDir, shards[1].name)
+        shards[1].copyTo(stagedSecond)
+        val stagedFirst = File(pendingDir, shards[0].name)
+        val managedFirst = File(modelsDir, shards[0].name)
+        assertTrue(stagedFirst.renameTo(managedFirst))
+        val manifest = File(pendingDir, "manifest.properties")
+        val props = java.util.Properties().also { manifest.inputStream().use(it::load) }
+        props.setProperty("status", "PROMOTING")
+        manifest.outputStream().use { props.store(it, "simulate process death during split promotion") }
+
+        assertTrue(manager.listModels().isEmpty())
+        assertTrue(manager.listIncompleteImports().isEmpty())
+        assertEquals(1, manager.listModels().size)
+        assertTrue(File(modelsDir, shards[0].name).isFile)
+        assertTrue(File(modelsDir, shards[1].name).isFile)
+        assertTrue(manager.listIncompleteImports().isEmpty())
+    }
+
+    @Test
+    fun staleManifestTempIsCleanedWithoutRemovingThePendingImport() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modmanifesttemp")
+        val sourceDir = tempDirectory("srcmanifesttemp")
+        val first = createSplitShards(sourceDir, "ManifestTemp", 2).first()
+        val manager = ModelManager(modelsDir)
+        val pending = manager.importSplitShardSources(listOf(shardSource(first))).incompleteImport!!
+        val pendingDir = File(modelsDir, ".incomplete-split-imports/${pending.id}")
+        val manifest = File(pendingDir, "manifest.properties")
+        val staleTemp = File(pendingDir, "manifest.properties.part").apply { writeText("partial manifest") }
+        assertTrue(manifest.isFile)
+        assertTrue(manager.listIncompleteImports().single().presentShardIndices == listOf(1))
+        assertFalse(staleTemp.exists())
+        assertTrue(manifest.isFile)
+    }
+
+    @Test
+    fun oneBasedSplitMetadataIsRejectedBecauseNativeLoaderRequiresZeroBasedIndexes() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modbase")
+        val sourceDir = tempDirectory("srcbase")
+        val first = File(sourceDir, "OneBased-00001-of-00002.gguf").apply { writeMinimalGguf(1, 2, modelName = "one based", fullMetadata = true) }
+        val e = expectIOException { kotlinx.coroutines.runBlocking { ModelManager(modelsDir).importSplitShardSources(listOf(shardSource(first))) } }
+        assertTrue(e.message.orEmpty().contains("expects 0"))
+        assertTrue(ModelManager(modelsDir).listIncompleteImports().isEmpty())
+    }
+
+    @Test
+    fun malformedTensorDirectoryIsRejectedRatherThanSavedAsShard() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modtensor")
+        val sourceDir = tempDirectory("srctensor")
+        val malformed = File(sourceDir, "Malformed-00001-of-00002.gguf").apply {
+            writeMinimalGguf(0, 2, modelName = "broken")
+            // Truncate after the metadata block, leaving the declared tensor directory incomplete.
+            val bytes = readBytes()
+            writeBytes(bytes.copyOf(bytes.size - 20))
+        }
+        val e = expectIOException { kotlinx.coroutines.runBlocking { ModelManager(modelsDir).importSplitShardSources(listOf(shardSource(malformed))) } }
+        assertTrue(e.message.orEmpty().contains("header") || e.message.orEmpty().contains("GGUF"))
+        assertTrue(ModelManager(modelsDir).listIncompleteImports().isEmpty())
+    }
+
+    @Test
+    fun insufficientStorageIsReportedBeforeReadingShardData() = kotlinx.coroutines.runBlocking {
+        val modelsDir = tempDirectory("modspace")
+        val source = SplitShardSource("Large-00001-of-00002.gguf", 100L * 1024 * 1024 * 1024 * 1024) {
+            throw AssertionError("Should not try to read when preflight storage check fails")
+        }
+        val e = expectIOException { kotlinx.coroutines.runBlocking { ModelManager(modelsDir).importSplitShardSources(listOf(source)) } }
+        assertTrue(e.message.orEmpty().contains("free storage"))
     }
 
     @Test

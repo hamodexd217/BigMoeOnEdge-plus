@@ -36,6 +36,14 @@ class MarkdownSupportTest {
     }
 
     @Test
+    fun markdownLinksPreserveHttpDestinationForTapHandling() {
+        val link = InlineMarkdown.parse("Open [the docs](https://example.org/docs?q=gguf) now")
+            .first { it.link }
+        assertEquals("the docs", link.text)
+        assertEquals("https://example.org/docs?q=gguf", link.linkTarget)
+    }
+
+    @Test
     fun displaysCommonMathAsReadableUnicode() {
         assertEquals("(a)/(b)", MathText.toUnicode("\\frac{a}{b}"))
         assertTrue(MathText.toUnicode("\\alpha + \\beta").contains("α"))

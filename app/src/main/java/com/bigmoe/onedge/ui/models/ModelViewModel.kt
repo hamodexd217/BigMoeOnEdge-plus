@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.io.File
 
 data class ImportProgress(val name: String, val copiedBytes: Long, val totalBytes: Long)
@@ -36,6 +38,7 @@ data class PendingLoad(
 data class ModelsUiState(
     val models: List<ModelFile> = emptyList(),
     val drafts: List<ModelFile> = emptyList(),
+    val incompleteImports: List<com.bigmoe.onedge.core.IncompleteModelImport> = emptyList(),
     val modelDrafts: Map<String, String> = emptyMap(),
     val existingPathInput: String = "",
     val importProgress: ImportProgress? = null,
@@ -67,33 +70,44 @@ class ModelViewModel(
 
     fun refresh() {
         viewModelScope.launch {
+            // Reading incomplete groups first also performs recovery of an interrupted shard promotion.
+            val incomplete = modelManager.listIncompleteImports()
             val list = modelManager.listModels()
             val drafts = modelManager.listDrafts()
             val links = list.mapNotNull { model -> modelManager.draftForModel(model.path)?.let { model.path to it } }.toMap()
-            _uiState.update { it.copy(models = list, drafts = drafts, modelDrafts = links) }
+            _uiState.update { it.copy(models = list, drafts = drafts, incompleteImports = incomplete, modelDrafts = links) }
         }
     }
 
     fun importModel(resolver: ContentResolver, uri: Uri) = importModels(resolver, listOf(uri))
 
-    fun importModels(resolver: ContentResolver, uris: List<Uri>) {
+    fun importModels(resolver: ContentResolver, uris: List<Uri>, targetImportId: String? = null) {
         if (importJob?.isActive == true || uris.isEmpty()) return
         importJob = viewModelScope.launch {
             _uiState.update { it.copy(message = null, importProgress = ImportProgress("…", 0, 0)) }
             try {
-                val imported = modelManager.importModels(resolver, uris) { copied, total ->
+                val result = modelManager.importModelsIncrementally(resolver, uris, targetImportId) { copied, total ->
                     _uiState.update { s -> s.copy(importProgress = ImportProgress(s.importProgress?.name ?: "…", copied, total)) }
                 }
-                _uiState.update { it.copy(message = "Imported ${imported.size} GGUF file(s): ${imported.joinToString { f -> f.name }}") }
+                _uiState.update { it.copy(message = result.message) }
                 refresh()
             } catch (e: CancellationException) {
                 _uiState.update { it.copy(message = "Import cancelled") }
                 throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(message = e.message ?: "Import failed") }
+                refresh()
             } finally {
                 _uiState.update { it.copy(importProgress = null) }
             }
+        }
+    }
+
+    fun removeIncompleteImport(id: String) {
+        viewModelScope.launch {
+            val removed = modelManager.removeIncompleteImport(id)
+            _uiState.update { it.copy(message = if (removed) "Removed the incomplete import and its app-owned partial copies." else "Could not remove this incomplete import.") }
+            refresh()
         }
     }
 
@@ -130,6 +144,32 @@ class ModelViewModel(
         }
     }
 
+    /** Copy a separately selected MTP GGUF into private storage, validate it, then attach it to the chosen target model. */
+    fun importAndAttachDraft(resolver: ContentResolver, uri: Uri, modelPath: String) {
+        if (importJob?.isActive == true) {
+            _uiState.update { it.copy(message = "Wait for the current import to finish before attaching an MTP draft.") }
+            return
+        }
+        importJob = viewModelScope.launch {
+            _uiState.update { it.copy(message = null, importProgress = ImportProgress("MTP draft", 0, 0)) }
+            try {
+                val draft = modelManager.importAndAttachDraft(resolver, uri, modelPath) { copied, total ->
+                    _uiState.update { it.copy(importProgress = ImportProgress("MTP draft", copied, total)) }
+                }
+                _uiState.update { it.copy(message = "Imported and attached ${draft.name} as the separate MTP draft.") }
+                refresh()
+            } catch (e: CancellationException) {
+                _uiState.update { it.copy(message = "MTP draft import cancelled.") }
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(message = e.message ?: "Could not import the MTP draft.") }
+                refresh()
+            } finally {
+                _uiState.update { it.copy(importProgress = null) }
+            }
+        }
+    }
+
     fun cancelImport() {
         importJob?.cancel()
     }
@@ -142,7 +182,11 @@ class ModelViewModel(
         }
         viewModelScope.launch {
             val s = settingsDataStore.settingsFlow.first()
-            val advice = ModelManager.adviseLoad(File(path), totalRamBytes(), s.toLoadConfig())
+            // Split validation inspects only GGUF headers/tensor descriptors, but that still involves
+            // file I/O; do not freeze Compose while checking a multi-shard model.
+            val advice = withContext(Dispatchers.IO) {
+                ModelManager.adviseLoad(File(path), totalRamBytes(), s.toLoadConfig())
+            }
             val projectors = _uiState.value.models.filter { ModelManager.isProjectorName(it.name) }
             // By name, or the projector this very model was loaded with last time. Never a projector that was
             // used with a different model: a mismatched mmproj makes the whole load fail.

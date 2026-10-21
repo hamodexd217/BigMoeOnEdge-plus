@@ -71,6 +71,8 @@ sealed interface AgentEvent {
  * [EngineController.generate]; never builds a prompt string. See docs/prompt-and-kv-design.md and
  * docs/tool-calling.md.
  */
+private const val PROGRESS_TOKEN_INTERVAL = 8
+
 class AgentController(
     private val engineController: EngineController,
     private val toolManager: ToolManager
@@ -122,7 +124,11 @@ class AgentController(
         var generatedTotal = 0
 
         if (alwaysSearch) {
-            val query = searchQueryFrom(request.prompt)
+            // Ask the loaded model to formulate a search query instead of sending the user's raw message
+            // directly to the search provider. This is a separate, hidden short generation; the main answer
+            // generation replays the real conversation and the search results as usual.
+            val generatedQuery = generateSearchQuery(request, turns)
+            val query = searchQueryFrom(generatedQuery).ifBlank { searchQueryFrom(request.prompt) }
             val args = org.json.JSONObject().put("query", query).toString()
             emit(AgentEvent.ToolStarted("web_search", args))
             val result = toolManager.executeToolCall("web_search", args)
@@ -169,7 +175,15 @@ class AgentController(
                 )
             ).collect { ev ->
                 when (ev) {
-                    is EngineEvent.Progress -> emit(AgentEvent.GenerationProgress(generatedTotal + ev.generatedTokens))
+                    is EngineEvent.Progress -> {
+                        // Progress is informational, unlike answer deltas. Emitting it for every token adds
+                        // cross-coroutine/channel work and UI bookkeeping to a CPU-bound decode. Text still streams
+                        // token-by-token; refresh the counter every 8 tokens and always send the final exact total.
+                        val total = generatedTotal + ev.generatedTokens
+                        if (total % PROGRESS_TOKEN_INTERVAL == 0) {
+                            emit(AgentEvent.GenerationProgress(total))
+                        }
+                    }
                     is EngineEvent.Answer -> {
                         rawAnswer.append(ev.delta)
                         show(parser.processToken(ev.delta))
@@ -291,6 +305,40 @@ class AgentController(
         }
     }
 
+
+    /**
+     * Uses the current model to turn the user's intent into a concise web-search query.
+     * The result is not shown as an assistant message and is never saved to chat history.
+     * On generation failure/empty output, the caller safely falls back to the user's text.
+     */
+    private suspend fun generateSearchQuery(request: AgentRequest, turns: List<ChatTurn>): String {
+        val prompt = """Create the best concise web search query for the user's latest request.
+Use the conversation context only to resolve what the user means. Do not answer the request.
+Return ONLY the search query, with no quotes, explanation, prefix, or markdown.
+Prefer specific names, current/recent intent, and useful keywords. Keep it under 20 words.
+
+Latest user request:
+${request.prompt}""".trim()
+        var finished: EngineEvent.Finished? = null
+        return try {
+            engineController.generate(
+                GenerationRequest(
+                    system = "You are a search-query writer. Output only one useful search query.",
+                    history = turns.toList(),
+                    prompt = prompt,
+                    expectedKey = "${request.sessionId}:search-query:${System.nanoTime()}",
+                    maxTokens = 48,
+                    think = false,
+                    images = emptyList()
+                )
+            ).collect { event -> if (event is EngineEvent.Finished) finished = event }
+            val result = finished
+            if (result != null && result.ok && !result.cancelled) result.answer else ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     private suspend fun saveIfAny(
         sink: MessageSink,
         answer: CharSequence,
@@ -336,8 +384,12 @@ class AgentController(
                 "If they are empty, irrelevant or an error, say so and answer from your own knowledge."
 
         /** The user's message as a search query: first 200 characters, one line. */
-        fun searchQueryFrom(message: String): String =
-            message.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ").take(200)
+        fun searchQueryFrom(message: String): String {
+            var query = message.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+            query = query.replace(Regex("^(search query|query|web search|search for)\\s*[:：-]\\s*", RegexOption.IGNORE_CASE), "")
+                .trim().trim('"', '\'', '`')
+            return query.take(200)
+        }
 
         /**
          * Tools the model may use this turn: file, code and utility tools by their switches, the web-page tools

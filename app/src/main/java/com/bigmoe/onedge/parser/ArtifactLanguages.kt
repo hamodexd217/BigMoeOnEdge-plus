@@ -18,7 +18,7 @@ object ArtifactLanguages {
 
     /** The languages that must always be detected as artifacts. */
     val REQUIRED: List<String> = listOf(
-        "html", "css", "javascript", "typescript", "json", "xml", "markdown", "python", "kotlin", "java",
+        "html", "css", "javascript", "typescript", "json", "xml", "markdown", "kotlin", "java",
         "c", "cpp", "csharp", "rust", "go", "swift", "bash", "sql", "yaml"
     )
 

@@ -1,6 +1,7 @@
 package com.bigmoe.onedge.ui.artifact
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -180,7 +181,22 @@ fun ArtifactPreview(
                     }
 
                     // The page may never navigate away (links, location.href, form posts).
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        // Keep the artifact sandbox offline, but make an explicit user tap on a web link useful:
+                        // open only http(s) top-level navigations in the device's default browser.
+                        val target = request?.url ?: return true
+                        val scheme = target.scheme.orEmpty()
+                        if (request.isForMainFrame && request.hasGesture() &&
+                            (scheme.equals("https", true) || scheme.equals("http", true))
+                        ) {
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_VIEW, target)
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                view?.context?.startActivity(intent)
+                            }
+                        }
+                        return true // Never navigate the artifact WebView away from its local document.
+                    }
 
                     override fun shouldInterceptRequest(
                         view: WebView?,
@@ -220,19 +236,22 @@ private fun ArtifactCodePreview(artifact: ArtifactModel, modifier: Modifier = Mo
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1200); copied = false } }
-    val tokens = SyntaxHighlighter.tokenize(artifact.language, artifact.content)
-    val annotated = androidx.compose.ui.text.AnnotatedString.Builder()
-    tokens.forEach { token ->
-        val style = when (token.kind) {
-            SyntaxHighlighter.Kind.KEYWORD -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold)
-            SyntaxHighlighter.Kind.STRING -> androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-            SyntaxHighlighter.Kind.COMMENT -> androidx.compose.ui.text.SpanStyle(color = AppTheme.colors.onCodeBlock.copy(alpha = 0.65f))
-            SyntaxHighlighter.Kind.NUMBER -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)
-            SyntaxHighlighter.Kind.TAG -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold)
-            SyntaxHighlighter.Kind.FUNCTION -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)
-            SyntaxHighlighter.Kind.PLAIN -> androidx.compose.ui.text.SpanStyle()
+    val codeColor = AppTheme.colors.onCodeBlock
+    val annotated = remember(artifact.language, artifact.content, codeColor) {
+        val builder = androidx.compose.ui.text.AnnotatedString.Builder()
+        for (token in SyntaxHighlighter.tokenize(artifact.language, artifact.content)) {
+            val style = when (token.kind) {
+                SyntaxHighlighter.Kind.KEYWORD -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold)
+                SyntaxHighlighter.Kind.STRING -> androidx.compose.ui.text.SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                SyntaxHighlighter.Kind.COMMENT -> androidx.compose.ui.text.SpanStyle(color = codeColor.copy(alpha = 0.65f))
+                SyntaxHighlighter.Kind.NUMBER -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)
+                SyntaxHighlighter.Kind.TAG -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold)
+                SyntaxHighlighter.Kind.FUNCTION -> androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)
+                SyntaxHighlighter.Kind.PLAIN -> androidx.compose.ui.text.SpanStyle()
+            }
+            builder.withStyle(style) { append(token.text) }
         }
-        annotated.withStyle(style) { append(token.text) }
+        builder.toAnnotatedString()
     }
     Surface(color = AppTheme.colors.codeBlock, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp), modifier = modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(10.dp)) {
@@ -244,10 +263,18 @@ private fun ArtifactCodePreview(artifact: ArtifactModel, modifier: Modifier = Mo
                     Text(if (copied) "Copied" else "Copy")
                 }
             }
+            if (artifact.language.equals("python", ignoreCase = true)) {
+                Text(
+                    "Python source preview only — a Python runtime is not bundled, so this code is not executed in the app. Use Copy to run it in a Python environment.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.onCodeBlock.copy(alpha = 0.82f),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
             SelectionContainer {
                 Text(
-                    annotated.toAnnotatedString(),
-                    color = AppTheme.colors.onCodeBlock,
+                    annotated,
+                    color = codeColor,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.fillMaxWidth().weight(1f).horizontalScroll(rememberScrollState())
                 )

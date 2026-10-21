@@ -1,5 +1,13 @@
 package com.bigmoe.onedge.ui.navigation
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
@@ -11,8 +19,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Modifier
@@ -67,6 +77,7 @@ fun AppNavigation(
     navController: NavHostController = rememberNavController()
 ) {
     val backStack by navController.currentBackStackEntryAsState()
+    var chatHistoryPaneVisible by rememberSaveable { mutableStateOf(true) }
     val route = backStack?.destination?.route
     val tab = when (route) {
         Screen.Home.route -> TopTab.CHATS
@@ -163,12 +174,18 @@ fun AppNavigation(
                     val wide = maxWidth >= 840.dp
                     if (wide) {
                         Row(Modifier.fillMaxSize()) {
-                            ChatHistoryPanel(
-                                viewModel = historyViewModel,
-                                selectedSessionId = chatUiState.currentSession?.id,
-                                onNewChat = { chatViewModel.newChat() },
-                                onOpenChat = { chatViewModel.loadSession(it) }
-                            )
+                            AnimatedVisibility(
+                                visible = chatHistoryPaneVisible,
+                                enter = slideInHorizontally(animationSpec = tween(240), initialOffsetX = { -it }) + expandHorizontally(animationSpec = tween(240), expandFrom = Alignment.Start) + fadeIn(animationSpec = tween(180)),
+                                exit = slideOutHorizontally(animationSpec = tween(220), targetOffsetX = { -it }) + shrinkHorizontally(animationSpec = tween(220), shrinkTowards = Alignment.Start) + fadeOut(animationSpec = tween(160))
+                            ) {
+                                ChatHistoryPanel(
+                                    viewModel = historyViewModel,
+                                    selectedSessionId = chatUiState.currentSession?.id,
+                                    onNewChat = { chatViewModel.newChat() },
+                                    onOpenChat = { chatViewModel.loadSession(it) }
+                                )
+                            }
                             ChatScreen(
                                 viewModel = chatViewModel,
                                 historyViewModel = historyViewModel,
@@ -179,6 +196,8 @@ fun AppNavigation(
                                 onOpenFile = { path -> navController.navigate(Screen.File.createRoute(path)) },
                                 modelViewModel = modelViewModel,
                                 wideMode = true,
+                                historyPaneVisible = chatHistoryPaneVisible,
+                                onToggleHistoryPane = { chatHistoryPaneVisible = !chatHistoryPaneVisible },
                                 modifier = Modifier.weight(1f)
                             )
                         }

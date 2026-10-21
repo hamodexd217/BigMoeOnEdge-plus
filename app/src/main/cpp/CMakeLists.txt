@@ -99,7 +99,7 @@ endif()
 
 # Keep the engine's compute threads on the fast cores with a small priority boost (perf_tuning.h).
 # Placement/scheduling only: it cannot change CPU frequency. Fails safe when core info is unavailable.
-option(BMOE_PIN_FAST_CORES "Pin engine compute threads to the fast CPU cores" ON)
+option(BMOE_PIN_FAST_CORES "Pin engine compute threads to the fast CPU cores" OFF)
 if(BMOE_PIN_FAST_CORES)
     target_compile_definitions(onedge-engine PRIVATE BMOE_PIN_FAST_CORES=1)
 endif()

@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.DropdownMenu
@@ -239,12 +238,6 @@ fun ChatInputBar(
                         },
                         enabled = thinkingSwitchable,
                         onClick = onToggleThinking
-                    )
-                    ToggleIcon(
-                        icon = Icons.Default.Tune,
-                        on = chooseFromOptions,
-                        description = if (chooseFromOptions) "Choose from options: ON" else "Choose from options: OFF",
-                        onClick = onToggleChooseFromOptions
                     )
                     Box {
                         ToggleIcon(

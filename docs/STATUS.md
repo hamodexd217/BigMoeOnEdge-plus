@@ -1,6 +1,12 @@
 # STATUS
 
-Date: 2026-10-16
+Date: 2026-10-20
+
+## Latest source update: v0.5.5 multi-file GGUF import
+
+The source now contains an incremental split-GGUF import workflow. Individual numbered shards are staged in app-private storage, described by persistent `.properties` manifests, checked using GGUF metadata and tensor descriptor headers, and only promoted to `models/` after the full set passes validation. Ready models appear once in the selector and are loaded through the existing native path using shard 1; no merge or second model registry was introduced.
+
+The model-manager and GGUF-inspector source plus their tests compiled through a local Kotlin 1.9 harness with small Android/JUnit stubs, and 40 supplemental test methods passed (30 ModelManager + 10 GgufInspector). This is a supplemental host check, not a Gradle/JUnit task execution: the Gradle 8.9 wrapper could not download its distribution (`UnknownHostException: services.gradle.org`), so APK/CMake/NDK build and real-device native loading remain unverified. See [`MULTI_FILE_GGUF_IMPORT_0.5.5.md`](MULTI_FILE_GGUF_IMPORT_0.5.5.md) for details.
 
 This file contains the original Phase-2/3 audit and historical device checklist. For the v0.4.0 source delta, read
 [`RELEASE_NOTES_0.4.0.md`](RELEASE_NOTES_0.4.0.md) and the project [`README.md`](../README.md). Do not interpret old
@@ -84,7 +90,7 @@ Xiaomi tablet.
   cover frame count, memory, and context pressure.
 * Room v1 → v2 uses `fallbackToDestructiveMigration()`: the app shows a startup warning and old **development-build**
   chats are cleared once. Models/settings are not cleared.
-* Split GGUF sets can be imported through the copy importer by selecting the complete numbered shard set together; no-copy registration is a separate real-path flow and does not provide the same multi-file staging/validation.
+* The copy importer accepts split GGUF shards incrementally and keeps incomplete imports out of the model selector until validation succeeds. The no-copy real-path flow still requires a complete shard set already present together in a filesystem folder; it does not stage missing shards.
 * Native generation remains single-flight; unload waits for an active generation to finish.
 
 ## 5. Consolidated device test checklist

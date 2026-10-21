@@ -21,11 +21,23 @@ enum class ModelKind {
     UNKNOWN
 }
 
-data class GgufSummary(val architecture: String, val expertCount: Int, val kind: ModelKind, val splitNo: Long? = null, val splitCount: Long? = null)
+data class GgufSummary(
+    val architecture: String,
+    val expertCount: Int,
+    val kind: ModelKind,
+    val splitNo: Long? = null,
+    val splitCount: Long? = null,
+    val identityMetadata: Map<String, String> = emptyMap(),
+    /** Number of tensor descriptors in this shard's GGUF header (tensor bytes are not read). */
+    val tensorCount: Long = 0L,
+    /** Optional total tensor count across all shards, when the file provides it. */
+    val splitTensorCount: Long? = null
+)
 
 /**
- * Reads only the metadata block of a GGUF file (no tensors) to find out whether a model is
- * Mixture-of-Experts. Pure java.io, so it is unit-tested on the JVM.
+ * Reads the GGUF metadata block and lightweight tensor descriptors (never tensor weights) to find out
+ * whether a model is Mixture-of-Experts and whether a shard header is structurally readable. Pure java.io,
+ * so it is unit-tested on the JVM.
  *
  * Layout (little endian): "GGUF", u32 version, u64 tensor_count, u64 kv_count, then kv_count pairs of
  * (string key, u32 type, value). A string is a u64 length + bytes. Arrays are u32 element type + u64 count +
@@ -34,8 +46,10 @@ data class GgufSummary(val architecture: String, val expertCount: Int, val kind:
 object GgufInspector {
 
     private const val MAX_KV = 200_000L
+    private const val MAX_TENSORS = 2_000_000L
     private const val MAX_KEY_BYTES = 4096L
     private const val MAX_STRING_BYTES = 1L shl 30
+    private const val MAX_TENSOR_DIMS = 4L
 
     private const val T_UINT8 = 0
     private const val T_INT8 = 1
@@ -70,6 +84,19 @@ object GgufInspector {
 
     private val UNKNOWN_SUMMARY = GgufSummary("", 0, ModelKind.UNKNOWN)
 
+    private val IDENTITY_STRING_KEYS = setOf(
+        "general.name", "general.basename", "general.finetune", "general.size_label",
+        "tokenizer.ggml.model", "tokenizer.ggml.pre"
+    )
+
+    private val IDENTITY_INTEGER_SUFFIXES = setOf(
+        "block_count", "embedding_length", "context_length", "expert_used_count", "vocab_size",
+        "bos_token_id", "eos_token_id", "add_bos_token", "add_eos_token"
+    )
+
+    private fun isIdentityIntegerKey(key: String): Boolean =
+        key.substringAfterLast('.') in IDENTITY_INTEGER_SUFFIXES
+
     private fun read(s: DataInputStream): GgufSummary {
         val magic = ByteArray(4)
         s.readFully(magic)
@@ -78,28 +105,60 @@ object GgufInspector {
         }
         val version = u32(s)
         if (version < 2L || version > 3L) return UNKNOWN_SUMMARY // v1 used 32-bit counts; not produced for years
-        u64(s) // tensor count
+        val tensorCount = u64(s)
+        if (tensorCount < 0 || tensorCount > MAX_TENSORS) return UNKNOWN_SUMMARY
         val kvCount = u64(s)
         if (kvCount < 0 || kvCount > MAX_KV) return UNKNOWN_SUMMARY
 
         var arch = ""
         var splitNo: Long? = null
         var splitCount: Long? = null
+        var splitTensorCount: Long? = null
         // Every "<something>.expert_count" seen; the one matching the architecture wins, else any of them.
         val experts = LinkedHashMap<String, Long>()
+        // Read only a small set of identity/shape fields. This does not load tensor data and helps catch
+        // similarly named shards that came from different model exports.
+        val identity = LinkedHashMap<String, String>()
         for (i in 0 until kvCount) {
             val key = readString(s, MAX_KEY_BYTES)
             val type = u32(s).toInt()
             when {
                 key == "general.architecture" && type == T_STRING -> arch = readString(s, MAX_KEY_BYTES)
+                key in IDENTITY_STRING_KEYS && type == T_STRING -> identity[key] = readString(s, MAX_KEY_BYTES)
                 key == "split.no" && isInteger(type) -> splitNo = readInteger(s, type)
                 key == "split.count" && isInteger(type) -> splitCount = readInteger(s, type)
-                key.endsWith(".expert_count") && isInteger(type) -> experts[key] = readInteger(s, type)
+                key == "split.tensors.count" && isInteger(type) -> {
+                    splitTensorCount = readInteger(s, type)
+                    identity[key] = splitTensorCount.toString()
+                }
+                key.endsWith(".expert_count") && isInteger(type) -> {
+                    val value = readInteger(s, type)
+                    experts[key] = value
+                    identity[key] = value.toString()
+                }
+                isIdentityIntegerKey(key) && type == T_BOOL -> identity[key] = s.readUnsignedByte().toString()
+                isIdentityIntegerKey(key) && isInteger(type) -> identity[key] = readInteger(s, type).toString()
                 else -> skipValue(s, type)
             }
         }
+        // Parse tensor descriptors after the KV table. This validates the complete lightweight GGUF
+        // header (including tensor names/dimensions/types/offsets) without reading any tensor weights.
+        // A malformed/truncated tensor directory is not accepted as a valid shard.
+        repeat(tensorCount.toInt()) {
+            val tensorName = readString(s, MAX_KEY_BYTES)
+            if (tensorName.isBlank()) throw IOException("empty tensor name")
+            val dimensions = u32(s)
+            if (dimensions < 1L || dimensions > MAX_TENSOR_DIMS) throw IOException("invalid tensor dimension count")
+            repeat(dimensions.toInt()) {
+                val dimension = u64(s)
+                if (dimension <= 0L) throw IOException("invalid tensor dimension")
+            }
+            u32(s) // GGML tensor type enum
+            val offset = u64(s)
+            if (offset < 0L) throw IOException("invalid tensor data offset")
+        }
         val count = (experts["$arch.expert_count"] ?: experts.values.maxOrNull() ?: 0L).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-        return GgufSummary(arch, count, if (count >= 2) ModelKind.MOE else ModelKind.DENSE, splitNo, splitCount)
+        return GgufSummary(arch, count, if (count >= 2) ModelKind.MOE else ModelKind.DENSE, splitNo, splitCount, identity.toMap(), tensorCount, splitTensorCount)
     }
 
     private fun isInteger(type: Int) = type in intArrayOf(T_UINT8, T_INT8, T_UINT16, T_INT16, T_UINT32, T_INT32, T_UINT64, T_INT64)

@@ -3,9 +3,11 @@
 ## Web search modes (Settings → Web and image search; globe button in the chat)
 The globe toggle is **off by default**. The `ALWAYS` mode below only applies after the user enables the globe.
 
-* **Every message (default mode, `ALWAYS`)**: the app searches the user's message itself, stores the results as a
-  `TOOL` message, and sends `message + <tool_response>…` to the model in the same turn. The model never has to
-  emit a tool call, so it works with every model. The system prompt tells it the results are attached.
+* **Every message (default mode, `ALWAYS`)**: the loaded model first creates a short, hidden search query from the
+  user's request and recent conversation context. The app searches that generated query, stores the results as a
+  `TOOL` message, then runs the normal answer generation with `message + <tool_response>…`. If query generation
+  fails or returns nothing, it safely falls back to a normalized version of the user's message. This adds one short
+  model generation before each automatic search, but avoids blindly searching the raw message wording.
 * **Only when the model asks (`AUTO`)**: the tool protocol below; small models often never call the tool.
 * Provider order: Brave (if a key is set) → SearXNG (if an https URL is set) → **DuckDuckGo HTML (no account)**
   → Wikipedia search API. The DuckDuckGo path scrapes `html.duckduckgo.com/html/`; it can be rate-limited or

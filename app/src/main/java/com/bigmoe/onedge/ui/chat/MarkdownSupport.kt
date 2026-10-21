@@ -8,10 +8,11 @@ data class InlineMarkdownSpan(
     val strike: Boolean = false,
     val code: Boolean = false,
     val link: Boolean = false,
-    val math: Boolean = false
+    val math: Boolean = false,
+    val linkTarget: String? = null
 )
 
-/** Minimal inline Markdown parser. It intentionally renders links as styled text rather than opening them implicitly. */
+/** Minimal inline Markdown parser. HTTP(S) destinations are retained for the message renderer's explicit tap handler. */
 object InlineMarkdown {
     fun parse(input: String): List<InlineMarkdownSpan> {
         if (input.isEmpty()) return emptyList()
@@ -25,9 +26,9 @@ object InlineMarkdown {
         }
         fun addStyled(value: String, bold: Boolean = false, italic: Boolean = false,
                       strike: Boolean = false, code: Boolean = false, link: Boolean = false,
-                      math: Boolean = false) {
+                      math: Boolean = false, linkTarget: String? = null) {
             flush()
-            if (value.isNotEmpty()) out.add(InlineMarkdownSpan(value, bold, italic, strike, code, link, math))
+            if (value.isNotEmpty()) out.add(InlineMarkdownSpan(value, bold, italic, strike, code, link, math, linkTarget))
         }
 
         var i = 0
@@ -41,12 +42,17 @@ object InlineMarkdown {
                     continue
                 }
             }
-            // Markdown links: render their label and style it. Destinations remain in the raw message for copying.
+            // Markdown links: retain the destination for a real click target. Never launch non-web schemes.
             if (input[i] == '[') {
                 val labelEnd = input.indexOf("](", i + 1)
                 val destEnd = if (labelEnd >= 0) input.indexOf(')', labelEnd + 2) else -1
                 if (labelEnd > i + 1 && destEnd > labelEnd + 2) {
-                    addStyled(input.substring(i + 1, labelEnd), link = true)
+                    val target = input.substring(labelEnd + 2, destEnd).trim()
+                    if (target.startsWith("https://", true) || target.startsWith("http://", true)) {
+                        addStyled(input.substring(i + 1, labelEnd), link = true, linkTarget = target)
+                    } else {
+                        plain.append(input.substring(i, destEnd + 1))
+                    }
                     i = destEnd + 1
                     continue
                 }
