@@ -78,61 +78,16 @@ The model manager loads GGUF models and `mmproj` projector files, detects whethe
 | Local API server | Optional on-device server (Anthropic Messages + OpenAI chat APIs) so other apps, such as Claude Code, can use the loaded model |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
 
-## What's new in v0.5.7
+## What's new in v0.6.0
 
-* **Engine Performance is now grouped into four cards:** Hexagon/NPU prompt prefill; MoE streaming and I/O; speed/quality and advanced routing; CPU compute, context and sampling.
-* **New settings reach the engine:** prompt/batch threads, batch width (`ubatch`), deterministic sampling seed, two-wave I/O, row-stream window, NPU routing threshold, N-gram match bounds, expert-drop controls, decision-prefix cache, and the low-cache override.
-* **I/O and compute overlap defaults to on** for fresh settings. The engine status still distinguishes the requested setting from actual activation; overlap needs a streamed MoE model, cache, and the compiled expert-ready hook.
-* **NPU settings are visible on CPU-only builds** with an explanation instead of being hidden. Snapdragon 8 Gen 2 hardware alone cannot enable the backend: the APK must be built with Hexagon and package the matching HTP libraries. See [`docs/npu-android-build.md`](docs/npu-android-build.md).
-* **No pretend controls:** GPU placement, the newer cache pin/brake policies, and later prefill placement/verification options are recorded as not yet ported because the corresponding engine implementations are absent from this app's custom 0.28-based core. Full parity inventory: [`docs/UPGRADE_SETTINGS_0.5.7.md`](docs/UPGRADE_SETTINGS_0.5.7.md).
-* **Build status:** Android unit tests and APK creation remain blocked in this environment because the Gradle 8.9 distribution cannot be downloaded. No APK or performance gain is claimed.
+* **Auto Settings:** Added automatic configuration profiles inspired by the original BigMoeOnEdge project, with Fastest, Balanced, and Most Accurate options.
+* **Performance testing:** Auto Settings can measure generation speed in tokens/s, compare estimated and measured performance, and benchmark saved configurations.
+* **Configuration management:** Save, rename, import, export, and switch between custom performance profiles.
+* **NPU prefill (experimental):** Added a Hexagon/NPU prefill path for supported Snapdragon builds. On-device testing showed it can be slower than CPU-only prefill, so performance still needs optimization and results may vary by device.
+* **Engine compatibility:** The native engine is at revision 0.28.1, based on the existing 0.28.0 engine with a compatible device-buffer routing fix.
+* **Release signing:** Improved release signing configuration.
 
-## What's new in v0.5.5
-
-* **Incremental split-GGUF import:** select one shard or several at a time; imported shards are copied into private app storage and the import state survives app restarts.
-* **One logical model:** incomplete groups stay out of the model selector. The Models page shows the number of imported shards, total size, missing indices, validation errors, and controls to add missing files or remove the partial import.
-* **Header and shard validation:** checks standard `-00001-of-000NN.gguf` naming, `split.count`, zero-based `split.no` expected by this vendored llama.cpp loader, architecture and shared model metadata, and the GGUF tensor-descriptor table without reading tensor weights.
-* **No physical merge:** when complete, the app promotes the numbered files into its managed model directory and opens the first shard; llama.cpp discovers the remaining shards by its supported naming convention.
-* **Display-name-only rename:** renaming a ready split model updates its manifest instead of changing the filenames required by llama.cpp.
-* **Separate MTP sidecars:** each model can choose a new MTP GGUF from Android's document picker. The app copies it into private model storage, validates its GGUF header, marks it as an auxiliary draft, and attaches it to the chosen target model. The original provider file is never modified. Split MTP sidecars remain unsupported and are rejected explicitly.
-* **Clickable links and sources:** HTTP(S) links in assistant Markdown and tool results open in the default browser. A compact source-count chip appears under the assistant message actions when the answer or its preceding web-tool results contain URLs; tap it to choose a source.
-* **Tablet chat layout:** the wide-screen chat header now toggles the persistent chat-history pane on/off, so the conversation can use the full width or show Chats beside it.
-* **Artifact preview boundaries:** HTML, SVG, and Mermaid are rendered as previews (HTML JavaScript is sandboxed/offline except for Mermaid's required script). Other supported languages use copyable source artifacts. Python fenced code remains a normal copyable code block and is deliberately not offered as an Artifact action, because this app does not bundle a Python runtime. External links opened from an HTML preview go to the device browser instead of navigating the sandbox WebView.
-* **Version:** Android `versionName` is `0.6.0` (`versionCode` 11); native engine revision is `0.28.1`, based on the existing 0.28.0 engine plus a compatible device-buffer routing fix.
-
-Implementation details: [`docs/MULTI_FILE_GGUF_IMPORT_0.5.5.md`](docs/MULTI_FILE_GGUF_IMPORT_0.5.5.md) and [`docs/UI_FOLLOWUP_0.5.5.md`](docs/UI_FOLLOWUP_0.5.5.md). The original split-import Kotlin host harness passed 40/40 tests before these UI follow-up edits. The newly added UI unit tests and a full Android Gradle/NDK build still require running in an environment that can download Gradle 8.9; real-device MTP loading and link interaction must also be verified.
-
-## What's new in v0.5.0
-
-This release is a performance investigation. On the owner's phone BigMoeOnEdge+ decoded at about 1.3-1.4 tokens/s against about 2.0-2.3 for the
-original BigMoeOnEdge 0.29.0, on every model tried. v0.5.0 recovers part of that gap; **it does not fully close it, and the remaining cause is not proven.**
-
-* **`android:appCategory="game"`**, as in the original app. Measured by the owner: about 1.3-1.4 -> about 1.7 tokens/s on their phone. Vendor-specific:
-  some performance layers use it to pick a CPU profile, and Samsung's game service has been reported to throttle such apps. Build without it with `-PbmoeAppCategory=undefined`.
-* **Fast-core pinning and a small priority boost** for the engine's compute threads (`perf_tuning.h`). Experimental and unmeasured. It cannot raise CPU clocks, which needs root. Disable with `-PbmoePinFastCores=false`.
-* **Less UI work while generating:** the streaming cursor and status indicator no longer run per-frame animations; they blink about twice a second. Experimental and unmeasured.
-* **Model picker in the chat:** the chip button in the chat's top bar now opens a list of your models. Tap one to load it (the usual memory check and projector choice follow) or tap the loaded one to unload it; "Manage models..." still opens the Models page.
-* **MTP folded away on the Models page:** each model card has a collapsible "MTP draft" section (arrow). Expanded, it holds the sidecar Attach control, a note that image turns run without Guess ahead (MTP and an mmproj can both be loaded; text turns still use MTP), and the MTP / Guess ahead settings, which moved here from Settings. The Attach menu now includes **Choose separate MTP GGUF…**; selected sidecars are copied/validated and attached to that exact model. Rename is a pencil icon on the model row.
-* **Clickable message links and source chip:** HTTP(S) URLs in Markdown and tool results open in the device browser. Assistant replies that include links or follow a web-search result show a small link-count chip under their message actions; open it to pick a source.
-* **Tablet chat layout toggle:** tap the chat header's menu icon to hide/show the Chat history pane and switch between split and full-width conversation views.
-* **Performance & engine is now the first section in Settings.**
-* **Diagnostics:** one `Run stats:` logcat line per generation and a `CPU features compiled in:` line (`adb logcat -s OnEdge-JNI`), plus `scripts/bmoe-capture.sh` for A/B captures of CPU clocks, memory pressure and thermals.
-* **Version:** app version is now 0.5.0 (the Gradle `versionName` previously still read 0.4.0). The engine stays BigMoeOnEdge 0.28.0.
-
-Everything is documented, with the measurements, what was ruled out, corrections to earlier assumptions, and what is unverified, in
-[`docs/PERFORMANCE_INVESTIGATION_0.5.0.md`](docs/PERFORMANCE_INVESTIGATION_0.5.0.md). The changes were checked statically only: the Android build and a device
-benchmark were not run by their author (see *Testing and status*).
-
-## Previous release: v0.4.5
-
-This release focuses on chat bubble sizing and message alignment:
-
-- **Natural assistant bubble width:** short assistant replies wrap around their content instead of stretching across the entire chat pane.
-- **Responsive wrapping:** longer assistant messages wrap within a maximum width based on the available chat area.
-- **Correct message alignment:** user messages stay on the right, and assistant messages stay on the left.
-- **Content-driven layout:** bubble size follows the rendered message content while preserving the existing chat styling and controls.
-
-The changes focus on the chat UI layout. No inference-engine performance changes were intended.
+**Upgrade note:** If your installed version was signed with a different key, Android may require you to uninstall it before installing v0.6.0. Back up important data first.
 
 ## Model support
 
