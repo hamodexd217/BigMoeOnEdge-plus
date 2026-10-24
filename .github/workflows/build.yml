@@ -11,8 +11,15 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      # Set repo secret PUSH_TOKEN (PAT with `repo` + `workflow` scopes) to let
+      # the zip update .github/workflows. Without it, workflows are preserved.
+      HAS_PUSH_TOKEN: ${{ secrets.PUSH_TOKEN != '' }}
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PUSH_TOKEN || github.token }}
 
       - name: Extract and clean
         run: |
@@ -25,10 +32,18 @@ jobs:
           fi
           rm -f "$ZIP"
 
+      - name: Keep existing workflows (no PAT)
+        if: env.HAS_PUSH_TOKEN != 'true'
+        run: |
+          rm -rf .github
+          git checkout HEAD -- .github
+
       - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
+          git diff --cached --quiet && echo "No changes" && exit 0
           git commit -m "Update release from zip"
           git push
+          
