@@ -31,7 +31,6 @@
 
 > **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
 
-> **Project update:** v0.5.8 hardens the optional Hexagon/NPU Android build workflow and validates the staged/packaged libraries; v0.5.7 expands and reorganizes the actual Engine Performance settings, wires batch-thread/ubatch/NPU/MoE controls through JNI, and enables overlap by default for new installs. v0.5.6 added the device-backed routing fix; v0.5.5 introduced incremental split-GGUF import. This source revision has not yet produced an APK in this environment.
 
 ## What is BigMoeOnEdge+?
 
