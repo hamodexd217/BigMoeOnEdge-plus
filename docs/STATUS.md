@@ -1,8 +1,14 @@
 # STATUS
 
-Date: 2026-10-20
+Date: 2026-10-22
 
-## Latest source update: v0.5.5 multi-file GGUF import
+## Latest source update: v0.5.7 Engine Performance settings
+
+Engine Performance now has four visual groups, and newly added settings are stored, mapped through `LoadConfig`, transferred through JNI, and pinned by index-layout tests. Fresh-install I/O/compute overlap defaults to enabled, but activation is still capability-gated and honestly reported. Prompt/batch thread count reaches both target and MTP contexts. NPU options remain capability-gated: the native runtime probe must open HTP0, stale saved-on preferences can be turned off on unsupported builds, and loaded-model state is reported separately from proof of graph execution. Detailed upstream setting parity and unported options are recorded in [`UPGRADE_SETTINGS_0.5.7.md`](UPGRADE_SETTINGS_0.5.7.md).
+
+The source checks pass; full Gradle/JUnit execution and APK creation remain blocked by the missing Gradle 8.9 distribution (DNS/network failure). No new-device run, NPU run or performance benchmark was made. See [`UPGRADE_VALIDATION_RESULTS.md`](UPGRADE_VALIDATION_RESULTS.md). The earlier 0.5.6 routing-buffer correction is retained and documented in [`UPSTREAM_UPGRADE_0.5.6.md`](UPSTREAM_UPGRADE_0.5.6.md).
+
+## Previous source update: v0.5.5 multi-file GGUF import
 
 The source now contains an incremental split-GGUF import workflow. Individual numbered shards are staged in app-private storage, described by persistent `.properties` manifests, checked using GGUF metadata and tensor descriptor headers, and only promoted to `models/` after the full set passes validation. Ready models appear once in the selector and are loaded through the existing native path using shard 1; no merge or second model registry was introduced.
 
@@ -254,8 +260,8 @@ tests only when Gradle/dependencies are available. Exact command results are rec
 - Added an always-visible Home button to the chat top app bar; it returns to the main Chats/Home page without changing the active chat data.
 - Made the NPU prefill control visible in Settings > Streaming even when the installed APK lacks Hexagon support. Unsupported builds show the reason and keep the switch disabled; Hexagon-enabled builds expose the real toggle and loader-thread setting.
 
-### NPU build hardening (final-10)
-The optional Hexagon path now has a real app-native build recipe. `scripts/build-hexagon-onedge-engine.sh` builds the app's `libonedge-engine.so` with `GGML_HEXAGON=ON` inside the pinned Snapdragon toolchain and stages all supported HTP skels. GitHub workflow `android-npu.yml` builds the APK from that prebuilt payload. Gradle's `-PbmoePrebuiltNative=true` mode verifies the JNI payload before packaging, so an NPU APK cannot silently fall back to the CPU-only native library.
+### NPU build hardening follow-up (source patch, not device-verified)
+The NPU path was tightened after a source-level review found that the previous JNI capability was compile-flag-only, an HTP initialization failure could silently fall back to CPU, and DSP skeletons were staged under the Android ARM64 JNI path. The patch now probes HTP0 at runtime, fails model load when a requested device cannot open, stages DSP skeletons as assets and adds an `ADSP_LIBRARY_PATH` runtime setup. `scripts/verify-npu-payload.sh` checks both ELF machine types and CI checks the payload extracted from the APK. This change has not yet been compiled with the Qualcomm toolchain or tested on device; see [`NPU_FIX_VALIDATION.md`](NPU_FIX_VALIDATION.md).
 
 ## Final-10 build-log follow-up
 

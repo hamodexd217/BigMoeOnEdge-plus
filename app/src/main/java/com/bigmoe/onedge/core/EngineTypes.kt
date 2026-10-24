@@ -27,6 +27,11 @@ enum class SpecSource(val code: Int) {
     NGRAM(2)
 }
 
+/** Prefix-state reuse policy for the scored-choice/decision API (not ordinary chat turns). */
+enum class DecisionPrefixCache(val code: Int) {
+    AUTO(0), ON(1), OFF(2)
+}
+
 /**
  * Everything the engine can only take when the model is (re)loaded. Field for field this is the original
  * BigMoeOnEdge Android app's AppSettings (see docs/settings-parity.md). [toIntArray]/[toFloatArray] define
@@ -35,9 +40,14 @@ enum class SpecSource(val code: Int) {
 data class LoadConfig(
     val nCtx: Int,
     val nThreads: Int,
+    val nThreadsBatch: Int,
+    /** Widest prompt graph. The engine caps this to nCtx; smaller widths conserve resident compute RAM. */
+    val batchWidth: Int,
     val temperature: Float,
     val topP: Float,
     val topK: Int,
+    /** -1 = random per run, non-negative = repeatable sampler seed. */
+    val seed: Int,
     /** true = llama.cpp's ordinary mmap load, no expert streaming (the original app's "mmap baseline"). */
     val mmapBaseline: Boolean,
     val cacheMode: CacheMode,
@@ -47,16 +57,22 @@ data class LoadConfig(
     val ioThreads: Int,
     val oDirect: Boolean,
     val overlap: Boolean,
+    val ioTwoWave: Boolean,
     val denseWeights: DenseWeights,
+    val rowStreamMb: Int,
     /** 0 = the model's own top-k; lower = faster, changes the output. */
     val nExpertUsed: Int,
     val dropColdPct: Int,
+    val dropRenorm: Boolean,
+    val dropInPrefill: Boolean,
     val substitutePct: Int,
     val prefetchLayers: Int,
     val predictPrefetch: Boolean,
     val predictSpecMax: Int,
+    val predictionProbe: Boolean,
     val routeAhead: Int,
     val rowStream: Boolean,
+    val loadAllExpertsForBenchmark: Boolean,
     val releaseMmap: Boolean,
     val spec: SpecSource,
     val draftMax: Int,
@@ -65,12 +81,26 @@ data class LoadConfig(
     /** Optional Snapdragon Hexagon prefill. Disabled by default and ignored unless the native build has it. */
     val npuPrefill: Boolean = false,
     /** Number of background loaders used by the NPU prefill path. */
-    val npuLoaders: Int = 8
+    val npuLoaders: Int = 8,
+    val npuMinTokens: Int = 32,
+    val npuRoutedPrefill: Boolean = true,
+    val npuRoutedFullPct: Int = 85,
+    val ngramMinMatch: Int = 3,
+    val ngramMaxMatch: Int = 12,
+    /** `--decide-prefix-cache`: affects scored-choice requests only. */
+    val decisionPrefixCache: DecisionPrefixCache = DecisionPrefixCache.AUTO,
+    /** Retains BigMoeOnEdge+ legacy support for small, potentially thrashing cache budgets. */
+    val forceCache: Boolean = true
 ) {
     /** One-batch prefill for any prompt that fits the context, like the engine's own session_config_from. */
     val nBatch: Int get() = nCtx
     /** Never reserve a graph wider than the context itself (the original app passes --ubatch min(512, ctx)). */
-    val nUbatch: Int get() = minOf(UBATCH, nCtx)
+    val nUbatch: Int get() = minOf(batchWidth.coerceAtLeast(32), nCtx)
+    /**
+     * Narrowest prompt graph the NPU may take. Plain decode is one token wide; with Guess ahead the CPU also
+     * runs a verify batch of draftMax + 1 positions, and every NPU graph must be wider than every CPU graph.
+     */
+    val npuMinTokensFloor: Int get() = if (spec != SpecSource.OFF) draftMax + 2 else 2
 
     fun toIntArray(): IntArray = intArrayOf(
         nCtx, nBatch, nUbatch, nThreads, topK,
@@ -83,7 +113,15 @@ data class LoadConfig(
         if (releaseMmap) 1 else 0,
         if (mmapBaseline) 1 else 0,
         if (npuPrefill) 1 else 0,
-        npuLoaders.coerceIn(1, 16)
+        npuLoaders.coerceIn(1, 16),
+        nThreadsBatch.coerceIn(1, 32), batchWidth.coerceAtLeast(32), seed,
+        if (ioTwoWave) 1 else 0, rowStreamMb.coerceAtLeast(0),
+        npuMinTokens.coerceAtLeast(npuMinTokensFloor),
+        if (npuRoutedPrefill) 1 else 0, npuRoutedFullPct.coerceIn(1, 100),
+        ngramMinMatch.coerceIn(1, 64), ngramMaxMatch.coerceIn(1, 64),
+        if (dropRenorm) 1 else 0, if (dropInPrefill) 1 else 0,
+        if (predictionProbe) 1 else 0, if (loadAllExpertsForBenchmark) 1 else 0,
+        decisionPrefixCache.code, if (forceCache) 1 else 0
     )
 
     fun toFloatArray(): FloatArray = floatArrayOf(temperature, topP)
@@ -91,7 +129,7 @@ data class LoadConfig(
     companion object {
         const val UBATCH = 512
         /** Length of [toIntArray]; must equal I_COUNT in native-bridge.cpp. */
-        const val INT_COUNT = 28
+        const val INT_COUNT = 44
         const val FLOAT_COUNT = 2
     }
 }
@@ -112,7 +150,9 @@ data class ModelInfo(
     val mmprojPath: String?,
     val config: LoadConfig,
     val draftModelPath: String? = null,
-    val loadWarning: String? = null
+    val loadWarning: String? = null,
+    /** True only when the model load successfully initialized the requested HTP prefill path. */
+    val npuPrefillReady: Boolean = false
 )
 
 sealed interface EngineState {

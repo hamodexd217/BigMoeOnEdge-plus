@@ -44,6 +44,8 @@ import com.bigmoe.onedge.ui.home.HomeScreen
 import com.bigmoe.onedge.ui.home.ChatHistoryPanel
 import com.bigmoe.onedge.ui.models.ModelScreen
 import com.bigmoe.onedge.ui.models.ModelViewModel
+import com.bigmoe.onedge.ui.settings.AutoSettingsScreen
+import com.bigmoe.onedge.ui.settings.AutoTuneViewModel
 import com.bigmoe.onedge.ui.settings.SettingsScreen
 import com.bigmoe.onedge.ui.settings.SettingsViewModel
 
@@ -52,6 +54,7 @@ sealed class Screen(val route: String) {
     data object Models : Screen("models")
     data object Settings : Screen("settings")
     data object Workspace : Screen("workspace")
+    data object AutoSettings : Screen("autosettings")
     data object File : Screen("file/{path}") {
         fun createRoute(path: String): String = "file/${Uri.encode(path)}"
     }
@@ -71,6 +74,7 @@ fun AppNavigation(
     historyViewModel: HistoryViewModel,
     settingsViewModel: SettingsViewModel,
     modelViewModel: ModelViewModel,
+    autoTuneViewModel: AutoTuneViewModel,
     fileViewModel: FileViewModel,
     initialSessionId: String? = null,
     modifier: Modifier = Modifier,
@@ -129,7 +133,14 @@ fun AppNavigation(
                 SettingsScreen(
                     viewModel = settingsViewModel,
                     onOpenModels = { goTo(TopTab.MODELS) },
-                    onOpenWorkspace = { navController.navigate(Screen.Workspace.route) }
+                    onOpenWorkspace = { navController.navigate(Screen.Workspace.route) },
+                    onOpenAutoSettings = { navController.navigate(Screen.AutoSettings.route) { launchSingleTop = true } }
+                )
+            }
+            composable(route = Screen.AutoSettings.route) {
+                AutoSettingsScreen(
+                    viewModel = autoTuneViewModel,
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
             composable(route = Screen.Workspace.route) {

@@ -145,6 +145,16 @@ class AppContainer(private val context: Context) {
         return info.totalMem
     }
 
+    val autoSaveStore: com.bigmoe.onedge.data.local.AutoSaveStore by lazy {
+        com.bigmoe.onedge.data.local.AutoSaveStore(File(context.applicationContext.filesDir, "auto-saves"))
+    }
+
+    val deviceScanner: com.bigmoe.onedge.core.DeviceScanner by lazy {
+        com.bigmoe.onedge.core.DeviceScanner(context.applicationContext)
+    }
+
+    val contentResolver: android.content.ContentResolver get() = context.applicationContext.contentResolver
+
     val apiServerController: com.bigmoe.onedge.server.ApiServerController by lazy {
         com.bigmoe.onedge.server.ApiServerController(context.applicationContext, settingsDataStore)
     }

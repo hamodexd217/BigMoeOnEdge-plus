@@ -31,7 +31,7 @@ After Phase 1, the feature pass added the following and these items are now impl
   and defines BMOE_HAVE_MTMD when `TARGET mtmd` exists. All 38 mtmd sources and session.cpp (with/without the macro)
   pass `g++ -fsyntax-only`. NOT verified: that CMake really creates target `mtmd` via LLAMA_BUILD_MTMD, that it links
   on Android, that images work. The re-applicable change set is now saved as `patches/0003-multimodal.patch`.
-* JNI: nativeLoadModel(modelPath, ints, floats, csvPath, mmprojPath); nativeCapabilities(); nativeGenerate(system,
+* JNI: nativeLoadModel(modelPath, ints, floats, csvPath, mmprojPath); nativeCapabilities(); nativeNpuStatus(); nativeGenerate(system,
   historyFlat, prompt, maxTokens, clearKv, think, imageDims, imageData, callback). Kotlin: EngineNativeBridge,
   EngineBackend (+EngineCaps, ImageData), EngineController.loadModel(path, config, mmprojPath),
   ModelInfo.visionActive/mmprojPath, GenerationRequest.images.

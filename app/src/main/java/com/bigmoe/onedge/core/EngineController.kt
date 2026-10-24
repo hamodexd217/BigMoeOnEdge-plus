@@ -64,6 +64,14 @@ class EngineController(
         try { backend.capabilities() } catch (_: Throwable) { EngineCaps(overlapHook = false, multimodal = false, npuPrefill = false) }
     }
 
+    /** Detailed runtime state for settings. The native implementation caches the probe result. */
+    val npuPrefillStatus: String
+        get() = try {
+            backend.npuPrefillStatus()
+        } catch (t: Throwable) {
+            "Unavailable: native engine status could not be read (${t.message ?: t.javaClass.simpleName})."
+        }
+
     /**
      * Loads [modelPath]; blocks (on the IO dispatcher) for as long as the engine takes. Any previously
      * loaded model is released first. Returns null on success or the error message.
@@ -139,7 +147,8 @@ class EngineController(
                     mmprojPath = mmprojPath,
                     config = activeConfig,
                     draftModelPath = activeDraftPath,
-                    loadWarning = warning
+                    loadWarning = warning,
+                    npuPrefillReady = info["npu_prefill"] == "ready"
                 )
             )
             null

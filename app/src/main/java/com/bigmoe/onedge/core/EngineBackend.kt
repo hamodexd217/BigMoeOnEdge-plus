@@ -8,8 +8,15 @@ interface EngineBackend {
     /** Blocking. Returns null on success, otherwise the error message. */
     fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?, draftPath: String? = null): String?
 
-    /** Build-time features of the native library. */
+    /** Capabilities verified by the native runtime, not only build flags. */
     fun capabilities(): EngineCaps
+
+    /** Why HTP prefill is or is not currently available. Fakes remain source-compatible. */
+    fun npuPrefillStatus(): String = if (capabilities().npuPrefill) {
+        "Available: native HTP session probe succeeded. Actual prompt execution must be confirmed after a run."
+    } else {
+        "Unavailable: this engine backend does not report a usable Hexagon HTP runtime."
+    }
 
     /** Parsed "key=value" lines from the loaded model (arch, n_ctx, ...). */
     fun modelInfo(): Map<String, String>
@@ -52,6 +59,8 @@ interface EngineBackend {
 class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBackend {
 
     override fun capabilities(): EngineCaps = EngineCaps.fromBits(bridge.nativeCapabilities())
+
+    override fun npuPrefillStatus(): String = decodeUtf8(bridge.nativeNpuStatus())
 
     override fun load(modelPath: String, config: LoadConfig, csvPath: String?, mmprojPath: String?, draftPath: String?): String? {
         val err = bridge.nativeLoadModel(

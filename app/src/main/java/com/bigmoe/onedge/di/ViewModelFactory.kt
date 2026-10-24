@@ -6,6 +6,7 @@ import com.bigmoe.onedge.ui.chat.ChatViewModel
 import com.bigmoe.onedge.ui.files.FileViewModel
 import com.bigmoe.onedge.ui.history.HistoryViewModel
 import com.bigmoe.onedge.ui.models.ModelViewModel
+import com.bigmoe.onedge.ui.settings.AutoTuneViewModel
 import com.bigmoe.onedge.ui.settings.SettingsViewModel
 
 class AppViewModelFactory(
@@ -33,6 +34,14 @@ class AppViewModelFactory(
                 engineController = container.engineController,
                 modelManager = container.modelManager,
                 apiServer = container.apiServerController
+            ) as T
+            modelClass.isAssignableFrom(AutoTuneViewModel::class.java) -> AutoTuneViewModel(
+                dataStore = container.settingsDataStore,
+                engineController = container.engineController,
+                modelManager = container.modelManager,
+                store = container.autoSaveStore,
+                scanner = container.deviceScanner,
+                contentResolver = container.contentResolver
             ) as T
             modelClass.isAssignableFrom(ModelViewModel::class.java) -> ModelViewModel(
                 modelManager = container.modelManager,

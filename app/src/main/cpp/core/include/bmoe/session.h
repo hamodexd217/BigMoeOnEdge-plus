@@ -38,6 +38,7 @@ struct SessionConfig {
     // Multimodal projector path (.gguf); empty = text-only session.
     std::string mmproj_path;
     int n_threads = 4;
+    int n_threads_batch = 4;
     int n_ctx = 2048;
     int n_batch = 512; // prefill chunk capacity; longer prompts are prefilled in n_batch slices
     // Widest graph actually computed at once. 0 = follow n_batch. Sizing this down trades prefill

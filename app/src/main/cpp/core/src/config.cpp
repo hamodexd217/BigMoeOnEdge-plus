@@ -154,9 +154,19 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.moe.row_stream)
             return fail("prefill.device does not combine with moe.row_stream: the tables it serves are "
                         "gathered on the host, inside a graph that would run on the device");
-        // Speculation widens CPU graphs past one token and runs a second context over the same
-        // weights; both would break the width invariant the rebind relies on.
-        if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+        // Speculation widens the CPU decode graphs from one token to the verify batch (1 + draft_max
+        // positions). The rebind is safe only while every device graph is wider than every CPU graph
+        // (see PrefillDeviceConfig), so the device threshold has to clear the verify width. The MTP
+        // draft context is a second context over the same model, but it always runs on the host: the
+        // session places the weights back on the CPU around each draft pass, and the nextn block's
+        // layer is never moved to the device (PrefillPath::open takes the trunk layer count).
+        if (cfg.spec.enabled() && cfg.prefill.min_tokens <= cfg.spec.draft_max + 1)
+            return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
+                        " does not exceed the speculative verify width (spec.draft_max + 1 = " +
+                        std::to_string(cfg.spec.draft_max + 1) +
+                        "): a device graph would share its shape with a CPU verify graph, and llama.cpp "
+                        "reuses a same-shaped graph without re-scheduling it. Raise prefill.min_tokens or "
+                        "lower spec.draft_max.");
         // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
         // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
         // saved or restored state would be read from and written to memory the model no longer uses.

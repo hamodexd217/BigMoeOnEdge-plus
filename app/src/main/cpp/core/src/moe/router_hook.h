@@ -102,10 +102,14 @@ public:
 
     // After capture, whether the last node of every layer was seen: what paces a dense arena, which
     // must load a layer's weights before its first node and so waits at the end of the one before.
-    bool learned_layer_ends() const {
-        for (const std::string & n : last_node_)
-            if (n.empty()) return false;
-        return !last_node_.empty();
+    //
+    // `n_layers` limits the check to the first n layers (the trunk): the MTP head's layer sits after
+    // them, is only ever run by the draft context, and a prefill device never paces at it.
+    bool learned_layer_ends(int n_layers = -1) const {
+        const size_t n = (n_layers < 0 || (size_t) n_layers > last_node_.size()) ? last_node_.size() : (size_t) n_layers;
+        for (size_t i = 0; i < n; ++i)
+            if (last_node_[i].empty()) return false;
+        return n > 0;
     }
 
     // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
@@ -347,6 +351,7 @@ private:
     std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
     std::unordered_set<const ggml_tensor *> non_matrix_weights_;
     std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
+    std::vector<int32_t> staged_ids_; // backend-to-host copy when selected ids live on a device
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.

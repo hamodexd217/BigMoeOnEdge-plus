@@ -811,9 +811,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
-    // PrefillDevice moves the layer weights onto it for a wide graph.
-    // A device that is missing or does not open leaves the whole run on the CPU, exactly as without
-    // the flag: the prefill is slower, the output is the CPU's, and the load does not fail over it.
+    // PrefillDevice moves layer weights onto it for a wide graph. Since the caller explicitly asked
+    // for HTP, a missing or non-openable device is a load error, never a silent CPU fallback.
     std::vector<ggml_backend_dev_t> auto_devices;
     if (cfg.prefill.enabled()) {
         std::string derr;
@@ -824,8 +823,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             // which is an allocation and a copy, not the file mapping. The mapping is load-bearing.
             mparams.no_host = true;
         } else {
-            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", derr.c_str());
-            im.cfg.prefill.device.clear();
+            // A requested accelerator must never silently become a CPU-only run: that would leave
+            // the saved setting looking active while no HTP graph can execute.
+            return fail(" was requested but could not be opened: " + derr + "; refusing CPU fallback");
         }
     }
     if (!im.prefill) {
@@ -947,12 +947,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return fail("failed to create context");
     im.ctx.reset(ctx);
-    llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads);
+    llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads_batch);
 
-    // Optional multimodal projector; kept CPU-side and incompatible with speculative decoding.
+    // Optional multimodal projector; kept CPU-side. It coexists with speculative decoding: a turn that
+    // carries images decodes plainly (spec_on / mtp_on are off for it) and both contexts' KV is wiped
+    // before and after it, so the draft context never sees media positions.
     if (!cfg.mmproj_path.empty()) {
 #ifdef BMOE_HAVE_MTMD
-        if (cfg.spec.enabled()) return fail("images cannot be combined with speculative decoding");
         mtmd_context_params mp = mtmd_context_params_default();
         mp.use_gpu = false;
         mp.print_timings = false;
@@ -976,6 +977,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             draft_mparams.use_extra_bufts = false;
             draft_mparams.n_gpu_layers = 0;
             draft_mparams.load_mtp = true;
+            // With a prefill device the target's device list is the accelerator alone. The detached
+            // head runs on the host in every phase, so it gets an empty list (CPU only) rather than
+            // llama.cpp's default, which would open the same HTP device a second time.
+            static ggml_backend_dev_t cpu_only_devices[1] = {nullptr};
+            if (im.prefill) draft_mparams.devices = cpu_only_devices;
             draft_model = llama_model_load_from_file(cfg.spec.draft_model_path.c_str(), draft_mparams);
             if (!draft_model) return fail("failed to load separate MTP draft GGUF: " + cfg.spec.draft_model_path);
             im.model_dft.reset(draft_model);
@@ -1006,7 +1012,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         llama_context * ctx_dft = llama_init_from_model(draft_model, dparams);
         if (!ctx_dft) return fail("failed to create the MTP draft context");
         im.ctx_dft.reset(ctx_dft);
-        llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads);
+        llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads_batch);
     }
 
     // Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic
@@ -1281,7 +1287,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     if (im.prefill) {
         std::string perr;
-        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) return fail(perr);
+        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, im.n_layer, perr)) return fail(perr);
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
@@ -1481,7 +1487,6 @@ RunResult Session::generate(const GenerateRequest & req,
 #ifdef BMOE_HAVE_MTMD
         if (!im.mtmd) return fail("this session was opened without a vision projector (mmproj)");
         if (!im.chat_on) return fail("images need chat mode");
-        if (im.cfg.spec.enabled()) return fail("images cannot be combined with speculative decoding");
         for (const ImageRGB & img : req.images) {
             if (img.width <= 0 || img.height <= 0 ||
                 img.rgb.size() != (size_t) img.width * (size_t) img.height * 3u)
@@ -1900,8 +1905,16 @@ RunResult Session::generate(const GenerateRequest & req,
         trace_flush();
         // The draft context has to walk the prompt too: its KV must reach the last prompt position
         // or the first draft is made from a hidden state that never saw the prompt.
-        if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
-            return fail("MTP draft context failed to process the prefill batch");
+        if (mtp_on) {
+            // The draft context is a host context. Its graph must never be built or scheduled while
+            // the target's weights are rebound to the device, and with the arena hooked in, the router
+            // callback it shares with the target would take the device-graph branch and skip the host
+            // streamer for the MTP head's experts. place() is idempotent and the next chunk (or the
+            // line after the loop) places again, so this costs three stores per tensor.
+            im.place_prefill(false);
+            if (!common_speculative_process(im.mtp.get(), pf))
+                return fail("MTP draft context failed to process the prefill batch");
+        }
     }
     im.place_prefill(false); // decode reads the host bindings
     const long long prefill_device_nodes = im.hook->device_nodes() - device_nodes0;

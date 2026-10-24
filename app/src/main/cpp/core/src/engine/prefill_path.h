@@ -58,12 +58,17 @@ public:
     // Everything after load: learn the layer weights from one graph (streaming already ran that
     // capture; without it, run it here), give them a device copy or an arena, move the model state,
     // and redo the compute reservation. `ctx`'s memory is left empty.
+    //
+    // `n_layer_trunk` is the number of layers of the TARGET graph. Anything at a higher layer index
+    // is the MTP head, which belongs to the draft context: that context always runs on the host, so
+    // the head's weights, its experts and its KV cache are left where they are and never take part in
+    // the rebind.
     bool open(llama_context * ctx,
               const llama_vocab * vocab,
               RouterHook & hook,
               const PrefillDeviceConfig & cfg,
               const MoeStreamConfig & moe,
-              int n_layer_streamed,
+              int n_layer_trunk,
               std::string & err);
 
     // Placement of the NEXT graph: the layer weights, the streamed experts and the hook move together.

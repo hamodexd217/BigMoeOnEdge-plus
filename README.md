@@ -31,11 +31,11 @@
 
 > **Disclosure:** this fork was VERY HIGHLY developed with the help of AI tools.
 
-> **Project update:** v0.5.5 adds incremental multi-file split-GGUF import and validation. Check the repository's [Releases page](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases) for APK availability and release notes.
+> **Project update:** v0.5.8 hardens the optional Hexagon/NPU Android build workflow and validates the staged/packaged libraries; v0.5.7 expands and reorganizes the actual Engine Performance settings, wires batch-thread/ubatch/NPU/MoE controls through JNI, and enables overlap by default for new installs. v0.5.6 added the device-backed routing fix; v0.5.5 introduced incremental split-GGUF import. This source revision has not yet produced an APK in this environment.
 
 ## What is BigMoeOnEdge+?
 
-BigMoeOnEdge+ is an Android chat application built on the **BigMoeOnEdge** native inference engine (version 0.28.0).
+BigMoeOnEdge+ is an Android chat application built on a customized **BigMoeOnEdge** native inference engine (0.28.1 compatibility revision; not a wholesale upstream 0.33.x replacement).
 
 The engine is designed for Mixture-of-Experts models whose weights are read from flash storage during generation, which makes models larger than the device's RAM practical to run. The app wraps that engine in a complete chat experience: persistent conversations, reasoning display, web search, tools, attachments, multimodal input, artifacts, a workspace, and generation telemetry.
 
@@ -74,10 +74,19 @@ The model manager loads GGUF models and `mmproj` projector files, detects whethe
 | Workspace | Browse, open, edit, save, copy, share, and download generated files |
 | Chat controls | Edit and copy messages; copy raw code blocks; assistant bubbles wrap to content width; user and assistant messages stay on their intended sides |
 | Telemetry | Per-message statistics such as tokens/s, prefill, and cache information |
-| Settings | Context, sampling, expert cache, I/O and compute overlap, media, and tool controls; streamlined defaults |
+| Settings | Four grouped Engine Performance cards with wired cache, I/O overlap, batch/prefill, Hexagon, speculation, routing and diagnostics controls; settings unavailable in the current core are documented rather than faked |
 | Wide screens | Persistent chat-history panel with a chat-only / split-pane toggle |
 | Local API server | Optional on-device server (Anthropic Messages + OpenAI chat APIs) so other apps, such as Claude Code, can use the loaded model |
 | Optional acceleration | Separate Hexagon/NPU build path for supported Snapdragon environments |
+
+## What's new in v0.5.7
+
+* **Engine Performance is now grouped into four cards:** Hexagon/NPU prompt prefill; MoE streaming and I/O; speed/quality and advanced routing; CPU compute, context and sampling.
+* **New settings reach the engine:** prompt/batch threads, batch width (`ubatch`), deterministic sampling seed, two-wave I/O, row-stream window, NPU routing threshold, N-gram match bounds, expert-drop controls, decision-prefix cache, and the low-cache override.
+* **I/O and compute overlap defaults to on** for fresh settings. The engine status still distinguishes the requested setting from actual activation; overlap needs a streamed MoE model, cache, and the compiled expert-ready hook.
+* **NPU settings are visible on CPU-only builds** with an explanation instead of being hidden. Snapdragon 8 Gen 2 hardware alone cannot enable the backend: the APK must be built with Hexagon and package the matching HTP libraries. See [`docs/npu-android-build.md`](docs/npu-android-build.md).
+* **No pretend controls:** GPU placement, the newer cache pin/brake policies, and later prefill placement/verification options are recorded as not yet ported because the corresponding engine implementations are absent from this app's custom 0.28-based core. Full parity inventory: [`docs/UPGRADE_SETTINGS_0.5.7.md`](docs/UPGRADE_SETTINGS_0.5.7.md).
+* **Build status:** Android unit tests and APK creation remain blocked in this environment because the Gradle 8.9 distribution cannot be downloaded. No APK or performance gain is claimed.
 
 ## What's new in v0.5.5
 
@@ -90,7 +99,7 @@ The model manager loads GGUF models and `mmproj` projector files, detects whethe
 * **Clickable links and sources:** HTTP(S) links in assistant Markdown and tool results open in the default browser. A compact source-count chip appears under the assistant message actions when the answer or its preceding web-tool results contain URLs; tap it to choose a source.
 * **Tablet chat layout:** the wide-screen chat header now toggles the persistent chat-history pane on/off, so the conversation can use the full width or show Chats beside it.
 * **Artifact preview boundaries:** HTML, SVG, and Mermaid are rendered as previews (HTML JavaScript is sandboxed/offline except for Mermaid's required script). Other supported languages use copyable source artifacts. Python fenced code remains a normal copyable code block and is deliberately not offered as an Artifact action, because this app does not bundle a Python runtime. External links opened from an HTML preview go to the device browser instead of navigating the sandbox WebView.
-* **Version:** Android `versionName` remains `0.5.5` (`versionCode` 6); native engine version remains BigMoeOnEdge 0.28.0.
+* **Version:** Android `versionName` is `0.6.0` (`versionCode` 11); native engine revision is `0.28.1`, based on the existing 0.28.0 engine plus a compatible device-buffer routing fix.
 
 Implementation details: [`docs/MULTI_FILE_GGUF_IMPORT_0.5.5.md`](docs/MULTI_FILE_GGUF_IMPORT_0.5.5.md) and [`docs/UI_FOLLOWUP_0.5.5.md`](docs/UI_FOLLOWUP_0.5.5.md). The original split-import Kotlin host harness passed 40/40 tests before these UI follow-up edits. The newly added UI unit tests and a full Android Gradle/NDK build still require running in an environment that can download Gradle 8.9; real-device MTP loading and link interaction must also be verified.
 
@@ -104,7 +113,7 @@ original BigMoeOnEdge 0.29.0, on every model tried. v0.5.0 recovers part of that
 * **Fast-core pinning and a small priority boost** for the engine's compute threads (`perf_tuning.h`). Experimental and unmeasured. It cannot raise CPU clocks, which needs root. Disable with `-PbmoePinFastCores=false`.
 * **Less UI work while generating:** the streaming cursor and status indicator no longer run per-frame animations; they blink about twice a second. Experimental and unmeasured.
 * **Model picker in the chat:** the chip button in the chat's top bar now opens a list of your models. Tap one to load it (the usual memory check and projector choice follow) or tap the loaded one to unload it; "Manage models..." still opens the Models page.
-* **MTP folded away on the Models page:** each model card has a collapsible "MTP draft" section (arrow). Expanded, it holds the sidecar Attach control, a note that **MTP does not work with an mmproj** (the engine refuses an image turn while Guess ahead is on), and the MTP / Guess ahead settings, which moved here from Settings. The Attach menu now includes **Choose separate MTP GGUF…**; selected sidecars are copied/validated and attached to that exact model. Rename is a pencil icon on the model row.
+* **MTP folded away on the Models page:** each model card has a collapsible "MTP draft" section (arrow). Expanded, it holds the sidecar Attach control, a note that image turns run without Guess ahead (MTP and an mmproj can both be loaded; text turns still use MTP), and the MTP / Guess ahead settings, which moved here from Settings. The Attach menu now includes **Choose separate MTP GGUF…**; selected sidecars are copied/validated and attached to that exact model. Rename is a pencil icon on the model row.
 * **Clickable message links and source chip:** HTTP(S) URLs in Markdown and tool results open in the device browser. Assistant replies that include links or follow a web-search result show a small link-count chip under their message actions; open it to pick a source.
 * **Tablet chat layout toggle:** tap the chat header's menu icon to hide/show the Chat history pane and switch between split and full-width conversation views.
 * **Performance & engine is now the first section in Settings.**
@@ -160,9 +169,9 @@ The latest release includes an installable Android APK:
 
 **[Download the latest APK](https://github.com/hamodexd217/BigMoeOnEdge-plus/releases/latest)**
 
-Current source version: **BigMoeOnEdge+ v0.5.5**. Check the Releases page above for whether an APK artifact has been published.
+Current source version: **BigMoeOnEdge+ v0.6.0**. This source archive was prepared locally; no APK was built in this environment. Check the Releases page above for published releases.
 
-The app version and engine version (BigMoeOnEdge 0.28.0) are versioned separately.
+The app version and engine revision (BigMoeOnEdge 0.28.1) are versioned separately. The upstream 0.33.2 planner/API was not wholesale-ported; engine-fix details are in [`docs/UPSTREAM_UPGRADE_0.5.6.md`](docs/UPSTREAM_UPGRADE_0.5.6.md), and settings parity/limitations are in [`docs/UPGRADE_SETTINGS_0.5.7.md`](docs/UPGRADE_SETTINGS_0.5.7.md).
 
 ## Settings and appearance
 
@@ -336,7 +345,7 @@ Full details, every curl command, and what was and was not verified: [`docs/API_
 
 Native dependencies are vendored rather than pulled in as git submodules.
 
-* `app/src/main/cpp/core`: the vendored BigMoeOnEdge 0.28.0 engine, plus local patches.
+* `app/src/main/cpp/core`: the customized BigMoeOnEdge 0.28.0 engine baseline plus local patches and compatible fixes recorded in [`docs/UPSTREAM_UPGRADE_0.5.6.md`](docs/UPSTREAM_UPGRADE_0.5.6.md).
 
 * `app/src/main/cpp/third_party/llama.cpp`: the vendored llama.cpp snapshot.
 
@@ -346,7 +355,7 @@ Native dependencies are vendored rather than pulled in as git submodules.
 
 * `patches/`: project-specific native changes in re-applicable patch form (`0004` adds the stateless chat mode used by the API server: tools in the chat template, parsed tool calls, stop strings, per-request sampling, KV prefix reuse).
 
-The optional Hexagon/NPU path is separate from the default CPU build and requires the Snapdragon toolchain.
+The optional Hexagon/NPU path is separate from the default CPU build and requires the Snapdragon toolchain. The v0.5.8 workflow fix and payload checks are described in [`docs/npu-android-build.md`](docs/npu-android-build.md).
 
 ### Project structure
 

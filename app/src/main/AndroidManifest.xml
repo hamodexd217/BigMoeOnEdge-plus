@@ -37,6 +37,14 @@
         android:theme="@style/Theme.OnEdge"
         tools:targetApi="35">
 
+        <!-- Android 12+ (targetSdk 31+) hides vendor libraries from the app's linker namespace unless they are
+             declared. ggml-hexagon dlopen()s libcdsprpc.so (Qualcomm FastRPC); without this declaration the load
+             fails, the HTP backend never registers and HTP0 is reported as unavailable (devices: CPU).
+             required=false keeps the APK installable on devices that do not ship the library. -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -89,8 +89,11 @@ class EngineNativeBridge {
         draftPath: ByteArray
     ): ByteArray
 
-    /** Bit 0: expert-ready hook compiled in (overlap possible). Bit 1: built with multimodal (mtmd). */
+    /** Bit 0: expert-ready hook; bit 1: multimodal; bit 2: HTP backend runtime probe succeeded. */
     external fun nativeCapabilities(): Int
+
+    /** Detailed runtime diagnosis; Available does not by itself prove model operations ran on HTP. */
+    external fun nativeNpuStatus(): ByteArray
 
     /** "key=value\n" lines: arch, n_ctx, n_expert_used, load_seconds, think_control, overlap, streaming, vision. */
     external fun nativeModelInfo(): ByteArray

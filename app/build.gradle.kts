@@ -38,6 +38,33 @@ val bmoeAppCategory: String = (providers.gradleProperty("bmoeAppCategory").orNul
  // and can contend with the worker pool on heterogeneous Android CPUs. Opt in for device-specific A/B tests.
 val bmoePinFastCores: Boolean = providers.gradleProperty("bmoePinFastCores").orNull?.trim()?.lowercase() == "true"
 
+// ---- Release signing -------------------------------------------------------------------------------------
+// Android only installs an update over an existing app when both APKs are signed with the SAME key. Without a
+// signingConfig, AGP signs with ~/.android/debug.keystore, which a fresh GitHub Actions runner generates anew on
+// every run: each CI APK then has a different certificate and cannot update the previous one (INSTALL_FAILED_
+// UPDATE_INCOMPATIBLE / "signatures do not match"). The key is supplied via environment variables or -P properties
+// (never committed): BMOE_KEYSTORE_FILE, BMOE_KEYSTORE_PASSWORD, BMOE_KEY_ALIAS, BMOE_KEY_PASSWORD.
+fun bmoeSigningValue(name: String): String? =
+    (System.getenv(name) ?: providers.gradleProperty(name).orNull)?.trim()?.takeIf { it.isNotEmpty() }
+
+val bmoeKeystoreFile: String? = bmoeSigningValue("BMOE_KEYSTORE_FILE")
+val bmoeKeystorePassword: String? = bmoeSigningValue("BMOE_KEYSTORE_PASSWORD")
+val bmoeKeyAlias: String? = bmoeSigningValue("BMOE_KEY_ALIAS")
+val bmoeKeyPassword: String? = bmoeSigningValue("BMOE_KEY_PASSWORD") ?: bmoeKeystorePassword
+val bmoeHasStableKey: Boolean =
+    bmoeKeystoreFile != null && bmoeKeystorePassword != null && bmoeKeyAlias != null
+// CI sets -PbmoeRequireStableSigning=true so a missing secret fails the build instead of silently producing an
+// APK signed with a throwaway debug key. Local Android Studio builds keep the default debug key.
+val bmoeRequireStableSigning: Boolean =
+    providers.gradleProperty("bmoeRequireStableSigning").orNull?.trim()?.lowercase() == "true"
+if (bmoeRequireStableSigning) {
+    check(bmoeHasStableKey) {
+        "Stable signing is required (-PbmoeRequireStableSigning=true) but BMOE_KEYSTORE_FILE, " +
+            "BMOE_KEYSTORE_PASSWORD and BMOE_KEY_ALIAS are not all set. See docs/SIGNING.md."
+    }
+    check(File(bmoeKeystoreFile!!).isFile) { "BMOE_KEYSTORE_FILE does not exist: $bmoeKeystoreFile" }
+}
+
 val bmoeAbis: List<String> = (providers.gradleProperty("bmoeAbis").orNull ?: "arm64-v8a")
     .split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
@@ -51,8 +78,8 @@ android {
         // dependable from Android 10 (upstream uses 29); the NDK toolchain also links against this platform level.
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.5.5"
+        versionCode = 11
+        versionName = "0.6.0"
         manifestPlaceholders["bmoeAppCategory"] = bmoeAppCategory
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -81,8 +108,21 @@ android {
         }
     }
 
+    signingConfigs {
+        if (bmoeHasStableKey) {
+            create("bmoeStable") {
+                storeFile = file(bmoeKeystoreFile!!)
+                storePassword = bmoeKeystorePassword
+                keyAlias = bmoeKeyAlias
+                keyPassword = bmoeKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
+            // Same key as release so debug-type CI APKs (what the workflows ship) are update-compatible.
+            if (bmoeHasStableKey) signingConfig = signingConfigs.getByName("bmoeStable")
             // A debuggable app runs with ART's debug compilation, CheckJNI (every JNI call is validated, including
             // the per-token callback and the image/array copies) and the unoptimised Compose paths: the UI and the
             // JNI traffic are measurably slower. The CI ships the debug build type, so it is NOT debuggable by
@@ -97,6 +137,7 @@ android {
             }
         }
         release {
+            if (bmoeHasStableKey) signingConfig = signingConfigs.getByName("bmoeStable")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -151,18 +192,19 @@ val verifyPrebuiltNpuLibs = tasks.register("verifyPrebuiltNpuLibs") {
     onlyIf { bmoePrebuiltNative }
     doLast {
         val jni = file("src/main/jniLibs/arm64-v8a")
-        val required = listOf(
-            "libonedge-engine.so",
-            "libc++_shared.so",
-            "libggml-htp-v73.so",
-            "libggml-htp-v75.so",
-            "libggml-htp-v79.so",
-            "libggml-htp-v81.so"
+        val dspAssets = file("src/main/assets/hexagon")
+        val requiredJni = listOf("libonedge-engine.so", "libc++_shared.so")
+        val requiredDsp = listOf(
+            "libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so"
         )
-        val missing = required.filterNot { File(jni, it).isFile }
-        check(missing.isEmpty()) {
-            "Hexagon/NPU prebuilt build requested but required JNI libraries are missing: ${missing.joinToString()}. " +
-                "Run scripts/build-hexagon-onedge-engine.sh in the Snapdragon toolchain first."
+        val missingJni = requiredJni.filterNot { File(jni, it).isFile && File(jni, it).length() > 0L }
+        val missingDsp = requiredDsp.filterNot { File(dspAssets, it).isFile && File(dspAssets, it).length() > 0L }
+        check(missingJni.isEmpty() && missingDsp.isEmpty()) {
+            "Hexagon/NPU prebuilt build requested but payload is incomplete. Missing ARM64 JNI: " +
+                "${missingJni.joinToString().ifEmpty { "none" }}; missing Hexagon DSP assets: " +
+                "${missingDsp.joinToString().ifEmpty { "none" }}. Run scripts/build-hexagon-onedge-engine.sh " +
+                "in the Snapdragon toolchain first. DSP skeletons must be staged under src/main/assets/hexagon, " +
+                "not jniLibs/arm64-v8a."
         }
     }
 }

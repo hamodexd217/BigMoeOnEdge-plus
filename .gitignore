@@ -5,3 +5,7 @@ local.properties
 *.iml
 .cxx/
 *.apk
+# Release signing material must never be committed
+*.jks
+*.keystore
+*.p12

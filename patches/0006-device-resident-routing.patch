@@ -1,0 +1,150 @@
+--- a/app/src/main/cpp/core/src/moe/router_hook.cpp
++++ b/app/src/main/cpp/core/src/moe/router_hook.cpp
+@@ -14,6 +14,19 @@
+ 
+ namespace bmoe {
+ 
++namespace {
++// A graph node may be backed by memory owned by a discrete accelerator. Its data pointer is
++// not necessarily CPU-readable even after the isolated callback synchronizes the graph. Keep the
++// host-only streaming policies off such nodes and copy selected ids through the backend API.
++bool on_device(const ggml_tensor * t) {
++    return t && t->buffer && !ggml_backend_buffer_is_host(t->buffer);
++}
++
++bool host_readable(const ggml_tensor * t) {
++    return t && t->data && !on_device(t);
++}
++} // namespace
++
+ RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe), n_layer_(n_layer) {
+     const int n = n_layer_ > 0 ? n_layer_ : 0;
+     captured_.assign(n, LayerExperts{});
+@@ -1397,8 +1410,11 @@
+                 int il = -1;
+                 const int p = match_expert(src->name, recipe_, il);
+                 if (p >= 0) {
+-                    // An expert-named tensor: streamed, never a dense-rebind candidate.
+-                    if (il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
++                    // An expert-named tensor is streamable only while its storage is host-owned.
++                    // A GPU layer keeps its own expert weights; rebinding a device-owned pointer
++                    // to the file-backed expert stream would write through an invalid address.
++                    const bool servable = !src->buffer || ggml_backend_buffer_is_host(src->buffer);
++                    if (servable && il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
+                         LayerExperts & L = captured_[il];
+                         L.bound = true;
+                         L.proj[p].tensor = src;
+@@ -1535,20 +1551,20 @@
+     // The probe attaches to the gate matmul rather than to the topk node because this is where the
+     // router's own two inputs are reachable: a graph intermediate cannot be found by name later, and
+     // its pointer does not survive to the next graph. It writes nothing the graph will read.
+-    if (is_logits && predict_on()) predict_at_logits(t, gl);
++    if (is_logits && host_readable(t) && predict_on()) predict_at_logits(t, gl);
+ 
+     // Weights follow their layer's topk, so the pending record is already open; keep the last
+     // one offered (match_weights explains why) and let the flush read it. This runs BEFORE the drop
+     // policy edits the same tensor, so the trace records the routing the router produced, not the
+     // one the policy left behind — `dropped` is what says which is which.
+-    if (is_weights && t->data && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
++    if (is_weights && host_readable(t) && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
+         gather_weights(t, pending_.nu, pending_.nt, pending_.weights);
+ 
+     // Learn which node ends this layer's weight chain, and — once known — use it as the point where
+     // the routing is decided: everything the drop policy needs is final here, and nothing has
+     // consumed it yet. The learning pass and the deferral are the same walk, so a layer whose chain
+     // shape the hook has not seen yet simply keeps the undropped behaviour.
+-    if (is_weights && t->data && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
++    if (is_weights && host_readable(t) && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
+         chain_last_ = (int8_t) weight_variant;
+         if (drop_.deferred && wl >= 0 && wl < (int) term_variant_.size() && term_variant_[wl] == weight_variant)
+             apply_drop(t);
+@@ -1563,6 +1579,18 @@
+         close_drop_layer();
+ 
+         const int nu = (int) t->ne[0], nt = (int) t->ne[1];
++        // On a discrete backend this routing result is not safe to dereference directly. The
++        // callback is invoked after the scheduler synchronizes the isolated split, so the backend
++        // copy captures the actual ids for this graph. Routing rewrite policies are deliberately
++        // host-only: writing a CPU copy would not change the ids the accelerator consumes.
++        const bool ids_on_host = host_readable(t);
++        const size_t ids_bytes = ggml_nbytes(t);
++        const char * ids_data = (const char *) t->data;
++        if (!ids_on_host) {
++            staged_ids_.resize((ids_bytes + sizeof(int32_t) - 1) / sizeof(int32_t));
++            ggml_backend_tensor_get(t, staged_ids_.data(), 0, ids_bytes);
++            ids_data = (const char *) staged_ids_.data();
++        }
+         // Route-ahead, in submission order: first the watchdog sample and the ranking job for
+         // layer il+N (both need the ROUTER's ids, still untouched here), then the commit — BEFORE
+         // the ids are gathered, so everything downstream — the trace, the drop policy, load_layer,
+@@ -1573,9 +1601,9 @@
+         // everything downstream — the trace, the drop policy, load_layer, the weight chain — must
+         // see the routing that will actually run, and this is the last point where the ids are
+         // still ours to change.
+-        if (substitute_armed()) apply_substitute(t, il, nu, nt);
++        if (ids_on_host && substitute_armed()) apply_substitute(t, il, nu, nt);
+ 
+-        if (route_ahead_ > 0 && batch_phase_ == 1) {
++        if (ids_on_host && route_ahead_ > 0 && batch_phase_ == 1) {
+             // Collect FIRST: the ranking racing this topk is keyed to the seq of the job the
+             // PREVIOUS topk submitted, and the submit below bumps that seq — collecting after it
+             // would stale-fail nearly every legitimate result (measured: half the layers fell to
+@@ -1590,7 +1618,7 @@
+         for (int j = 0; j < nt; ++j)
+             for (int k = 0; k < nu; ++k)
+                 gathered_.push_back(
+-                    *(const int32_t *) ((const char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
++                    *(const int32_t *) (ids_data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
+ 
+         if (trace_on_) {
+             flush_pending(); // the previous layer's whole weight chain has been offered by now
+@@ -1617,12 +1645,12 @@
+         // Watchdog sample + submit the il+2 prediction job. Before the load flow on purpose: the
+         // snapshot must precede load_layer, whose staging would otherwise count this layer's own
+         // reads into the residency picture the job carries.
+-        predict_at_topk(t, il, nu, nt);
++        if (ids_on_host) predict_at_topk(t, il, nu, nt);
+ 
+         // Open the layer for the drop policy. Deferring the load is only safe once this layer's
+         // terminal weight node is known — otherwise there is no callback left to decide in, and the
+         // expert matmul would run against slots nothing loaded. First graph of a run: load here.
+-        const bool defer = drop_armed() && il >= 0 && il < (int) term_variant_.size() && term_variant_[il] >= 0;
++        const bool defer = ids_on_host && drop_armed() && il >= 0 && il < (int) term_variant_.size() && term_variant_[il] >= 0;
+         drop_.layer = il;
+         drop_.nu = nu;
+         drop_.nt = nt;
+@@ -1634,16 +1662,20 @@
+         } else {
+             source_->load_layer(il, gathered_.data(), (int) gathered_.size());
+             // Deferred layers speculate from apply_drop instead — after THEIR load, for the same
+-            // reason this call sits after the one above: the load's quiesce would cancel it.
+-            predict_after_load(il);
+-            route_ahead_collect(il);
++            // reason this call sits after the one above: the load's quiesce would cancel it. These
++            // prediction paths inspect host-side gate inputs, so skip them when this layer routed
++            // on a device-owned buffer.
++            if (ids_on_host) {
++                predict_after_load(il);
++                route_ahead_collect(il);
++            }
+         }
+ 
+         // Score the predictors against the routing the router just produced — before the record
+         // below moves on, or the previous-token predictor would be graded on the answer itself.
+         // The ids gathered above are still the router's own choice: the drop policy edits them at
+         // a later node, so a probed run measures routing, not what the cache left of it.
+-        if (predict_log_ && batch_phase_ == 1 && il >= 0 && il < n_layer_ && nt > 0)
++        if (ids_on_host && predict_log_ && batch_phase_ == 1 && il >= 0 && il < n_layer_ && nt > 0)
+             score_layer(il, gathered_.data() + (size_t) (nt - 1) * nu, nu);
+ 
+         // Temporal prefetch: hint the next K layers with what the PREVIOUS token routed there,
+--- a/app/src/main/cpp/core/src/moe/router_hook.h
++++ b/app/src/main/cpp/core/src/moe/router_hook.h
+@@ -347,6 +347,7 @@
+     std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
+     std::unordered_set<const ggml_tensor *> non_matrix_weights_;
+     std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
++    std::vector<int32_t> staged_ids_; // backend-to-host copy when selected ids live on a device
+ 
+     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
+     // during prefill). Empty when prefetch is off or a layer has not been seen yet.

@@ -22,6 +22,7 @@ import com.bigmoe.onedge.ui.chat.ChatViewModel
 import com.bigmoe.onedge.ui.history.HistoryViewModel
 import com.bigmoe.onedge.ui.models.ModelViewModel
 import com.bigmoe.onedge.ui.navigation.AppNavigation
+import com.bigmoe.onedge.ui.settings.AutoTuneViewModel
 import com.bigmoe.onedge.ui.settings.SettingsViewModel
 import com.bigmoe.onedge.ui.theme.BigMoeTheme
 
@@ -68,6 +69,7 @@ class MainActivity : ComponentActivity() {
                 val historyViewModel: HistoryViewModel = viewModel(factory = viewModelFactory)
                 val settingsViewModel: SettingsViewModel = viewModel(factory = viewModelFactory)
                 val modelViewModel: ModelViewModel = viewModel(factory = viewModelFactory)
+                val autoTuneViewModel: AutoTuneViewModel = viewModel(factory = viewModelFactory)
                 val fileViewModel: com.bigmoe.onedge.ui.files.FileViewModel = viewModel(factory = viewModelFactory)
 
                 AppNavigation(
@@ -75,6 +77,7 @@ class MainActivity : ComponentActivity() {
                     historyViewModel = historyViewModel,
                     settingsViewModel = settingsViewModel,
                     modelViewModel = modelViewModel,
+                    autoTuneViewModel = autoTuneViewModel,
                     fileViewModel = fileViewModel,
                     initialSessionId = intent.getStringExtra(EXTRA_OPEN_SESSION_ID)
                 )

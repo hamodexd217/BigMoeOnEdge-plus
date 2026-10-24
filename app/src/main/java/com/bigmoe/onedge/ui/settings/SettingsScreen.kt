@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -19,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.bigmoe.onedge.core.DenseWeights
+import com.bigmoe.onedge.core.DecisionPrefixCache
 import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.data.local.datastore.CACHE_AUTO_MB
@@ -84,6 +87,12 @@ private object Choices {
     val SUBSTITUTE = listOf(0, 10, 15, 20, 30)
     // Odd counts matter on 1+4+3 phones (e.g. Snapdragon 8 Gen 2): 5 threads fill the five fast cores exactly.
     val THREADS = listOf(1, 2, 3, 4, 5, 6, 7, 8)
+    val BATCH_WIDTH = listOf(32, 64, 128, 256, 384, 512, 768, 1024, 1536, 2048)
+    val NPU_MIN_TOKENS = listOf(8, 16, 32, 64, 128, 256)
+    val NPU_ROUTED_FULL_PCT = listOf(50, 70, 85, 95, 100)
+    val NGRAM_MIN = listOf(1, 2, 3, 4, 5, 6, 8, 12)
+    val NGRAM_MAX = listOf(3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
+    val DRAFT_MAX = listOf(1, 2, 3, 4, 5, 6, 7, 8)
     val NPREDICT = listOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, -1)
     val IMAGE_DIM = listOf(256, 384, 512, 768, 1024, 1344)
     val VIDEO_FRAMES = listOf(1, 2, 4, 6, 8, 12, 16)
@@ -109,6 +118,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onOpenModels: () -> Unit,
     onOpenWorkspace: () -> Unit,
+    onOpenAutoSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val loaded by viewModel.settingsState.collectAsState()
@@ -132,6 +142,7 @@ fun SettingsScreen(
                 viewModel = viewModel,
                 onOpenModels = onOpenModels,
                 onOpenWorkspace = onOpenWorkspace,
+                onOpenAutoSettings = onOpenAutoSettings,
                 modifier = Modifier.fillMaxSize().padding(innerPadding)
             )
         }
@@ -146,6 +157,7 @@ private fun SettingsContent(
     viewModel: SettingsViewModel,
     onOpenModels: () -> Unit,
     onOpenWorkspace: () -> Unit,
+    onOpenAutoSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -162,6 +174,7 @@ private fun SettingsContent(
     var temp by remember { mutableFloatStateOf(settings.temperature) }
     var topP by remember { mutableFloatStateOf(settings.topP) }
     var topK by remember { mutableFloatStateOf(settings.topK.toFloat()) }
+    var seedText by remember { mutableStateOf(settings.seed.toString()) }
     var cacheFloorText by remember { mutableStateOf(settings.cacheFloorMb.toString()) }
     var contextText by remember { mutableStateOf(settings.contextLength.toString()) }
     val contextValid = ContextInput.parse(contextText) != null
@@ -195,8 +208,14 @@ private fun SettingsContent(
         val v = cacheFloorText.toIntOrNull()
         if (v != null && v != settings.cacheFloorMb) { delay(DEBOUNCE_MS); viewModel.updateCacheFloorMb(v) }
     }
+    LaunchedEffect(seedText) {
+        val v = seedText.toIntOrNull()
+        if (v != null && v >= -1 && v != settings.seed) { delay(DEBOUNCE_MS); viewModel.updateSeed(v) }
+    }
 
     Column(modifier = modifier.padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
+        AutoSettingsEntry(onClick = onOpenAutoSettings)
+        Spacer(Modifier.height(10.dp))
         // Settings are grouped in the requested order: appearance, model, engine, tools/media, diagnostics.
         SettingsFoldout(
             title = "Appearance", subtitle = "Theme palettes and custom colours", expanded = appearanceExpanded,
@@ -344,30 +363,70 @@ private fun SettingsContent(
         )
         Spacer(Modifier.height(8.dp))
         if (performanceExpanded) {
-            // ------------------------------------------------------------ streaming (engine)
-            Section("Streaming")
-            Hint("Engine settings: fixed when the model is opened. After changing them, press Reload.")
-            Spacer(Modifier.height(8.dp))
+            // ------------------------------------------------------------ accelerator / NPU
+            PerformanceGroup("Accelerator · NPU prompt prefill", "Qualcomm Hexagon prompt acceleration") {
+            Hint("These options apply only when the APK includes the Hexagon backend. Prompt prefill can use the NPU; token-by-token decode remains on CPU.")
+            val npuCombinationAllowed = !settings.rowStream
+            // Keep a stale saved-on switch interactive so an unavailable NPU preference can be turned off;
+            // all other HTP controls remain disabled until the runtime probe really opens HTP0.
+            val npuToggleEnabled = (viewModel.npuPrefillAvailable && npuCombinationAllowed) || settings.npuPrefill
+            val loadedModel = (engine as? EngineState.Ready)?.info
             SwitchRow(
-                "NPU prefill (Hexagon)",
-                if (viewModel.npuPrefillAvailable) {
-                    "Enable Snapdragon Hexagon/NPU prompt prefill. Decode remains on CPU. Reload the model after changing this."
-                } else {
-                    "Unavailable in this APK: it was built without the optional Hexagon/NPU backend. The switch becomes available in a Hexagon-enabled build."
+                "NPU prefill (Snapdragon Hexagon)",
+                when {
+                    settings.npuPrefill && !viewModel.npuPrefillAvailable -> "This preference is saved as on, but HTP is unavailable. Turn this switch off to allow CPU-only model loading."
+                    !npuCombinationAllowed -> "Unavailable while Row-stream tables are enabled. Turn that option off before enabling NPU prefill."
+                    loadedModel?.npuPrefillReady == true && loadedModel.config.npuPrefill && settings.npuPrefill -> "Enabled for the loaded model: HTP0 opened during model load. Actual execution is confirmed only when logcat reports NPU prefill device_nodes greater than zero."
+                    loadedModel?.npuPrefillReady == true && !settings.npuPrefill -> "The currently loaded model still has HTP prefill active; reload it to apply this saved-off preference."
+                    settings.npuPrefill -> "Selected for the next model load. Prompt graphs may run on HTP; token-by-token decode remains on CPU."
+                    else -> "Uses the HTP device for eligible wide prompt graphs. This changes only after the model is reloaded; execution must be confirmed from device-node telemetry."
                 },
                 checked = settings.npuPrefill,
-                enabled = viewModel.npuPrefillAvailable
-            ) { viewModel.updateNpuPrefill(it) }
-            if (viewModel.npuPrefillAvailable && settings.npuPrefill) {
-                ChoiceSetting(
+                enabled = npuToggleEnabled
+            ) {
+                viewModel.updateNpuPrefill(it)
+            }
+            Hint(viewModel.npuPrefillStatus)
+            ChoiceSetting(
                     "NPU prefill loader threads",
                     listOf(2 to "2", 4 to "4", 6 to "6", 8 to "8", 12 to "12", 16 to "16"),
-                    settings.npuLoaders
+                    settings.npuLoaders,
+                    enabled = npuToggleEnabled && settings.npuPrefill
                 ) { viewModel.updateNpuLoaders(it) }
-                Hint("Upstream 0.28 defaults to 8 loaders. This setting is applied when the model is reloaded.")
+                // With Guess ahead the CPU verify batch is draftMax + 1 wide; only thresholds above it are offered.
+                val npuMinChoices = Choices.NPU_MIN_TOKENS.filter {
+                    it <= settings.toLoadConfig().nUbatch && it >= settings.toLoadConfig().npuMinTokensFloor
+                }.ifEmpty { listOf(settings.toLoadConfig().npuMinTokensFloor) }
+                ChoiceSetting(
+                    "Minimum prompt tokens sent to NPU",
+                    npuMinChoices.map { it to "$it tokens" },
+                    (npuMinChoices.lastOrNull { it <= settings.npuMinTokens } ?: npuMinChoices.first()),
+                    enabled = npuToggleEnabled && settings.npuPrefill
+                ) { viewModel.updateNpuMinTokens(it) }
+                SwitchRow(
+                    "Routed expert reads during NPU prefill",
+                    "Predict which experts a prompt graph needs and load those instead of reading every expert in the layer. Falls back to a full-layer read when the predicted routing is dense.",
+                    settings.npuRoutedPrefill,
+                    enabled = npuToggleEnabled && settings.npuPrefill
+                ) { viewModel.updateNpuRoutedPrefill(it) }
+                if (settings.npuRoutedPrefill) {
+                    ChoiceSetting(
+                        "Full-layer fallback threshold",
+                        Choices.NPU_ROUTED_FULL_PCT.map { it to "$it% of experts" },
+                        settings.npuRoutedFullPct,
+                        enabled = npuToggleEnabled && settings.npuPrefill
+                    ) { viewModel.updateNpuRoutedFullPct(it) }
+                    Hint("At higher thresholds, more layers use routed reads; a lower threshold chooses a full-layer read sooner. This is a memory-I/O trade-off, not a quality setting.")
+                }
+            if (!viewModel.npuPrefillAvailable) {
+                Hint("Loader, threshold and routed-read preferences do not activate hardware by themselves. They stay disabled until the runtime can open HTP0.")
             }
-            Spacer(Modifier.height(8.dp))
-            Hint("Expert streaming is switched on or off automatically: MoE models stream their experts from flash, regular models load the ordinary way.")
+            } // NPU group
+            Spacer(Modifier.height(10.dp))
+
+            // ------------------------------------------------------------ streaming (engine)
+            PerformanceGroup("MoE streaming & I/O", "Expert cache, flash reads and memory residency") {
+            Hint("Engine settings are fixed when a model opens. After changing them, press Reload. MoE expert streaming is selected automatically for supported MoE models; dense models use the standard load path.")
             Spacer(Modifier.height(12.dp))
             ChoiceSetting(
                 "Expert cache (MiB)",
@@ -375,6 +434,14 @@ private fun SettingsContent(
                 selected = settings.cacheMb, enabled = stream
             ) { viewModel.updateCacheMb(it) }
             Hint("A resident expert costs no read, so a bigger cache means less waiting on flash, paid for in RAM. Auto sizes it once at load. The smallest rungs sit below the engine's floor and only churn.")
+            if (settings.cacheMb in 1 until 1500) {
+                SwitchRow(
+                    "Allow a small expert cache (<1500 MiB)",
+                    "Small caches may thrash and reduce performance. Enabled by default to preserve BigMoeOnEdge+'s existing behavior when one of the small cache sizes is selected.",
+                    settings.forceCache,
+                    enabled = stream
+                ) { viewModel.updateForceCache(it) }
+            }
             ChoiceSetting(
                 "Auto cache ceiling (MiB)",
                 Choices.CACHE_CEIL.map { it to if (it == 0) "no cap" else "$it MiB" },
@@ -404,8 +471,8 @@ private fun SettingsContent(
             ) { viewModel.updateODirect(it) }
             SwitchRow(
                 "I/O and compute overlap",
-                "Issue the next reads while the current layer computes, so flash latency hides behind the work." +
-                    if (readyInfo != null && !readyInfo.overlapActive && settings.overlap && stream) " (Not active in the loaded model.)" else "",
+                "Enabled by default. Issue expert reads asynchronously while the CPU computes the current layer, hiding flash latency. It only runs for streamed MoE models in an APK built with the expert-ready hook." +
+                    if (readyInfo != null && !readyInfo.overlapActive && settings.overlap && stream) " The loaded model reports overlap is not active." else "",
                 settings.overlap, enabled = stream
             ) { viewModel.updateOverlap(it) }
             ChoiceSetting(
@@ -416,9 +483,16 @@ private fun SettingsContent(
             Hint(denseBlurb(settings.denseWeights))
             SwitchRow(
                 "Stream row-gathered tables",
-                "A dense table the model only reads a few ROWS from per token (the token embedding) does not need to be in RAM: only the rows are read, from flash. Lossless - the output is identical. On a model where no table qualifies this does nothing.",
-                settings.rowStream, enabled = stream
+                "A dense table the model only reads a few ROWS from per token (the token embedding) does not need to be in RAM: only the rows are read, from flash. Lossless - the output is identical. On a model where no table qualifies this does nothing. This is incompatible with NPU prefill.",
+                settings.rowStream, enabled = stream && !settings.npuPrefill
             ) { viewModel.updateRowStream(it) }
+            ChoiceSetting(
+                "Row-stream resident window",
+                listOf(16 to "16 MiB", 32 to "32 MiB", 64 to "64 MiB", 128 to "128 MiB", 256 to "256 MiB"),
+                settings.rowStreamMb,
+                enabled = stream && settings.rowStream
+            ) { viewModel.updateRowStreamMb(it) }
+            Hint("RAM window used to keep recently accessed rows. Larger windows reduce repeated reads but leave less RAM for experts and the OS.")
             SwitchRow(
                 "Release the model mapping",
                 "Once every weight has been copied into the app's own memory, the model file does not need to stay mapped. Lossless - the output is identical. Needs Dense weights on Anon or Pinned.",
@@ -426,9 +500,11 @@ private fun SettingsContent(
                 enabled = stream && (settings.denseWeights == DenseWeights.ANONYMOUS || settings.denseWeights == DenseWeights.PINNED)
             ) { viewModel.updateReleaseMmap(it) }
             Divider()
+            } // streaming group
+            Spacer(Modifier.height(10.dp))
 
             // ------------------------------------------------------------ speed / quality
-            Section("Speed / quality")
+            PerformanceGroup("Speed / quality", "Decode throughput, routing trade-offs and advanced controls") {
             ChoiceSetting(
                 "Drop cold experts (% of even share)",
                 Choices.DROP_COLD.map {
@@ -459,6 +535,55 @@ private fun SettingsContent(
             ExperimentalHeader(expanded = experimental) { experimental = !experimental }
             if (experimental) {
                 Spacer(Modifier.height(8.dp))
+                Section("I/O scheduling")
+                SwitchRow(
+                    "Start reads in two waves",
+                    "Publishes the first projection's expert reads before queuing the remaining projections, allowing I/O lanes to start earlier. Experimental; requires expert streaming, cache, and overlap. Leave off if it is slower on your device.",
+                    settings.ioTwoWave,
+                    enabled = stream && cacheOn && settings.overlap
+                ) { viewModel.updateIoTwoWave(it) }
+                Spacer(Modifier.height(8.dp))
+                Section("Speculation and routing")
+                ChoiceSetting(
+                    "Guess ahead",
+                    listOf(SpecSource.OFF to "Off", SpecSource.MTP to "Model's own head (MTP)", SpecSource.NGRAM to "Repeated text (n-gram)"),
+                    settings.spec,
+                    enabled = settings.routeAhead == 0 && !settings.rowStream
+                ) { viewModel.updateSpec(it) }
+                Hint("Draft several likely next tokens and verify them together. It can improve tokens/s but may use more memory. MTP requires a compatible embedded head or an attached sidecar on the Models page; n-gram only helps when text repeats. Guess ahead forces greedy decoding (temperature 0).")
+                if (settings.spec != SpecSource.OFF) {
+                    ChoiceSetting("Tokens guessed per pass", Choices.DRAFT_MAX.map { it to it.toString() }, settings.draftMax) {
+                        viewModel.updateDraftMax(it)
+                    }
+                }
+                if (settings.spec == SpecSource.MTP) {
+                    ChoiceSetting(
+                        "MTP confidence floor",
+                        listOf(0 to "Always draft", 40 to "Above 40%", 60 to "Above 60%", 80 to "Above 80%"),
+                        settings.mtpPMinPct
+                    ) { viewModel.updateMtpPMinPct(it) }
+                    Hint("Stops drafting when the MTP head's probability for its next token is below this threshold. Higher values spend less time on weak guesses, but may draft fewer tokens.")
+                    Hint("The separate MTP GGUF attachment and its enable switch remain under Models → MTP draft.")
+                }
+                if (settings.spec == SpecSource.NGRAM) {
+                    ChoiceSetting(
+                        "N-gram minimum match",
+                        Choices.NGRAM_MIN.filter { it <= settings.ngramMaxMatch }.map { it to "$it tokens" },
+                        settings.ngramMinMatch.coerceAtMost(settings.ngramMaxMatch)
+                    ) {
+                        viewModel.updateNgramMinMatch(it)
+                        if (it > settings.ngramMaxMatch) viewModel.updateNgramMaxMatch(it)
+                    }
+                    ChoiceSetting(
+                        "N-gram maximum match",
+                        Choices.NGRAM_MAX.filter { it >= settings.ngramMinMatch }.map { it to "$it tokens" },
+                        settings.ngramMaxMatch.coerceAtLeast(settings.ngramMinMatch)
+                    ) {
+                        viewModel.updateNgramMaxMatch(it)
+                        if (it < settings.ngramMinMatch) viewModel.updateNgramMinMatch(it)
+                    }
+                    Hint("Minimum controls how exact a repeated suffix must be before drafting. Maximum bounds the lookup work; long matches are not always more useful.")
+                }
                 ChoiceSetting(
                     "Temporal prefetch (layers)",
                     Choices.PREFETCH.map { it to if (it == 0) "off" else "$it" },
@@ -500,14 +625,69 @@ private fun SettingsContent(
                     enabled = stream && settings.prefetchLayers == 0 && !settings.predictPrefetch && settings.spec == SpecSource.OFF
                 ) { viewModel.updateRouteAhead(it) }
                 Hint("Commits each layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes the prefetchers and Guess ahead.")
+                Spacer(Modifier.height(8.dp))
+                Section("Scored-choice API")
+                ChoiceSetting(
+                    "Decision prefix cache",
+                    listOf(
+                        DecisionPrefixCache.AUTO to "Auto",
+                        DecisionPrefixCache.ON to "On",
+                        DecisionPrefixCache.OFF to "Off"
+                    ),
+                    settings.decisionPrefixCache
+                ) { viewModel.updateDecisionPrefixCache(it) }
+                Hint("Controls prefix-state reuse for the app's scored-choice / decision API only; it does not change normal chat generation. Auto chooses the best policy for the current backend.")
+                Spacer(Modifier.height(8.dp))
+                Section("Quality controls")
+                SwitchRow(
+                    "Renormalise expert weights after dropping",
+                    "Rescales the surviving expert weights after cold experts are skipped. Usually keep this enabled; disabling it can shift the layer output more.",
+                    settings.dropRenorm,
+                    enabled = stream && cacheOn && settings.dropColdPct > 0
+                ) { viewModel.updateDropRenorm(it) }
+                SwitchRow(
+                    "Drop cold experts during prompt prefill",
+                    "Applies cache-aware expert dropping while the prompt is being processed. Off is recommended: the cache is cold during prefill, so many experts may be skipped and answer quality can fall.",
+                    settings.dropInPrefill,
+                    enabled = stream && cacheOn && settings.dropColdPct > 0
+                ) { viewModel.updateDropInPrefill(it) }
+                Spacer(Modifier.height(8.dp))
+                Section("Diagnostics / A-B only")
+                SwitchRow(
+                    "Prediction probe",
+                    "Measures how well next-layer routing can be predicted. Adds a router GEMV per layer per token and can slow generation; do not use for normal speed benchmarks.",
+                    settings.predictionProbe,
+                    enabled = stream && settings.routeAhead == 0 && !settings.predictPrefetch && settings.prefetchLayers == 0
+                ) { viewModel.updatePredictionProbe(it) }
+                SwitchRow(
+                    "Load all experts (A/B baseline)",
+                    "Reads every expert each token instead of only the selected experts. Very slow and I/O-heavy for large MoE models; use only for controlled comparisons.",
+                    settings.loadAllExpertsForBenchmark,
+                    enabled = stream
+                ) { viewModel.updateLoadAllExpertsForBenchmark(it) }
             }
             Divider()
+            } // speed / quality group
+            Spacer(Modifier.height(10.dp))
 
             // ------------------------------------------------------------ compute
-            Section("Compute")
-            ChoiceSetting("Compute threads", Choices.THREADS.map { it to it.toString() }, settings.threadCount) {
+            PerformanceGroup("CPU compute & memory", "Prompt evaluation, context and sampling") {
+            ChoiceSetting("Decode compute threads", Choices.THREADS.map { it to it.toString() }, settings.threadCount) {
                 viewModel.updateThreadCount(it)
             }
+            Hint("CPU threads used for single-token decode. On Snapdragon 8 Gen 2, 4–5 is a sensible starting point; compare sustained speed and heat instead of assuming more threads are faster.")
+            ChoiceSetting(
+                "Prompt / batch threads",
+                Choices.THREADS.map { it to it.toString() },
+                settings.batchThreadCount
+            ) { viewModel.updateBatchThreadCount(it) }
+            Hint("Threads used for multi-token prompt evaluation. Increasing this may speed up long prompts but competes for memory bandwidth and can raise heat.")
+            ChoiceSetting(
+                "Batch width (ubatch)",
+                Choices.BATCH_WIDTH.map { it to "$it tokens" },
+                settings.batchWidth
+            ) { viewModel.updateBatchWidth(it) }
+            Hint("Upper bound for tokens computed in one graph while processing prompts; the engine caps this at the context size. Smaller values reduce reserved compute RAM and can leave more memory for expert cache; larger values can prefill faster but may cause memory pressure. Decode speed is generally unaffected.")
             Text("Context (tokens)", style = MaterialTheme.typography.labelMedium)
             OutlinedTextField(
                 value = contextText,
@@ -528,8 +708,18 @@ private fun SettingsContent(
             Slider(value = topP, onValueChange = { topP = it }, onValueChangeFinished = { viewModel.updateTopP(topP) }, valueRange = 0.05f..1f)
             Text("Top K: ${topK.toInt()}")
             Slider(value = topK, onValueChange = { topK = it }, onValueChangeFinished = { viewModel.updateTopK(topK.toInt()) }, valueRange = 0f..100f)
-            Hint("Sampling is fixed when the model is opened. Temperature 0 = always the most likely token (what the original app does). The engine has no repetition-penalty.")
+            OutlinedTextField(
+                value = seedText,
+                onValueChange = { input -> seedText = input.filterIndexed { i, c -> c.isDigit() || (i == 0 && c == '-') } },
+                label = { Text("Sampling seed (-1 = random)") },
+                supportingText = { Text("Use -1 for a fresh random seed per run, or a non-negative number to make runs repeatable. Sampling changes apply after reloading the model.") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Hint("Sampling is fixed when the model is opened. Temperature 0 = greedy decoding (always the most likely token). This engine does not expose a repetition-penalty setting.")
             Divider()
+            } // compute group
 
         } else {
             Divider()
@@ -714,6 +904,61 @@ private fun SettingsContent(
             onDelete = if (editingIsNew) null else ({ viewModel.deleteCustomPalette(palette.id); editingPalette = null }),
             onDismiss = { editingPalette = null }
         )
+    }
+}
+
+@Composable
+private fun PerformanceGroup(
+    title: String,
+    subtitle: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            content = {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(2.dp))
+                content()
+            }
+        )
+    }
+}
+
+@Composable
+private fun AutoSettingsEntry(onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    "Auto settings", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    "Best settings for your phone and model: Fastest, Balanced or Most accurate, with saves you can switch between",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = "Open Auto settings",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
     }
 }
 

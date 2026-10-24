@@ -3,6 +3,7 @@ package com.bigmoe.onedge.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.bigmoe.onedge.core.DenseWeights
+import com.bigmoe.onedge.core.DecisionPrefixCache
 import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.core.EngineController
 import com.bigmoe.onedge.core.EngineState
@@ -32,6 +33,7 @@ class SettingsViewModel(
 
     val engineState: StateFlow<EngineState> = engineController.state
     val npuPrefillAvailable: Boolean get() = engineController.capabilities.npuPrefill
+    val npuPrefillStatus: String get() = engineController.npuPrefillStatus
 
     private fun launch(block: suspend () -> Unit) {
         viewModelScope.launch { block() }
@@ -56,24 +58,33 @@ class SettingsViewModel(
     // ---- engine (apply after the model is reloaded) ----
     fun updateContextLength(v: Int) = launch { dataStore.updateContextLength(v) }
     fun updateThreadCount(v: Int) = launch { dataStore.updateThreadCount(v) }
+    fun updateBatchThreadCount(v: Int) = launch { dataStore.updateBatchThreadCount(v) }
+    fun updateBatchWidth(v: Int) = launch { dataStore.updateBatchWidth(v) }
     fun updateTemperature(v: Float) = launch { dataStore.updateTemperature(v) }
     fun updateTopP(v: Float) = launch { dataStore.updateTopP(v) }
     fun updateTopK(v: Int) = launch { dataStore.updateTopK(v) }
+    fun updateSeed(v: Int) = launch { dataStore.updateSeed(v) }
     fun updateCacheMb(v: Int) = launch { dataStore.updateCacheMb(v) }
     fun updateCacheCeilMb(v: Int) = launch { dataStore.updateCacheCeilMb(v) }
     fun updateCacheFloorMb(v: Int) = launch { dataStore.updateCacheFloorMb(v) }
     fun updateIoThreads(v: Int) = launch { dataStore.updateIoThreads(v) }
     fun updateODirect(v: Boolean) = launch { dataStore.updateODirect(v) }
     fun updateOverlap(v: Boolean) = launch { dataStore.updateOverlap(v) }
+    fun updateIoTwoWave(v: Boolean) = launch { dataStore.updateIoTwoWave(v) }
     fun updateDenseWeights(v: DenseWeights) = launch { dataStore.updateDenseWeights(v) }
+    fun updateRowStreamMb(v: Int) = launch { dataStore.updateRowStreamMb(v) }
     fun updateNExpertUsed(v: Int) = launch { dataStore.updateNExpertUsed(v) }
     fun updateDropColdPct(v: Int) = launch { dataStore.updateDropColdPct(v) }
+    fun updateDropRenorm(v: Boolean) = launch { dataStore.updateDropRenorm(v) }
+    fun updateDropInPrefill(v: Boolean) = launch { dataStore.updateDropInPrefill(v) }
     fun updateSubstitutePct(v: Int) = launch { dataStore.updateSubstitutePct(v) }
     fun updatePrefetchLayers(v: Int) = launch { dataStore.updatePrefetchLayers(v) }
     fun updatePredictPrefetch(v: Boolean) = launch { dataStore.updatePredictPrefetch(v) }
     fun updatePredictSpecMax(v: Int) = launch { dataStore.updatePredictSpecMax(v) }
+    fun updatePredictionProbe(v: Boolean) = launch { dataStore.updatePredictionProbe(v) }
     fun updateRouteAhead(v: Int) = launch { dataStore.updateRouteAhead(v) }
     fun updateRowStream(v: Boolean) = launch { dataStore.updateRowStream(v) }
+    fun updateLoadAllExpertsForBenchmark(v: Boolean) = launch { dataStore.updateLoadAllExpertsForBenchmark(v) }
     fun updateReleaseMmap(v: Boolean) = launch { dataStore.updateReleaseMmap(v) }
     fun updateSpec(v: SpecSource) = launch { dataStore.updateSpec(v) }
     fun updateDraftMax(v: Int) = launch { dataStore.updateDraftMax(v) }
@@ -82,6 +93,13 @@ class SettingsViewModel(
     fun updateMetricsCsv(v: Boolean) = launch { dataStore.updateMetricsCsv(v) }
     fun updateNpuPrefill(v: Boolean) = launch { dataStore.updateNpuPrefill(v) }
     fun updateNpuLoaders(v: Int) = launch { dataStore.updateNpuLoaders(v) }
+    fun updateNpuMinTokens(v: Int) = launch { dataStore.updateNpuMinTokens(v) }
+    fun updateNpuRoutedPrefill(v: Boolean) = launch { dataStore.updateNpuRoutedPrefill(v) }
+    fun updateNpuRoutedFullPct(v: Int) = launch { dataStore.updateNpuRoutedFullPct(v) }
+    fun updateNgramMinMatch(v: Int) = launch { dataStore.updateNgramMinMatch(v) }
+    fun updateNgramMaxMatch(v: Int) = launch { dataStore.updateNgramMaxMatch(v) }
+    fun updateDecisionPrefixCache(v: DecisionPrefixCache) = launch { dataStore.updateDecisionPrefixCache(v) }
+    fun updateForceCache(v: Boolean) = launch { dataStore.updateForceCache(v) }
 
     // ---- local API server ----
     fun setServerEnabled(v: Boolean) = launch { apiServer.setEnabled(v) }

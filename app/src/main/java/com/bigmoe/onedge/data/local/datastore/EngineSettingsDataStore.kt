@@ -10,8 +10,10 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.bigmoe.onedge.core.CacheMode
 import com.bigmoe.onedge.core.DenseWeights
+import com.bigmoe.onedge.core.DecisionPrefixCache
 import com.bigmoe.onedge.core.LoadConfig
 import com.bigmoe.onedge.core.SpecSource
+import com.bigmoe.onedge.core.TunedValues
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -38,25 +40,38 @@ data class EngineSettings(
     // ---- engine (needs reload) ----
     val contextLength: Int = 4096,
     val threadCount: Int = 4,
+    /** Threads used by multi-token prompt batches; independent of single-token decode threads. */
+    val batchThreadCount: Int = 4,
+    /** Widest graph evaluated at once. Lower values conserve RAM; capped to the context at load. */
+    val batchWidth: Int = 512,
     val temperature: Float = 0.7f,
     val topP: Float = 0.9f,
     val topK: Int = 40,
+    /** -1 asks llama.cpp to choose a fresh random seed for each generation. */
+    val seed: Int = -1,
     /** -1 = auto, 0 = off, otherwise a fixed budget in MiB. */
     val cacheMb: Int = 2000,
     val cacheCeilMb: Int = 3000,
     val cacheFloorMb: Int = 1536,
     val ioThreads: Int = 4,
     val oDirect: Boolean = true,
-    val overlap: Boolean = false,
+    /** Enabled by default: hide expert flash-read latency behind CPU FFN compute when the hook exists. */
+    val overlap: Boolean = true,
+    val ioTwoWave: Boolean = false,
     val denseWeights: DenseWeights = DenseWeights.ANONYMOUS,
+    val rowStreamMb: Int = 64,
     val nExpertUsed: Int = 0,
     val dropColdPct: Int = 75,
+    val dropRenorm: Boolean = true,
+    val dropInPrefill: Boolean = false,
     val substitutePct: Int = 0,
     val prefetchLayers: Int = 0,
     val predictPrefetch: Boolean = false,
     val predictSpecMax: Int = 0,
+    val predictionProbe: Boolean = false,
     val routeAhead: Int = 0,
     val rowStream: Boolean = false,
+    val loadAllExpertsForBenchmark: Boolean = false,
     val releaseMmap: Boolean = false,
     val spec: SpecSource = SpecSource.OFF,
     val draftMax: Int = 3,
@@ -69,6 +84,15 @@ data class EngineSettings(
     /** Enable optional Hexagon/NPU prefill; off by default so CPU-only APKs remain normal. */
     val npuPrefill: Boolean = false,
     val npuLoaders: Int = 8,
+    val npuMinTokens: Int = 32,
+    val npuRoutedPrefill: Boolean = true,
+    val npuRoutedFullPct: Int = 85,
+    val ngramMinMatch: Int = 3,
+    val ngramMaxMatch: Int = 12,
+    /** Prefix cache policy for the scored-choice API; Auto selects it per backend. */
+    val decisionPrefixCache: DecisionPrefixCache = DecisionPrefixCache.AUTO,
+    /** Preserve the app's existing ability to choose a cache below the engine's 1500 MiB floor. */
+    val forceCache: Boolean = true,
     // ---- per-request ----
     /** <= 0 = as long as the context allows. */
     val maxTokens: Int = -1,
@@ -122,6 +146,9 @@ data class EngineSettings(
     fun toLoadConfig(): LoadConfig = LoadConfig(
         nCtx = contextLength,
         nThreads = threadCount,
+        nThreadsBatch = batchThreadCount,
+        batchWidth = batchWidth,
+        seed = seed,
         // The engine refuses to open a model when "guess ahead" (speculation) is on together with sampling:
         // verification is exact only under greedy decoding. So guess ahead means temperature 0.
         temperature = if (spec != SpecSource.OFF) 0f else temperature,
@@ -136,22 +163,35 @@ data class EngineSettings(
         ioThreads = ioThreads,
         oDirect = oDirect,
         overlap = overlap,
+        ioTwoWave = ioTwoWave,
         denseWeights = denseWeights,
+        rowStreamMb = rowStreamMb,
         nExpertUsed = nExpertUsed,
         dropColdPct = dropColdPct,
+        dropRenorm = dropRenorm,
+        dropInPrefill = dropInPrefill,
         substitutePct = substitutePct,
         prefetchLayers = prefetchLayers,
         predictPrefetch = predictPrefetch,
         predictSpecMax = predictSpecMax,
+        predictionProbe = predictionProbe,
         routeAhead = routeAhead,
         rowStream = rowStream,
+        loadAllExpertsForBenchmark = loadAllExpertsForBenchmark,
         releaseMmap = releaseMmap,
         spec = spec,
         draftMax = draftMax,
         mtpPMinPct = mtpPMinPct,
         metricsCsv = metricsCsv,
         npuPrefill = npuPrefill,
-        npuLoaders = npuLoaders
+        npuLoaders = npuLoaders,
+        npuMinTokens = npuMinTokens,
+        npuRoutedPrefill = npuRoutedPrefill,
+        npuRoutedFullPct = npuRoutedFullPct,
+        ngramMinMatch = ngramMinMatch,
+        ngramMaxMatch = ngramMaxMatch,
+        decisionPrefixCache = decisionPrefixCache,
+        forceCache = forceCache
     )
 }
 
@@ -169,24 +209,33 @@ class EngineSettingsDataStore(private val context: Context) {
     private object Keys {
         val CONTEXT_LENGTH = intPreferencesKey("context_length")
         val THREAD_COUNT = intPreferencesKey("thread_count")
+        val BATCH_THREAD_COUNT = intPreferencesKey("batch_thread_count")
+        val BATCH_WIDTH = intPreferencesKey("batch_width")
         val TEMPERATURE = floatPreferencesKey("temperature")
         val TOP_P = floatPreferencesKey("top_p")
         val TOP_K = intPreferencesKey("top_k")
+        val SEED = intPreferencesKey("sampling_seed")
         val CACHE_MB = intPreferencesKey("cache_mb_v2")
         val CACHE_CEIL_MB = intPreferencesKey("cache_ceil_mb")
         val CACHE_FLOOR_MB = intPreferencesKey("cache_floor_mb")
         val IO_THREADS = intPreferencesKey("io_threads")
         val O_DIRECT = booleanPreferencesKey("o_direct")
         val OVERLAP = booleanPreferencesKey("overlap")
+        val IO_TWO_WAVE = booleanPreferencesKey("io_two_wave")
         val DENSE_WEIGHTS = stringPreferencesKey("dense_weights")
+        val ROW_STREAM_MB = intPreferencesKey("row_stream_mb")
         val N_EXPERT_USED = intPreferencesKey("n_expert_used")
         val DROP_COLD_PCT = intPreferencesKey("drop_cold_pct")
+        val DROP_RENORM = booleanPreferencesKey("drop_renorm")
+        val DROP_IN_PREFILL = booleanPreferencesKey("drop_in_prefill")
         val SUBSTITUTE_PCT = intPreferencesKey("substitute_pct")
         val PREFETCH_LAYERS = intPreferencesKey("prefetch_layers")
         val PREDICT_PREFETCH = booleanPreferencesKey("predict_prefetch")
         val PREDICT_SPEC_MAX = intPreferencesKey("predict_spec_max")
+        val PREDICTION_PROBE = booleanPreferencesKey("prediction_probe")
         val ROUTE_AHEAD = intPreferencesKey("route_ahead")
         val ROW_STREAM = booleanPreferencesKey("row_stream")
+        val LOAD_ALL_EXPERTS = booleanPreferencesKey("load_all_experts_benchmark")
         val RELEASE_MMAP = booleanPreferencesKey("release_mmap")
         val SPEC = stringPreferencesKey("spec")
         val DRAFT_MAX = intPreferencesKey("draft_max")
@@ -195,6 +244,13 @@ class EngineSettingsDataStore(private val context: Context) {
         val METRICS_CSV = booleanPreferencesKey("metrics_csv")
         val NPU_PREFILL = booleanPreferencesKey("npu_prefill")
         val NPU_LOADERS = intPreferencesKey("npu_loaders")
+        val NPU_MIN_TOKENS = intPreferencesKey("npu_min_tokens")
+        val NPU_ROUTED = booleanPreferencesKey("npu_routed_prefill")
+        val NPU_ROUTED_FULL_PCT = intPreferencesKey("npu_routed_full_pct")
+        val NGRAM_MIN_MATCH = intPreferencesKey("ngram_min_match")
+        val NGRAM_MAX_MATCH = intPreferencesKey("ngram_max_match")
+        val DECISION_PREFIX_CACHE = stringPreferencesKey("decision_prefix_cache")
+        val FORCE_CACHE = booleanPreferencesKey("force_cache")
         val MAX_TOKENS = intPreferencesKey("max_tokens")
         val THINKING = booleanPreferencesKey("thinking_enabled_v2")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
@@ -228,24 +284,33 @@ class EngineSettingsDataStore(private val context: Context) {
         EngineSettings(
             contextLength = p[Keys.CONTEXT_LENGTH] ?: d.contextLength,
             threadCount = p[Keys.THREAD_COUNT] ?: d.threadCount,
+            batchThreadCount = p[Keys.BATCH_THREAD_COUNT] ?: d.batchThreadCount,
+            batchWidth = p[Keys.BATCH_WIDTH] ?: d.batchWidth,
             temperature = p[Keys.TEMPERATURE] ?: d.temperature,
             topP = p[Keys.TOP_P] ?: d.topP,
             topK = p[Keys.TOP_K] ?: d.topK,
+            seed = p[Keys.SEED] ?: d.seed,
             cacheMb = p[Keys.CACHE_MB] ?: d.cacheMb,
             cacheCeilMb = p[Keys.CACHE_CEIL_MB] ?: d.cacheCeilMb,
             cacheFloorMb = p[Keys.CACHE_FLOOR_MB] ?: d.cacheFloorMb,
             ioThreads = p[Keys.IO_THREADS] ?: d.ioThreads,
             oDirect = p[Keys.O_DIRECT] ?: d.oDirect,
             overlap = p[Keys.OVERLAP] ?: d.overlap,
+            ioTwoWave = p[Keys.IO_TWO_WAVE] ?: d.ioTwoWave,
             denseWeights = enumOrDefault(p[Keys.DENSE_WEIGHTS], d.denseWeights),
+            rowStreamMb = p[Keys.ROW_STREAM_MB] ?: d.rowStreamMb,
             nExpertUsed = p[Keys.N_EXPERT_USED] ?: d.nExpertUsed,
             dropColdPct = p[Keys.DROP_COLD_PCT] ?: d.dropColdPct,
+            dropRenorm = p[Keys.DROP_RENORM] ?: d.dropRenorm,
+            dropInPrefill = p[Keys.DROP_IN_PREFILL] ?: d.dropInPrefill,
             substitutePct = p[Keys.SUBSTITUTE_PCT] ?: d.substitutePct,
             prefetchLayers = p[Keys.PREFETCH_LAYERS] ?: d.prefetchLayers,
             predictPrefetch = p[Keys.PREDICT_PREFETCH] ?: d.predictPrefetch,
             predictSpecMax = p[Keys.PREDICT_SPEC_MAX] ?: d.predictSpecMax,
+            predictionProbe = p[Keys.PREDICTION_PROBE] ?: d.predictionProbe,
             routeAhead = p[Keys.ROUTE_AHEAD] ?: d.routeAhead,
             rowStream = p[Keys.ROW_STREAM] ?: d.rowStream,
+            loadAllExpertsForBenchmark = p[Keys.LOAD_ALL_EXPERTS] ?: d.loadAllExpertsForBenchmark,
             releaseMmap = p[Keys.RELEASE_MMAP] ?: d.releaseMmap,
             spec = enumOrDefault(p[Keys.SPEC], d.spec),
             draftMax = p[Keys.DRAFT_MAX] ?: d.draftMax,
@@ -254,6 +319,13 @@ class EngineSettingsDataStore(private val context: Context) {
             metricsCsv = p[Keys.METRICS_CSV] ?: d.metricsCsv,
             npuPrefill = p[Keys.NPU_PREFILL] ?: d.npuPrefill,
             npuLoaders = p[Keys.NPU_LOADERS] ?: d.npuLoaders,
+            npuMinTokens = p[Keys.NPU_MIN_TOKENS] ?: d.npuMinTokens,
+            npuRoutedPrefill = p[Keys.NPU_ROUTED] ?: d.npuRoutedPrefill,
+            npuRoutedFullPct = p[Keys.NPU_ROUTED_FULL_PCT] ?: d.npuRoutedFullPct,
+            ngramMinMatch = p[Keys.NGRAM_MIN_MATCH] ?: d.ngramMinMatch,
+            ngramMaxMatch = p[Keys.NGRAM_MAX_MATCH] ?: d.ngramMaxMatch,
+            decisionPrefixCache = enumOrDefault(p[Keys.DECISION_PREFIX_CACHE], d.decisionPrefixCache),
+            forceCache = p[Keys.FORCE_CACHE] ?: d.forceCache,
             maxTokens = p[Keys.MAX_TOKENS] ?: d.maxTokens,
             thinkingEnabled = p[Keys.THINKING] ?: d.thinkingEnabled,
             systemPrompt = p[Keys.SYSTEM_PROMPT] ?: d.systemPrompt,
@@ -288,26 +360,61 @@ class EngineSettingsDataStore(private val context: Context) {
     }
 
     // ---- engine ----
+    /** Writes every setting Auto settings owns in one DataStore transaction (used when a save is switched on). */
+    suspend fun applyTunedValues(v: TunedValues) {
+        context.dataStore.edit { p ->
+            p[Keys.CONTEXT_LENGTH] = v.contextLength.coerceAtLeast(1)
+            p[Keys.THREAD_COUNT] = v.threadCount.coerceIn(1, 32)
+            p[Keys.BATCH_THREAD_COUNT] = v.batchThreadCount.coerceIn(1, 32)
+            p[Keys.BATCH_WIDTH] = v.batchWidth.coerceIn(32, 8192)
+            p[Keys.CACHE_MB] = v.cacheMb.coerceAtLeast(CACHE_AUTO_MB)
+            p[Keys.IO_THREADS] = v.ioThreads.coerceIn(1, 8)
+            p[Keys.O_DIRECT] = v.oDirect
+            p[Keys.OVERLAP] = v.overlap
+            p[Keys.IO_TWO_WAVE] = v.ioTwoWave
+            p[Keys.N_EXPERT_USED] = v.nExpertUsed.coerceAtLeast(0)
+            p[Keys.DROP_COLD_PCT] = v.dropColdPct.coerceIn(0, 100)
+            p[Keys.DROP_RENORM] = v.dropRenorm
+            p[Keys.SUBSTITUTE_PCT] = v.substitutePct.coerceIn(0, 100)
+            p[Keys.PREFETCH_LAYERS] = v.prefetchLayers.coerceIn(0, 8)
+            p[Keys.PREDICT_PREFETCH] = v.predictPrefetch
+            p[Keys.PREDICT_SPEC_MAX] = v.predictSpecMax.coerceIn(0, 8)
+            p[Keys.ROUTE_AHEAD] = v.routeAhead.coerceIn(0, 8)
+            p[Keys.SPEC] = v.spec.name
+            p[Keys.DRAFT_MAX] = v.draftMax.coerceIn(1, 8)
+            p[Keys.NPU_PREFILL] = v.npuPrefill
+        }
+    }
+
     suspend fun updateContextLength(v: Int) = set(Keys.CONTEXT_LENGTH, v.coerceAtLeast(1))
     suspend fun updateThreadCount(v: Int) = set(Keys.THREAD_COUNT, v.coerceIn(1, 32))
+    suspend fun updateBatchThreadCount(v: Int) = set(Keys.BATCH_THREAD_COUNT, v.coerceIn(1, 32))
+    suspend fun updateBatchWidth(v: Int) = set(Keys.BATCH_WIDTH, v.coerceIn(32, 8192))
     suspend fun updateTemperature(v: Float) = set(Keys.TEMPERATURE, v.coerceIn(0f, 2f))
     suspend fun updateTopP(v: Float) = set(Keys.TOP_P, v.coerceIn(0.01f, 1f))
     suspend fun updateTopK(v: Int) = set(Keys.TOP_K, v.coerceIn(0, 200))
+    suspend fun updateSeed(v: Int) = set(Keys.SEED, v.coerceAtLeast(-1))
     suspend fun updateCacheMb(v: Int) = set(Keys.CACHE_MB, v.coerceAtLeast(CACHE_AUTO_MB))
     suspend fun updateCacheCeilMb(v: Int) = set(Keys.CACHE_CEIL_MB, v.coerceAtLeast(0))
     suspend fun updateCacheFloorMb(v: Int) = set(Keys.CACHE_FLOOR_MB, v.coerceAtLeast(0))
     suspend fun updateIoThreads(v: Int) = set(Keys.IO_THREADS, v.coerceIn(1, 8))
     suspend fun updateODirect(v: Boolean) = set(Keys.O_DIRECT, v)
     suspend fun updateOverlap(v: Boolean) = set(Keys.OVERLAP, v)
+    suspend fun updateIoTwoWave(v: Boolean) = set(Keys.IO_TWO_WAVE, v)
     suspend fun updateDenseWeights(v: DenseWeights) = set(Keys.DENSE_WEIGHTS, v.name)
+    suspend fun updateRowStreamMb(v: Int) = set(Keys.ROW_STREAM_MB, v.coerceIn(16, 4096))
     suspend fun updateNExpertUsed(v: Int) = set(Keys.N_EXPERT_USED, v.coerceAtLeast(0))
     suspend fun updateDropColdPct(v: Int) = set(Keys.DROP_COLD_PCT, v.coerceIn(0, 100))
+    suspend fun updateDropRenorm(v: Boolean) = set(Keys.DROP_RENORM, v)
+    suspend fun updateDropInPrefill(v: Boolean) = set(Keys.DROP_IN_PREFILL, v)
     suspend fun updateSubstitutePct(v: Int) = set(Keys.SUBSTITUTE_PCT, v.coerceIn(0, 100))
     suspend fun updatePrefetchLayers(v: Int) = set(Keys.PREFETCH_LAYERS, v.coerceIn(0, 8))
     suspend fun updatePredictPrefetch(v: Boolean) = set(Keys.PREDICT_PREFETCH, v)
-    suspend fun updatePredictSpecMax(v: Int) = set(Keys.PREDICT_SPEC_MAX, v.coerceAtLeast(0))
+    suspend fun updatePredictSpecMax(v: Int) = set(Keys.PREDICT_SPEC_MAX, v.coerceIn(0, 8))
+    suspend fun updatePredictionProbe(v: Boolean) = set(Keys.PREDICTION_PROBE, v)
     suspend fun updateRouteAhead(v: Int) = set(Keys.ROUTE_AHEAD, v.coerceIn(0, 8))
     suspend fun updateRowStream(v: Boolean) = set(Keys.ROW_STREAM, v)
+    suspend fun updateLoadAllExpertsForBenchmark(v: Boolean) = set(Keys.LOAD_ALL_EXPERTS, v)
     suspend fun updateReleaseMmap(v: Boolean) = set(Keys.RELEASE_MMAP, v)
     suspend fun updateSpec(v: SpecSource) = set(Keys.SPEC, v.name)
     suspend fun updateDraftMax(v: Int) = set(Keys.DRAFT_MAX, v.coerceIn(1, 8))
@@ -316,6 +423,13 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateMetricsCsv(v: Boolean) = set(Keys.METRICS_CSV, v)
     suspend fun updateNpuPrefill(v: Boolean) = set(Keys.NPU_PREFILL, v)
     suspend fun updateNpuLoaders(v: Int) = set(Keys.NPU_LOADERS, v.coerceIn(1, 16))
+    suspend fun updateNpuMinTokens(v: Int) = set(Keys.NPU_MIN_TOKENS, v.coerceIn(2, 2048))
+    suspend fun updateNpuRoutedPrefill(v: Boolean) = set(Keys.NPU_ROUTED, v)
+    suspend fun updateNpuRoutedFullPct(v: Int) = set(Keys.NPU_ROUTED_FULL_PCT, v.coerceIn(1, 100))
+    suspend fun updateNgramMinMatch(v: Int) = set(Keys.NGRAM_MIN_MATCH, v.coerceIn(1, 64))
+    suspend fun updateNgramMaxMatch(v: Int) = set(Keys.NGRAM_MAX_MATCH, v.coerceIn(1, 64))
+    suspend fun updateDecisionPrefixCache(v: DecisionPrefixCache) = set(Keys.DECISION_PREFIX_CACHE, v.name)
+    suspend fun updateForceCache(v: Boolean) = set(Keys.FORCE_CACHE, v)
 
     // ---- per request ----
     suspend fun updateMaxTokens(v: Int) = set(Keys.MAX_TOKENS, v)

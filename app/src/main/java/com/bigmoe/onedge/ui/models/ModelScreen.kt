@@ -566,9 +566,9 @@ private fun ModelRow(
             }
             if (mtpExpanded) {
                 Text(
-                    "Note: MTP does not work with an mmproj (a vision / image projector). While Guess ahead is on, a message with an image is refused. Turn Guess ahead off to use images.",
+                    "Note: with an mmproj (vision projector), a message that contains an image is answered without guessing ahead (normal speed, greedy decoding). Text-only messages still use MTP.",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column(Modifier.weight(1f)) {

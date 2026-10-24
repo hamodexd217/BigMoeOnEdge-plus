@@ -22,12 +22,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "bmoe/session.h"
+#include "ggml-backend.h"
 #include "ggml-cpu.h" // ggml_cpu_has_* : one-time CPU feature line in the log (diagnostic only)
 #ifdef BMOE_PIN_FAST_CORES
 #include "perf_tuning.h"
@@ -75,7 +77,7 @@ private:
 // decomposition. cores_busy = cpu_s/token / wall_s/token: close to the thread count means compute-bound;
 // much lower means cores were waiting (flash stall) or throttled/preempted. Read with:
 //   adb logcat -s OnEdge-JNI
-static void log_run_stats(const bmoe::RunSummary & s) {
+static void log_run_stats(const bmoe::RunSummary & s, bool npu_requested) {
     const double cores_busy = s.s_per_token > 0.0 ? s.cpu_s_per_token / s.s_per_token : 0.0;
     LOGI("Run stats: n_gen=%d tok/s=%.3f s/tok=%.3f compute_s/tok=%.3f io_s/tok=%.3f stall_s/tok=%.3f "
          "mgmt_s/tok=%.3f cpu_s/tok=%.3f cores_busy=%.2f majflt/tok=%.1f loop_overhead_s/tok=%.4f "
@@ -83,6 +85,14 @@ static void log_run_stats(const bmoe::RunSummary & s) {
          s.n_generated, s.tokens_per_second, s.s_per_token, s.moe_compute_s_per_token, s.moe_io_s_per_token,
          s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cpu_s_per_token, cores_busy, s.majflt_per_token,
          s.loop_overhead_s_per_token, s.cache_hit_pct, s.moe_read_mib);
+    if (npu_requested) {
+        LOGI("NPU prefill evidence: device_tokens=%d device_nodes=%lld device_read_mib=%.2f device_stall_s=%.3f",
+             s.prefill_device_tokens, s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds);
+        if (s.prefill_device_nodes <= 0) {
+            LOGW("NPU prefill was requested but this run reported no HTP graph nodes; this is NOT proof of NPU execution. "
+                 "The prompt may be too short/reused, or no graph ops/shapes were eligible.");
+        }
+    }
 }
 
 // Layout of the int/float arrays passed to nativeLoadModel. MUST stay in sync with
@@ -99,6 +109,12 @@ enum IntIdx {
     I_MMAP_BASELINE,   // 1 = no streaming at all (llama.cpp's ordinary mmap load)
     I_NPU_PREFILL,      // 1 = optional Hexagon/NPU prefill
     I_NPU_LOADERS,      // loader threads for the prefill device
+    I_N_THREADS_BATCH, I_BATCH_WIDTH, I_SEED,
+    I_IO_TWO_WAVE, I_ROW_STREAM_MB,
+    I_NPU_MIN_TOKENS, I_NPU_ROUTED, I_NPU_ROUTED_FULL_PCT,
+    I_NGRAM_MIN_MATCH, I_NGRAM_MAX_MATCH,
+    I_DROP_RENORM, I_DROP_IN_PREFILL, I_PREDICTION_PROBE, I_LOAD_ALL_EXPERTS,
+    I_DECIDE_PREFIX_CACHE, I_FORCE_CACHE,
     I_COUNT
 };
 enum FloatIdx { F_TEMPERATURE = 0, F_TOP_P, F_COUNT };
@@ -112,8 +128,56 @@ std::shared_ptr<bmoe::Session> g_session;
 // session is never destroyed underneath a running generation.
 std::mutex g_generate_mu;
 std::string g_model_info;
+std::atomic<bool> g_npu_prefill_requested{false};
 // Optional per-token CSV writer (Settings -> Metrics CSV). Owned here, lives as long as the session.
 std::unique_ptr<bmoe::IMetricsSink> g_csv_sink;
+
+struct NpuRuntimeStatus {
+    bool available = false;
+    std::string message;
+};
+
+// Cache one real backend initialization probe. A build flag alone must never enable the settings UI.
+const NpuRuntimeStatus & npu_runtime_status() {
+    static const NpuRuntimeStatus status = [] {
+        NpuRuntimeStatus out;
+#ifdef BMOE_HAVE_HEXAGON
+        ggml_backend_dev_t dev = ggml_backend_dev_by_name("HTP0");
+        if (!dev) {
+            std::string devices;
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                if (!devices.empty()) devices += ", ";
+                devices += ggml_backend_dev_name(ggml_backend_dev_get(i));
+            }
+            out.message = "Unavailable: this engine was built with Hexagon, but HTP0 was not registered (devices: " +
+                          (devices.empty() ? std::string("none") : devices) +
+                          "). Check backend registration and the Qualcomm FastRPC runtime.";
+            return out;
+        }
+        ggml_backend_t probe = nullptr;
+        std::string reason = "ggml_backend_dev_init returned null; inspect FastRPC/DSP messages in logcat";
+        try {
+            probe = ggml_backend_dev_init(dev, nullptr);
+        } catch (const std::exception & e) {
+            reason = e.what();
+        } catch (...) {
+            reason = "unknown exception while opening HTP0";
+        }
+        if (!probe) {
+            out.message = "Unavailable: HTP0 is registered but its FastRPC/DSP session could not open: " + reason +
+                          ". Verify the matching DSP skeleton and ADSP_LIBRARY_PATH.";
+            return out;
+        }
+        ggml_backend_free(probe);
+        out.available = true;
+        out.message = "Available: HTP0 opened successfully. This proves runtime availability, not that a model graph ran on HTP; check the NPU prefill evidence log after a prompt.";
+#else
+        out.message = "Unavailable: this APK's native engine was built without Hexagon support (BMOE_HAVE_HEXAGON is not defined).";
+#endif
+        return out;
+    }();
+    return status;
+}
 
 std::shared_ptr<bmoe::Session> current_session() {
     std::lock_guard<std::mutex> lk(g_session_mu);
@@ -184,6 +248,7 @@ void release_session_blocking() {
     g_session.reset();
     g_csv_sink.reset();
     g_model_info.clear();
+    g_npu_prefill_requested.store(false, std::memory_order_release);
 }
 
 } // namespace
@@ -225,30 +290,56 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
 
     release_session_blocking();
 
+    const bool npu_requested = iv[I_NPU_PREFILL] != 0;
+    // Guess ahead (MTP / n-gram) is compatible: the engine keeps the draft context on the CPU and only
+    // requires the NPU threshold to clear the verify width (applied below, once draft_max is known).
+    if (npu_requested && iv[I_ROW_STREAM] != 0) {
+        return to_bytes(env, "NPU prefill was requested together with Row-stream tables. Disable one of these conflicting settings and reload.");
+    }
+#ifndef BMOE_HAVE_HEXAGON
+    if (npu_requested) {
+        return to_bytes(env, "NPU prefill was requested, but this APK was built without the Hexagon backend. Turn NPU prefill off or install an NPU-enabled build.");
+    }
+#else
+    if (npu_requested && !npu_runtime_status().available) {
+        return to_bytes(env, "NPU prefill was requested but HTP is unavailable. " + npu_runtime_status().message);
+    }
+#endif
+
     bmoe::SessionConfig cfg;
     cfg.model_path = model_path;
     cfg.n_ctx = std::max<int>(256, iv[I_N_CTX]);
     cfg.n_batch = std::clamp<int>(iv[I_N_BATCH], 1, cfg.n_ctx);
     cfg.n_ubatch = std::clamp<int>(iv[I_N_UBATCH], 0, cfg.n_batch);
     cfg.n_threads = std::max<int>(1, iv[I_N_THREADS]);
+    cfg.n_threads_batch = std::clamp<int>(iv[I_N_THREADS_BATCH], 1, 32);
+    cfg.n_ubatch = std::clamp<int>(iv[I_BATCH_WIDTH], 32, cfg.n_ctx);
     cfg.chatml = true; // Session renders the model's own chat template over the whole conversation
     cfg.n_expert_used = std::max<int>(0, iv[I_N_EXPERT_USED]); // 0 = the model's own top-k
     cfg.mmproj_path = mmproj_path; // patch 0003; empty = text only
     cfg.spec.draft_model_path = draft_path;
 #ifdef BMOE_HAVE_HEXAGON
-    if (iv[I_NPU_PREFILL] != 0 && iv[I_ROW_STREAM] == 0 && iv[I_SPEC_SOURCE] == 0) {
+    if (npu_requested) {
         cfg.prefill.device = "HTP0";
         cfg.prefill.load_threads = std::clamp<int>(iv[I_NPU_LOADERS], 1, bmoe::PrefillDeviceConfig::load_threads_max);
-        cfg.prefill.routed = true;
-        cfg.prefill.routed_full_frac = 0.85f; // upstream 0.28 default
+        cfg.prefill.min_tokens = std::clamp<int>(iv[I_NPU_MIN_TOKENS], bmoe::PrefillDeviceConfig::min_tokens_floor,
+                                                 std::max<int>(bmoe::PrefillDeviceConfig::min_tokens_floor, cfg.n_ubatch));
+        cfg.prefill.routed = iv[I_NPU_ROUTED] != 0;
+        cfg.prefill.routed_full_frac = std::clamp<float>(static_cast<float>(iv[I_NPU_ROUTED_FULL_PCT]) / 100.0f,
+                                                         0.01f, 1.0f);
     }
 #endif
-    cfg.decide.enabled = true;
-    cfg.decide.prefix_cache = bmoe::PrefixCacheMode::Auto;
+    cfg.decide.enabled = true; // required by the app's existing scored-choice API
+    switch (iv[I_DECIDE_PREFIX_CACHE]) {
+        case 1: cfg.decide.prefix_cache = bmoe::PrefixCacheMode::On; break;
+        case 2: cfg.decide.prefix_cache = bmoe::PrefixCacheMode::Off; break;
+        default: cfg.decide.prefix_cache = bmoe::PrefixCacheMode::Auto; break;
+    }
 
     cfg.sampling.temp = fv[F_TEMPERATURE];
     cfg.sampling.top_p = fv[F_TOP_P];
     cfg.sampling.top_k = std::max<int>(0, iv[I_TOP_K]);
+    cfg.sampling.seed = static_cast<uint32_t>(iv[I_SEED]); // -1 == random per run (UINT32_MAX)
 
     const bool streaming = iv[I_MMAP_BASELINE] == 0;
     if (streaming) {
@@ -256,6 +347,12 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
         m.enabled = true;
         m.io_threads = std::clamp<int>(iv[I_IO_THREADS], 1, bmoe::MoeStreamConfig::io_threads_max);
         m.o_direct = iv[I_O_DIRECT] != 0;
+        m.io_two_wave = iv[I_IO_TWO_WAVE] != 0;
+        m.row_stream_mb = std::max<int>(0, iv[I_ROW_STREAM_MB]);
+        m.drop_renorm = iv[I_DROP_RENORM] != 0;
+        m.drop_prefill = iv[I_DROP_IN_PREFILL] != 0;
+        m.predict_log = iv[I_PREDICTION_PROBE] != 0;
+        m.load_all = iv[I_LOAD_ALL_EXPERTS] != 0;
         bool cache_on = true;
         switch (iv[I_CACHE_MODE]) {
             case 1: { // fixed budget
@@ -263,7 +360,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
                 m.cache_auto = false;
                 m.cache_mb = mb;
                 // Budgets in the pathological band are only accepted when the caller means it.
-                if (mb > 0 && mb < bmoe::MoeStreamConfig::cache_min_mb) m.force_cache = true;
+                m.force_cache = iv[I_FORCE_CACHE] != 0;
                 cache_on = mb > 0;
                 break;
             }
@@ -290,6 +387,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
 #else
         m.overlap = false; // the ggml-cpu expert-ready hook is not compiled in (patch 0002 missing)
 #endif
+        if (!m.overlap || !cache_on) m.io_two_wave = false;
         const int prefetch = std::clamp<int>(iv[I_PREFETCH_LAYERS], 0, bmoe::MoeStreamConfig::prefetch_layers_max);
         if (prefetch > 0 && cache_on) m.prefetch_layers = prefetch;
         if (iv[I_PREDICT_PREFETCH] != 0 && cache_on && m.prefetch_layers == 0) {
@@ -319,7 +417,21 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
     } else if (iv[I_SPEC_SOURCE] == 2) {
         cfg.spec.source = bmoe::DraftSource::ngram;
         cfg.spec.draft_max = std::clamp<int>(iv[I_DRAFT_MAX], 1, bmoe::SpecConfig::draft_max_limit);
+        const int ngram_max = std::clamp<int>(iv[I_NGRAM_MAX_MATCH], 1, bmoe::SpecConfig::ngram_match_limit);
+        cfg.spec.ngram_max_match = ngram_max;
+        cfg.spec.ngram_min_match = std::clamp<int>(iv[I_NGRAM_MIN_MATCH], 1, ngram_max);
     }
+#ifdef BMOE_HAVE_HEXAGON
+    // With speculation the CPU decode graph is 1 + draft_max positions wide, not one token. Every device
+    // graph has to be wider than that or llama.cpp could reuse a CPU-scheduled graph for a device one
+    // (see PrefillDeviceConfig). Raise the user's threshold rather than refuse the load over a tuning knob.
+    if (npu_requested && cfg.spec.enabled() && cfg.prefill.min_tokens <= cfg.spec.draft_max + 1) {
+        const int raised = cfg.spec.draft_max + 2;
+        LOGW("NPU prefill min tokens %d is not above the speculative verify width %d; using %d",
+             cfg.prefill.min_tokens, cfg.spec.draft_max + 1, raised);
+        cfg.prefill.min_tokens = raised;
+    }
+#endif
 
 #ifdef BMOE_PIN_FAST_CORES
     g_n_threads.store(cfg.n_threads > 0 ? cfg.n_threads : 4);
@@ -346,6 +458,9 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
     info += std::string("overlap=") + (cfg.moe.overlap ? "1" : "0") + "\n";
     info += std::string("streaming=") + (streaming ? "1" : "0") + "\n";
     info += std::string("vision=") + (opened->supports_vision() ? "1" : "0") + "\n";
+    // Session::open fails if the HTP path was requested but could not initialise. `ready` therefore
+    // means the loaded model has an initialised prefill path, not that every prompt op will offload.
+    info += std::string("npu_prefill=") + (cfg.prefill.enabled() ? "ready" : "off") + "\n";
 
     std::unique_ptr<bmoe::IMetricsSink> csv;
     if (!csv_path.empty()) {
@@ -358,6 +473,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
         g_session = std::shared_ptr<bmoe::Session>(std::move(opened));
         g_csv_sink = std::move(csv);
         g_model_info = info;
+        g_npu_prefill_requested.store(cfg.prefill.enabled(), std::memory_order_release);
     }
     LOGI("Session opened");
     LOGI("CPU features compiled in: neon=%d fp16_va=%d dotprod=%d i8mm=%d", ggml_cpu_has_neon(), ggml_cpu_has_fp16_va(),
@@ -377,9 +493,14 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeCapabilities(JNIEnv *, jobj
     caps |= 2;
 #endif
 #ifdef BMOE_HAVE_HEXAGON
-    caps |= 4;
+    if (npu_runtime_status().available) caps |= 4;
 #endif
     return caps;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeNpuStatus(JNIEnv * env, jobject) {
+    return to_bytes(env, npu_runtime_status().message);
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -526,7 +647,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerate(
     }
 
     const bmoe::RunSummary & s = result.summary;
-    log_run_stats(s);
+    log_run_stats(s, g_npu_prefill_requested.load(std::memory_order_acquire));
     finish(true, result.cancelled, "", result.generated_text, result.reasoning_text, s.n_generated, s.n_prompt,
            s.n_past, s.tokens_per_second, s.prefill_seconds, s.cache_hit_pct);
     return JNI_TRUE;
@@ -665,6 +786,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerateChat(
         return JNI_TRUE;
     }
     const bmoe::RunSummary & sm = result.summary;
+    log_run_stats(sm, g_npu_prefill_requested.load(std::memory_order_acquire));
     finish(true, result.cancelled, "", result.generated_text, result.reasoning_text, result.tool_calls,
            result.stop_reason, result.stop_sequence, sm.n_generated, result.n_prompt_total, result.n_reused, sm.n_past,
            sm.tokens_per_second, sm.prefill_seconds, sm.cache_hit_pct);

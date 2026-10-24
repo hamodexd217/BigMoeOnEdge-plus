@@ -16,14 +16,27 @@ llama_token filler_token(const llama_vocab * vocab) {
     return t < 0 ? 0 : t;
 }
 
+// The layer a memory-module state tensor belongs to: llama.cpp names them "cache_<tag>_l<il>"
+// ("cache_k_l12", "cache_s_l3"). -1 when the name does not end that way, which callers treat as a
+// trunk tensor (moved, as before).
+int state_layer(const char * name) {
+    const char * us = std::strrchr(name, '_');
+    if (!us || us[1] != 'l' || !us[2]) return -1;
+    int il = 0;
+    for (const char * p = us + 2; *p; ++p) {
+        if (*p < '0' || *p > '9') return -1;
+        il = il * 10 + (*p - '0');
+    }
+    return il;
+}
+
 } // namespace
 
 ggml_backend_dev_t PrefillPath::find_device(const std::string & name, std::string & err) {
     if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(name.c_str())) {
-        // A registered device can still fail to open: Hexagon registers on any phone with the fastrpc
-        // driver, and only opening a session finds a DSP its kernels were not built for. Open it here,
-        // before the load, where a failure can still leave the run on the CPU; the backend keeps the
-        // session it opened, so the context's own init reuses it.
+        // A registered device can still fail to open: registry presence alone does not prove that a
+        // usable DSP runtime/skeleton is installed. Probe now for a useful load error; the session path
+        // reopens HTP as needed and fails model loading too if that second initialization fails.
         std::string what = "no backend";
         ggml_backend_t probe = nullptr;
         try {
@@ -84,7 +97,7 @@ bool PrefillPath::open(llama_context * ctx,
                        RouterHook & hook,
                        const PrefillDeviceConfig & cfg,
                        const MoeStreamConfig & moe,
-                       int n_layer_streamed,
+                       int n_layer_trunk,
                        std::string & err) {
     hook_ = &hook;
     auto fail = [&](const std::string & what) {
@@ -104,10 +117,15 @@ bool PrefillPath::open(llama_context * ctx,
     // a row gather and the output head computes the last position alone, so both stay with the CPU:
     // moving them would buy nothing and cost their size in device memory. The usage test drops the
     // graph inputs and KV views the capture records alongside.
+    //
+    // Only the trunk. With an embedded MTP head the speculative capture also saw the head's layer
+    // (blk.<n_layer_trunk>.*); the draft context runs it on the host, so it must keep its host binding.
     std::vector<ggml_tensor *> layer_weights;
     for (ggml_tensor * t : hook.captured_weight_objects()) {
         if (std::strncmp(t->name, "blk.", 4) != 0) continue;
         if (!t->buffer || ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) continue;
+        int il = -1;
+        if (std::sscanf(t->name, "blk.%d.", &il) == 1 && il >= n_layer_trunk) continue;
         layer_weights.push_back(t);
     }
     // Streaming means the model does not fit, and then the layer weights cannot be resident on the
@@ -116,8 +134,8 @@ bool PrefillPath::open(llama_context * ctx,
     // paced at each layer's last node — which the capture must have found for every layer, or the
     // pacing has nowhere to wait and the copy stays resident.
     std::vector<std::vector<ggml_tensor *>> dense_per_layer;
-    if (moe.enabled && hook.learned_layer_ends()) {
-        dense_per_layer.resize((size_t) n_layer_streamed);
+    if (moe.enabled && hook.learned_layer_ends(n_layer_trunk)) {
+        dense_per_layer.resize((size_t) n_layer_trunk);
         for (ggml_tensor * t : layer_weights) {
             int il = -1;
             if (std::sscanf(t->name, "blk.%d.", &il) == 1 && il >= 0 && il < (int) dense_per_layer.size())
@@ -132,8 +150,21 @@ bool PrefillPath::open(llama_context * ctx,
     dev_ = std::make_unique<PrefillDevice>();
     std::string perr;
     if (!dev_->init(devs_[0], layer_weights, hook.non_matrix_weights(), perr)) return fail(": " + perr);
+    // The draft context's KV cache is a state tensor too (its layer index is the head's). It stays put:
+    // that context is cleared and rolled back through its own memory module, which does not know the
+    // tensors were moved.
+    std::vector<ggml_tensor *> trunk_state;
+    for (ggml_tensor * t : hook.captured_state_objects()) {
+        const int il = state_layer(t->name);
+        if (il >= n_layer_trunk) continue;
+        trunk_state.push_back(t);
+    }
+    // The expert arena covers the trunk's layers only, for the same reason: the head's experts are
+    // served to the draft context by the host streamer.
+    for (size_t il = (size_t) n_layer_trunk; il < arena_layers_.size(); ++il)
+        arena_layers_[il].bound = false;
     std::string state_where;
-    if (!dev_->init_state(devs_[0], hook.captured_state_objects(), state_where, perr)) return fail(": " + perr);
+    if (!dev_->init_state(devs_[0], trunk_state, state_where, perr)) return fail(": " + perr);
     std::fprintf(stderr, "bmoe: prefill-device model state: %.1f MiB in %s\n",
                  (double) dev_->state_bytes() / (1024.0 * 1024.0), state_where.c_str());
     if (moe.enabled && !open_arena(cfg, moe, dense_per_layer, err)) return false;

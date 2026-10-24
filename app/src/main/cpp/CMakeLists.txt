@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project("onedge-engine" VERSION 0.28.0 LANGUAGES C CXX)
+project("onedge-engine" VERSION 0.28.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,8 +64,9 @@ if(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
 endif()
 
 # ---- llama.cpp (vendored snapshot) -------------------------------------------------------------
-# third_party/llama.cpp is upstream ggml-org/llama.cpp at 965f897 (2026-09-26, the commit BigMoeOnEdge 0.28.0
-# pins; carries qwen4exp), pruned, plus patches/0002 (expert-ready hook). core/CMakeLists.txt detects the hook
+# third_party/llama.cpp is the vendored 965f897 (2026-09-26) tree with qwen4exp and the local expert-ready hook.
+# The upstream 0.33.2 tree refers to a newer Helldez/llama.cpp submodule that was not included in its source ZIP;
+# do not claim this vendored tree has been upgraded to that revision. core/CMakeLists.txt detects the local hook
 # in ggml-cpu.h and defines BMOE_HAVE_EXPERT_READY_HOOK.
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     message(FATAL_ERROR "third_party/llama.cpp is missing. See README.md (Native build).")
@@ -73,7 +74,7 @@ endif()
 add_subdirectory(third_party/llama.cpp llama_build EXCLUDE_FROM_ALL)
 set(BMOE_HAVE_LLAMA ON)
 
-# ---- BigMoeOnEdge core (upstream 0.28.0 + local patches) --------------------------------------
+# ---- BigMoeOnEdge core (0.28.0 baseline + local patches and compatible fixes) ----------------
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/core/CMakeLists.txt")
     message(FATAL_ERROR "core/ is missing. See README.md (Native build).")
 endif()
