@@ -6,7 +6,12 @@ data class SamplingOverride(
     val topP: Float,
     val topK: Int,
     /** -1 = random. */
-    val seed: Int = -1
+    val seed: Int = -1,
+    val minP: Float = 0f,
+    val repeatPenalty: Float = 1f,
+    val repeatLastN: Int = 64,
+    val frequencyPenalty: Float = 0f,
+    val presencePenalty: Float = 0f
 )
 
 /**
@@ -23,7 +28,9 @@ data class ChatGenRequest(
     val maxTokens: Int,
     val think: Boolean,
     val stop: List<String> = emptyList(),
-    val sampling: SamplingOverride? = null
+    val sampling: SamplingOverride? = null,
+    /** JSON Schema supplied by OpenAI response_format; empty means ordinary unconstrained chat. */
+    val jsonSchema: String = ""
 )
 
 data class ChatToolCall(val id: String, val name: String, val arguments: String)

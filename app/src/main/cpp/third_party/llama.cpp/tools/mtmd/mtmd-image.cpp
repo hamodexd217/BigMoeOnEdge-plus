@@ -769,6 +769,44 @@ mtmd_image_preproc_out mtmd_image_preprocessor_fixed_size::preprocess(const clip
 // mtmd_image_preprocessor_dyn_size
 //
 
+//
+// mtmd_image_preprocessor_lfm3vl
+//
+
+// rounds before the pixel checks (an edge may round to 0) and computes in double, as transformers does
+clip_image_size mtmd_image_preprocessor_lfm3vl::smart_resize(int width, int height, int factor, int64_t min_pixels, int64_t max_pixels) {
+    const double h = height;
+    const double w = width;
+    int h_bar = static_cast<int>(std::nearbyint(h / factor)) * factor;
+    int w_bar = static_cast<int>(std::nearbyint(w / factor)) * factor;
+    if (static_cast<int64_t>(h_bar) * w_bar > max_pixels) {
+        const double beta = std::sqrt(h * w / max_pixels);
+        h_bar = static_cast<int>(std::floor(h / beta / factor)) * factor;
+        w_bar = static_cast<int>(std::floor(w / beta / factor)) * factor;
+    } else if (static_cast<int64_t>(h_bar) * w_bar < min_pixels) {
+        const double beta = std::sqrt(min_pixels / (h * w));
+        h_bar = static_cast<int>(std::ceil(h * beta / factor)) * factor;
+        w_bar = static_cast<int>(std::ceil(w * beta / factor)) * factor;
+    }
+
+    return {std::max(factor, w_bar), std::max(factor, h_bar)};
+}
+
+mtmd_image_preproc_out mtmd_image_preprocessor_lfm3vl::preprocess(const clip_image_u8 & img) const {
+    GGML_ASSERT(hparams.image_min_pixels > 0 && hparams.image_max_pixels > 0);
+    clip_image_u8 resized_image;
+    const clip_image_size target_size = smart_resize(img.get_size().width, img.get_size().height,
+                                                     hparams.patch_size * hparams.n_merge,
+                                                     hparams.image_min_pixels, hparams.image_max_pixels);
+    img_tool::resize(img, resized_image, target_size,
+                        hparams.image_resize_algo,
+                        hparams.image_resize_pad,
+                        hparams.image_pad_color);
+    mtmd_image_preproc_out output;
+    output.append(hparams, resized_image, true);
+    return output;
+}
+
 mtmd_image_preproc_out mtmd_image_preprocessor_dyn_size::preprocess(const clip_image_u8 & img) const {
     GGML_ASSERT(hparams.image_min_pixels > 0 && hparams.image_max_pixels > 0);
     clip_image_u8 resized_image;

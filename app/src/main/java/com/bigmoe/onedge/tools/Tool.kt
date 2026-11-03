@@ -2,7 +2,7 @@ package com.bigmoe.onedge.tools
 
 import org.json.JSONObject
 
-enum class ToolCategory { FILES, CODE, WEB, UTILITIES }
+enum class ToolCategory { FILES, CODE, WEB, UTILITIES, EXTERNAL }
 
 /** Which chat message a tool call belongs to (so created files can be linked to it). */
 data class ToolContext(val sessionId: String, val messageId: String) {

@@ -38,3 +38,13 @@ grammar means rebuilding or extending that chain inside `generate()`, touching t
 (MTP/n-gram verify and rollback assume the chain state), (2) it cannot be compiled or tested in this environment
 (no NDK, no device, no model), and a sampler bug corrupts every generation, (3) the tolerant parser + retry covers
 the failure mode in practice. If wanted later, add it as `patches/0002-…` and test on a device first.
+
+## External tools (0.6.5)
+
+Settings → Tools, web search, pictures & videos → Tools → *External tools* (also under the wrench button in the chat) lets the model call tools you add yourself. Two kinds:
+
+**HTTP tool** — one web address. Give it a name, a description (the model reads it), the address and the arguments, one per line (`city: City to look up`; `units?: …` marks an optional one). `{city}` in the address is replaced by the URL-encoded value; remaining arguments go in the query string for GET / DELETE or as a JSON body for POST / PUT. Header lines such as `Authorization: Bearer KEY` are sent with every request.
+
+**MCP server** — a server that speaks MCP's *Streamable HTTP* transport (JSON-RPC over POST, answered as JSON or as an event stream). *Connect and fetch tools* lists what it offers; tick the ones to give the model (at most 12 per server go into the prompt). The list is cached, so registering the tools needs no network; each call goes to the server live. Not supported: the older two-endpoint HTTP+SSE transport, local stdio servers, MCP resources/prompts, OAuth sign-in (send a token header instead).
+
+Safety: every call asks first by default and shows the address and what will be sent; this can be switched off per entry. Result text from external tools is marked untrusted in the prompt. Names are made unique and can never replace a built-in tool. Code: `tools/ExternalTools.kt`, `tools/McpClient.kt`, `ToolManager.syncExternalTools`.

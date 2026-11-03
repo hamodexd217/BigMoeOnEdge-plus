@@ -1,4 +1,5 @@
 #include "bmoe/session.h"
+#include "cache_brake.h"
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
@@ -188,6 +189,40 @@ StopScan scan_stops(const std::string & text, const std::vector<std::string> & s
     return r;
 }
 
+// True when any of the penalty stages would change a logit.
+bool penalties_active(const SamplingConfig & s) {
+    return s.repeat_last_n != 0 &&
+           (s.repeat_penalty != 1.0f || s.freq_penalty != 0.0f || s.presence_penalty != 0.0f);
+}
+
+// Builds the sampler chain for one set of sampling settings, using only the public llama_sampler_* API:
+//   [penalties] -> top_k -> top_p -> [min_p] -> temp -> dist          (temp > 0)
+//   penalties -> greedy                                               (temp <= 0 with penalties)
+// Returns nullptr when nothing is requested, which leaves the decode loop on plain argmax (the deterministic
+// default). `allow_penalties` is false while speculative decoding is on: verification compares argmax against
+// argmax, and a penalty stage would change what the argmax is.
+llama_sampler * build_sampler_chain(const SamplingConfig & s, int n_vocab, int n_ctx, bool allow_penalties) {
+    const bool penalties = allow_penalties && penalties_active(s);
+    if (s.temp <= 0.0f && !penalties) return nullptr;
+
+    llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (penalties) {
+        const int32_t last_n = s.repeat_last_n < 0 ? std::max(1, n_ctx) : s.repeat_last_n;
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(n_vocab, last_n, s.repeat_penalty,
+                                                                    s.freq_penalty, s.presence_penalty));
+    }
+    if (s.temp > 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_k(s.top_k));
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(s.top_p, /*min_keep*/ 1));
+        if (s.min_p > 0.0f) llama_sampler_chain_add(chain, llama_sampler_init_min_p(s.min_p, /*min_keep*/ 1));
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(s.temp));
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(s.seed));
+    } else {
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    }
+    return chain;
+}
+
 llama_token argmax(const float * logits, int n_vocab) {
     llama_token best = 0;
     float best_v = logits[0];
@@ -361,6 +396,8 @@ struct Session::Impl {
     bool kv_has_media = false;
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
+    // The compute reference is per session and survives across turns.
+    CacheBrake brake;
 
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
@@ -1020,13 +1057,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // public llama_sampler_* API (hard rule 1): common_sampler lives in the non-stable common layer.
     static_assert(SamplingConfig{}.seed == LLAMA_DEFAULT_SEED,
                   "SamplingConfig::seed default must mirror LLAMA_DEFAULT_SEED");
-    if (cfg.sampling.temp > 0.0f) {
-        im.smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_top_k(cfg.sampling.top_k));
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_top_p(cfg.sampling.top_p, /*min_keep*/ 1));
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_temp(cfg.sampling.temp));
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_dist(cfg.sampling.seed));
-    }
+    im.smpl = build_sampler_chain(cfg.sampling, im.n_vocab, cfg.n_ctx, /*allow_penalties*/ !cfg.spec.enabled());
 
     // One abort callback for the session's whole life, checking two independent predicates:
     // an explicit cancel() request (any mode) and a fatal streaming I/O error (overlap only).
@@ -1287,7 +1318,15 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     if (im.prefill) {
         std::string perr;
-        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, im.n_layer, perr)) return fail(perr);
+        bool prefill_ok = false;
+        try {
+            prefill_ok = im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, im.n_layer, perr);
+        } catch (const std::exception & e) {
+            // Buffer allocation / mapping on the device throws instead of returning an error. Without this the
+            // exception reaches the JNI boundary and aborts the app; as a load error it just fails this load.
+            perr = std::string("prefill device ") + cfg.prefill.device + ": " + e.what();
+        }
+        if (!prefill_ok) return fail(perr);
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
@@ -1462,6 +1501,8 @@ RunResult Session::generate(const GenerateRequest & req,
 
     // Stateless chat mode (patch 0004): the whole conversation arrives as OpenAI-format JSON each time.
     const bool stateless = !req.chat_messages_json.empty();
+    const bool structured = stateless && !req.json_schema.empty();
+    if (!stateless && !req.json_schema.empty()) return fail("structured output requires the stateless chat API path");
     if (stateless && !im.chat_on) return fail("chat API requests need chat mode (a model with a chat template)");
     if (stateless && !req.images.empty()) return fail("images are not supported on the chat API path");
 
@@ -1470,16 +1511,9 @@ RunResult Session::generate(const GenerateRequest & req,
     std::unique_ptr<llama_sampler, void (*)(llama_sampler *)> smpl_req(nullptr, llama_sampler_free);
     llama_sampler * smpl_use = im.smpl;
     if (req.sampling_override) {
-        if (req.sampling.temp > 0.0f) {
-            smpl_req.reset(llama_sampler_chain_init(llama_sampler_chain_default_params()));
-            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_top_k(req.sampling.top_k));
-            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_top_p(req.sampling.top_p, /*min_keep*/ 1));
-            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_temp(req.sampling.temp));
-            llama_sampler_chain_add(smpl_req.get(), llama_sampler_init_dist(req.sampling.seed));
-            smpl_use = smpl_req.get();
-        } else {
-            smpl_use = nullptr;
-        }
+        // Speculative decoding verifies against argmax, so the penalty stages (which change the argmax) stay off then.
+        smpl_req.reset(build_sampler_chain(req.sampling, im.n_vocab, im.cfg.n_ctx, /*allow_penalties*/ !im.cfg.spec.enabled()));
+        smpl_use = smpl_req.get(); // null = plain greedy argmax
     }
 
     const bool image_turn = !req.images.empty();
@@ -1530,6 +1564,8 @@ RunResult Session::generate(const GenerateRequest & req,
     bool history_pushed = false;   // did we append this turn's user message to chat_history?
     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
+    detail::ToolGrammar grammar;
+    std::vector<llama_token_data> grammar_candidates;
     const size_t history_base = im.chat_history.size();
     if (stateless) {
         try {
@@ -1546,9 +1582,17 @@ RunResult Session::generate(const GenerateRequest & req,
             if (!req.chat_tool_choice.empty())
                 inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(req.chat_tool_choice);
             inputs.parallel_tool_calls = true;
+            inputs.json_schema = req.json_schema;
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;
             parse_params = detail::build_parse_params(cp);
+            std::string grammar_err;
+            const bool grammar_ready = grammar.init(cp, im.vocab, grammar_err);
+            if (structured && (!grammar_ready || !grammar.active()))
+                return fail("the model's chat template cannot apply response_format: " +
+                            (grammar_err.empty() ? std::string("no response grammar was produced") : grammar_err));
+            if (!grammar_ready)
+                std::fprintf(stderr, "bmoe: tool-call grammar not applied (%s)\n", grammar_err.c_str());
         } catch (const std::exception & e) {
             // No raw-prompt fallback here: there is no single "prompt" to fall back to.
             return fail(std::string("chat request could not be rendered with this model's template: ") + e.what());
@@ -1841,8 +1885,10 @@ RunResult Session::generate(const GenerateRequest & req,
     // head", which is the only thing that needs the second context and llama.cpp's `common`
     // speculative driver. Conflating them is what would make the n-gram source pay for a draft
     // context it never uses.
-    const bool spec_on = im.cfg.spec.enabled() && !image_turn;
-    const bool mtp_on = im.mtp != nullptr && !image_turn;
+    // A grammar has its own token state. Until grammar state is carried across speculative drafts,
+    // keep grammar-constrained turns on the verified one-token path; ordinary chat keeps MTP untouched.
+    const bool spec_on = im.cfg.spec.enabled() && !image_turn && !grammar.active();
+    const bool mtp_on = im.mtp != nullptr && !image_turn && !grammar.active();
 #ifdef BMOE_HAVE_MTMD
     if (image_turn) {
         im.kv_has_media = true;
@@ -1980,6 +2026,27 @@ RunResult Session::generate(const GenerateRequest & req,
     // where the last decode ended so each token can report the gap it actually waited through.
     auto loop_mark = clock_t_::now();
     double loop_overhead_s = 0.0;
+    double last_compute_s = 0.0;
+    auto brake_cache = [&]() {
+        if (!moe.enabled || !moe.cache_brake || last_compute_s <= 0.0) return;
+        const IExpertSource::Stats cache_stats = im.source.stats();
+        const size_t budget = (size_t) cache_stats.cache_budget_bytes;
+        if (budget == 0) return;
+        const double reference = im.brake.reference();
+        if (!im.brake.stalled(last_compute_s)) return;
+        // The expensive residency check runs only when the compute-time signal says the token stalled.
+        const double lost = im.source.cache_lost_frac(64);
+        if (lost <= 0.0) return; // slow for another reason, or the platform could not sample.
+        const size_t floor = im.source.worst_cycle_bytes(im.n_expert_used);
+        if (floor == 0) return; // unknown model/top-k: decline to alter the live cache.
+        const size_t next = CacheBrake::braked(budget, floor);
+        if (next >= budget) return;
+        im.source.set_cache_budget(next);
+        std::fprintf(stderr,
+                     "bmoe: cache brake: compute %.0f ms vs %.0f ms reference; %.0f%% of sampled cache pages "
+                     "not resident; cache %zu -> %zu MiB\n",
+                     last_compute_s * 1000.0, reference * 1000.0, lost * 100.0, budget >> 20, next >> 20);
+    };
 
     // Absolute position the next decoded token occupies. Prefill left the context filled up to
     // n_prompt-1; without speculation this simply tracks n_prompt + n_gen, but a verify decode
@@ -2006,7 +2073,53 @@ RunResult Session::generate(const GenerateRequest & req,
     // to the resident reference the gates check); with a sampling chain, draw from the context's
     // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
     // would have read.
-    llama_token tok = smpl_use ? llama_sampler_sample(smpl_use, ctx, -1) : argmax(logits, im.n_vocab);
+    auto sample_token = [&](int32_t row) -> llama_token {
+        if (!grammar.active()) {
+            const float * row_logits = llama_get_logits_ith(ctx, row);
+            if (smpl_use) return llama_sampler_sample(smpl_use, ctx, row);
+            return row_logits ? argmax(row_logits, im.n_vocab) : LLAMA_TOKEN_NULL;
+        }
+
+        // Apply the grammar BEFORE the sampling chain. Sampling first would accept a disallowed
+        // token into stateful samplers (notably the RNG), then sampling a second time from a
+        // constrained candidate set would silently advance that state twice.
+        const float * row_logits = llama_get_logits_ith(ctx, row);
+        if (!row_logits) return LLAMA_TOKEN_NULL;
+        grammar_candidates.resize((size_t) im.n_vocab);
+        for (llama_token v = 0; v < im.n_vocab; ++v)
+            grammar_candidates[(size_t) v] = {v, row_logits[v], 0.0f};
+        llama_token_data_array cur = {grammar_candidates.data(), grammar_candidates.size(), -1, false};
+        grammar.constrain(&cur);
+        const bool dead_end = std::none_of(cur.data, cur.data + cur.size,
+                                           [](const llama_token_data & c) { return std::isfinite(c.logit); });
+        if (dead_end) return LLAMA_TOKEN_NULL;
+
+        llama_token picked = LLAMA_TOKEN_NULL;
+        if (smpl_use) {
+            llama_sampler_apply(smpl_use, &cur);
+            if (cur.selected >= 0 && (size_t) cur.selected < cur.size &&
+                std::isfinite(cur.data[cur.selected].logit)) {
+                picked = cur.data[cur.selected].id;
+                llama_sampler_accept(smpl_use, picked);
+            }
+        } else {
+            float best_logit = -std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < cur.size; ++i) {
+                if (std::isfinite(cur.data[i].logit) && cur.data[i].logit > best_logit) {
+                    best_logit = cur.data[i].logit;
+                    picked = cur.data[i].id;
+                }
+            }
+        }
+        if (picked == LLAMA_TOKEN_NULL || (structured && !grammar.allows(picked))) return LLAMA_TOKEN_NULL;
+        grammar.accept(picked);
+        return picked;
+    };
+    llama_token tok = sample_token(-1);
+    if (tok == LLAMA_TOKEN_NULL) {
+        rollback_turn();
+        return fail("the response grammar could not select a valid token");
+    }
 
     bool stop_hit = false;     // a stateless-chat stop string matched
     std::string stop_seq;
@@ -2230,9 +2343,10 @@ RunResult Session::generate(const GenerateRequest & req,
                     }
                 }
             }
-            if (e == 0)
+            if (e == 0) {
                 tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr, sink != nullptr);
-            else
+                last_compute_s = std::max(0.0, m.compute_ms / 1000.0);
+            } else
                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr, sink != nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
@@ -2245,6 +2359,7 @@ RunResult Session::generate(const GenerateRequest & req,
         if (spec_on)
             for (size_t k = n_emitted_here; k < (size_t) (1 + n_acc); ++k) group_surplus.push_back(verify_toks[k]);
 
+        brake_cache(); // safe boundary between decode calls
         if (stop_hit) break;
         if (eog_hit) {
             natural_end = true;
@@ -2256,7 +2371,11 @@ RunResult Session::generate(const GenerateRequest & req,
         n_past += 1 + n_acc;
         const int32_t row = wide ? n_acc : -1;
         logits = llama_get_logits_ith(ctx, row);
-        tok = smpl_use ? llama_sampler_sample(smpl_use, ctx, row) : argmax(logits, im.n_vocab);
+        tok = sample_token(row);
+        if (tok == LLAMA_TOKEN_NULL) {
+            rollback_turn();
+            return fail("the response grammar could not select a valid token");
+        }
     }
 
     // Speculation can leave the KV ahead of what the caller received: an accepted end-of-generation
@@ -2406,12 +2525,23 @@ RunResult Session::generate(const GenerateRequest & req,
     // it; a reasoning model's answer is the whole turn's output, so that was not a small double.
     common_chat_msg final_msg;
     bool final_parsed = false;
-    if (chat_on && !prefilled_answer) {
+    if (chat_on && (!prefilled_answer || structured)) {
         try {
             final_msg = common_chat_parse(gen, /*is_partial*/ false, parse_params);
             final_parsed = true;
         } catch (const std::exception & e) {
+            if (structured) {
+                rollback_turn();
+                return fail(std::string("the completed response could not be parsed: ") + e.what());
+            }
             detail::warn_parse_failed_once(e.what());
+        }
+    }
+    if (structured) {
+        std::string json_error;
+        if (!final_parsed || detail::parsed_nothing(final_msg) || !detail::validate_json_response(final_msg, json_error)) {
+            rollback_turn();
+            return fail(json_error.empty() ? "the completed response did not satisfy the requested JSON format" : json_error);
         }
     }
     if (final_parsed) {

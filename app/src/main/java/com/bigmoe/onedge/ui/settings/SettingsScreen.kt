@@ -1,5 +1,6 @@
 package com.bigmoe.onedge.ui.settings
 
+import com.bigmoe.onedge.ui.theme.AppCard
 import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -50,6 +52,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -64,11 +67,14 @@ import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.data.local.datastore.CACHE_AUTO_MB
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import com.bigmoe.onedge.data.local.datastore.WebSearchMode
 import com.bigmoe.onedge.data.local.datastore.loadConfigDiffers
 import com.bigmoe.onedge.ui.theme.PalettePresets
 import com.bigmoe.onedge.ui.theme.PaletteSpec
 import com.bigmoe.onedge.ui.theme.PaletteStore
+import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.ui.theme.appSurfaceModifier
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -127,10 +133,14 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surface else Color.Transparent
+                ),
                 title = { Text("SETTINGS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold) }
             )
         },
-        modifier = modifier
+        modifier = modifier,
+        containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.background else Color.Transparent
     ) { innerPadding ->
         val settings = loaded
         if (settings == null) {
@@ -174,6 +184,11 @@ private fun SettingsContent(
     var temp by remember { mutableFloatStateOf(settings.temperature) }
     var topP by remember { mutableFloatStateOf(settings.topP) }
     var topK by remember { mutableFloatStateOf(settings.topK.toFloat()) }
+    var minP by remember { mutableFloatStateOf(settings.minP) }
+    var repeatPenalty by remember { mutableFloatStateOf(settings.repeatPenalty) }
+    var repeatLastN by remember { mutableFloatStateOf(settings.repeatLastN.toFloat()) }
+    var frequencyPenalty by remember { mutableFloatStateOf(settings.frequencyPenalty) }
+    var presencePenalty by remember { mutableFloatStateOf(settings.presencePenalty) }
     var seedText by remember { mutableStateOf(settings.seed.toString()) }
     var cacheFloorText by remember { mutableStateOf(settings.cacheFloorMb.toString()) }
     var contextText by remember { mutableStateOf(settings.contextLength.toString()) }
@@ -182,7 +197,7 @@ private fun SettingsContent(
     var performanceExpanded by remember { mutableStateOf(false) }
     var toolsMediaExpanded by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
-    var appearanceExpanded by remember { mutableStateOf(true) }
+    var appearanceExpanded by remember { mutableStateOf(false) }
     var chatExpanded by remember { mutableStateOf(false) }
     var mediaExpanded by remember { mutableStateOf(false) }
     var toolsExpanded by remember { mutableStateOf(false) }
@@ -190,6 +205,9 @@ private fun SettingsContent(
     var workspaceExpanded by remember { mutableStateOf(false) }
     var editingPalette by remember { mutableStateOf<PaletteSpec?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
+
+    // Reveal the reload action automatically whenever a load-sensitive setting diverges from the live session.
+    LaunchedEffect(reloadNeeded) { if (reloadNeeded) modelExpanded = true }
 
     LaunchedEffect(systemPrompt) {
         if (systemPrompt != settings.systemPrompt) { delay(DEBOUNCE_MS); viewModel.updateSystemPrompt(systemPrompt) }
@@ -226,6 +244,22 @@ private fun SettingsContent(
             // ------------------------------------------------------------ appearance
             val custom = PaletteStore.parse(settings.customPalettesJson)
             val selectedCustom = custom.firstOrNull { it.id == settings.themeId }
+            Text("Surface style", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text("Choose how major surfaces look. Gradient tints every surface from your palette. Glass uses translucent frosted panels with light-catching edges over soft colour glows.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                listOf(
+                    AppVisualStyle.SOLID to "Solid colors",
+                    AppVisualStyle.GRADIENT to "Gradient",
+                    AppVisualStyle.LIQUID_GLASS to "Glass"
+                ).forEach { (style, label) ->
+                    if (settings.visualStyle == style) {
+                        Button(onClick = { viewModel.updateVisualStyle(style) }, modifier = Modifier.weight(1f)) { Text(label, textAlign = TextAlign.Center) }
+                    } else {
+                        OutlinedButton(onClick = { viewModel.updateVisualStyle(style) }, modifier = Modifier.weight(1f)) { Text(label, textAlign = TextAlign.Center) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
             val recommendedIds = listOf("paper", "pearl", "mint", "graphite", "ocean")
             val recommended = recommendedIds.mapNotNull { PalettePresets.byId(it) }
             val otherPresets = PalettePresets.all.filterNot { p -> recommendedIds.contains(p.id) }
@@ -708,16 +742,26 @@ private fun SettingsContent(
             Slider(value = topP, onValueChange = { topP = it }, onValueChangeFinished = { viewModel.updateTopP(topP) }, valueRange = 0.05f..1f)
             Text("Top K: ${topK.toInt()}")
             Slider(value = topK, onValueChange = { topK = it }, onValueChangeFinished = { viewModel.updateTopK(topK.toInt()) }, valueRange = 0f..100f)
+            Text("Min P: ${if (minP <= 0f) "off" else "%.2f".format(java.util.Locale.US, minP)}")
+            Slider(value = minP, onValueChange = { minP = it }, onValueChangeFinished = { viewModel.updateMinP(minP) }, valueRange = 0f..0.5f)
+            Text("Repetition penalty: ${if (repeatPenalty == 1f) "off" else "%.2f".format(java.util.Locale.US, repeatPenalty)}")
+            Slider(value = repeatPenalty, onValueChange = { repeatPenalty = (Math.round(it * 20f) / 20f) }, onValueChangeFinished = { viewModel.updateRepeatPenalty(repeatPenalty) }, valueRange = 1f..1.5f)
+            Text("Repeat window: ${if (repeatLastN <= 0f) "off" else "${repeatLastN.toInt()} tokens"}")
+            Slider(value = repeatLastN, onValueChange = { repeatLastN = (Math.round(it / 16f) * 16f).coerceIn(0f, 1024f) }, onValueChangeFinished = { viewModel.updateRepeatLastN(repeatLastN.toInt()) }, valueRange = 0f..1024f)
+            Text("Frequency penalty: ${"%.2f".format(java.util.Locale.US, frequencyPenalty)}")
+            Slider(value = frequencyPenalty, onValueChange = { frequencyPenalty = (Math.round(it * 20f) / 20f) }, onValueChangeFinished = { viewModel.updateFrequencyPenalty(frequencyPenalty) }, valueRange = 0f..1.5f)
+            Text("Presence penalty: ${"%.2f".format(java.util.Locale.US, presencePenalty)}")
+            Slider(value = presencePenalty, onValueChange = { presencePenalty = (Math.round(it * 20f) / 20f) }, onValueChangeFinished = { viewModel.updatePresencePenalty(presencePenalty) }, valueRange = 0f..1.5f)
             OutlinedTextField(
                 value = seedText,
                 onValueChange = { input -> seedText = input.filterIndexed { i, c -> c.isDigit() || (i == 0 && c == '-') } },
                 label = { Text("Sampling seed (-1 = random)") },
-                supportingText = { Text("Use -1 for a fresh random seed per run, or a non-negative number to make runs repeatable. Sampling changes apply after reloading the model.") },
+                supportingText = { Text("Use -1 for a fresh random seed per run, or a non-negative number to make runs repeatable. Sampling values are applied to the next request without reloading the model.") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                 modifier = Modifier.fillMaxWidth()
             )
-            Hint("Sampling is fixed when the model is opened. Temperature 0 = greedy decoding (always the most likely token). This engine does not expose a repetition-penalty setting.")
+            Hint("Temperature, Top-P, Top-K and seed are applied per request and do not require a model reload. Temperature 0 = greedy decoding (always the most likely token). Min P drops very unlikely tokens relative to the best one (needs temperature above 0). Repetition penalty above 1 makes tokens from the last \"Repeat window\" tokens less likely (1 = off; 1.05 to 1.15 is typical, higher can make answers odd). Frequency penalty grows with each repeat, presence penalty applies once. Penalties also work at temperature 0, but are switched off while Guess ahead is on, because it relies on plain greedy decoding.")
             Divider()
             } // compute group
 
@@ -781,6 +825,18 @@ private fun SettingsContent(
                 "Offline helpers: date and time, calculator, unit converter, random numbers, battery / storage / memory of this phone.",
                 settings.toolsUtilitiesEnabled
             ) { viewModel.updateToolsUtilitiesEnabled(it) }
+            SwitchRow(
+                "Native UI components",
+                "Lets the AI answer with compact in-chat visuals when your request calls for one (compare, pros and cons, timeline, steps, key numbers, slides): comparison tables, navigable slide cards, lists, metrics, badges, progress bars, timelines, expandable sections, selectable cards and action buttons. Rendered directly with Jetpack Compose from a small JSON block — no HTML, CSS, JavaScript or WebView. Off by default: it adds about 450 tokens to the system prompt. Also under the wrench button in the chat.",
+                settings.interactiveUiEnabled
+            ) { viewModel.updateInteractiveUiEnabled(it) }
+            SwitchRow(
+                "External tools",
+                "Lets the AI call the HTTP tools and MCP servers you add below. Each call can ask you first. Off by default. Also under the wrench button in the chat.",
+                settings.toolsExternalEnabled
+            ) { viewModel.updateToolsExternalEnabled(it) }
+            ExternalToolsSection(settings.externalToolsJson) { viewModel.updateExternalToolsJson(it) }
+            Hint("This setting uses native Android UI components only. It does not generate or execute HTML/CSS/JavaScript. Interactive Artifacts are a separate feature for standalone HTML, SVG or Mermaid previews.")
             ChoiceSetting(
                 "Longest tool result",
                 listOf(
@@ -824,7 +880,18 @@ private fun SettingsContent(
                 ),
                 selected = settings.webSearchMode
             ) { viewModel.updateWebSearchMode(it) }
-            Hint("Web and image search are switched on and off with the globe button in the chat.")
+            Hint("Web search itself is switched on and off with the globe button in the chat.")
+            SwitchRow(
+                "Allow image search",
+                "Lets the model use image_search while web search is enabled. Turn off to keep image-search calls out of the model's available tools.",
+                settings.imageSearchEnabled
+            ) { viewModel.updateImageSearchEnabled(it) }
+            SwitchRow(
+                "Search images after web search",
+                "After the app finishes a web search, automatically fetch a few related images and include their preview cards in the conversation. Adds network time and tool-result tokens; requires Allow image search.",
+                settings.autoImageSearchAfterWebSearch,
+                enabled = settings.imageSearchEnabled
+            ) { viewModel.updateAutoImageSearchAfterWebSearch(it) }
             Hint(
                 if (settings.webSearchMode == WebSearchMode.ALWAYS)
                     "Every message you send is searched first; the results are given to the model together with your message. Works with any model."
@@ -913,11 +980,11 @@ private fun PerformanceGroup(
     subtitle: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Card(
+    AppCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        base = MaterialTheme.colorScheme.surfaceContainerLow,
+        outline = true
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -969,11 +1036,15 @@ private fun SettingsFoldout(
     expanded: Boolean,
     onToggle: () -> Unit
 ) {
+    val shape = RoundedCornerShape(16.dp)
+    val styled = AppTheme.visualStyle != AppVisualStyle.SOLID
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        modifier = Modifier.fillMaxWidth()
+            .then(if (styled) appSurfaceModifier(shape, MaterialTheme.colorScheme.surfaceContainerLow) else Modifier)
+            .clickable(onClick = onToggle),
+        shape = shape,
+        color = if (styled) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerLow,
+        border = if (styled) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),

@@ -107,7 +107,8 @@ class SearchFilesTool(private val ws: Workspace) : Tool {
             Triple("query", "string", "Text or regex"),
             Triple("path", "string", "Folder or file (default: all)"),
             Triple("regex", "boolean", ""),
-            Triple("case_sensitive", "boolean", "")
+            Triple("case_sensitive", "boolean", ""),
+            Triple("context", "integer", "Lines to show around each match (0-5)")
         ),
         listOf("query")
     )
@@ -118,7 +119,8 @@ class SearchFilesTool(private val ws: Workspace) : Tool {
             TextSearch.format(
                 TextSearch.search(
                     ws, q, arguments.optString("path", ""), arguments.optBoolLenient("regex", false),
-                    arguments.optBoolLenient("case_sensitive", false)
+                    arguments.optBoolLenient("case_sensitive", false),
+                    contextLines = (arguments.optIntLenient("context") ?: 0).coerceIn(0, 5)
                 ), q
             )
         } catch (e: IllegalArgumentException) {
@@ -127,7 +129,7 @@ class SearchFilesTool(private val ws: Workspace) : Tool {
     }
 }
 
-class CreateFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
+class CreateFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?, private val history: EditHistory? = null) : Tool {
     override val name = "create_file"
     override val category = ToolCategory.FILES
     override val description = "Create a file (documents, code, pages, configs); the user sees it next to the chat. To change an existing file use edit_file."
@@ -166,7 +168,9 @@ class CreateFileTool(private val ws: Workspace, private val registry: ArtifactRe
         val content = arguments.requireString("content")
         if (content.length > MAX_CHARS) throw ToolInputException("content is too long (${content.length} chars, limit $MAX_CHARS); split it into several files")
         val existed = wsCall { if (ws.exists(path)) "y" else "" }.isNotEmpty()
+        val before = if (existed) try { ws.readText(path) } catch (_: WorkspaceException) { null } else null
         wsCall { ws.writeText(path, content, overwrite = arguments.optBoolLenient("overwrite", false)); "" }
+        if (before != null) history?.record(ws.normalize(path), before)
         val norm = ws.normalize(path)
         if (existed) registry?.updated(norm) else registry?.created(ctx, norm)
         return "${if (existed) "Replaced" else "Created"} $norm (${content.split("\n").size} lines, ${content.length} characters). The user can open it from the chat's files."
@@ -175,7 +179,7 @@ class CreateFileTool(private val ws: Workspace, private val registry: ArtifactRe
     companion object { const val MAX_CHARS = 200_000 }
 }
 
-class EditFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
+class EditFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?, private val history: EditHistory? = null) : Tool {
     override val name = "edit_file"
     override val category = ToolCategory.FILES
     override val description = "Replace exact text in a file. old_text must match exactly (copy it from read_file) and be unique unless replace_all=true. The user approves a diff. Several changes: edits=[{old_text,new_text},...]."
@@ -229,8 +233,9 @@ class EditFileTool(private val ws: Workspace, private val registry: ArtifactRegi
 
     override suspend fun execute(arguments: JSONObject): String {
         val path = arguments.requireString("path")
-        val (_, new) = compute(arguments) // recomputed: the file may have changed while the dialog was open
+        val (old, new) = compute(arguments) // recomputed: the file may have changed while the dialog was open
         wsCall { ws.writeText(path, new, overwrite = true); "" }
+        history?.record(ws.normalize(path), old)
         registry?.updated(ws.normalize(path))
         return "Edited ${ws.normalize(path)} (${new.split("\n").size} lines now)."
     }
@@ -269,15 +274,33 @@ class EditFileTool(private val ws: Workspace, private val registry: ArtifactRegi
 class RenameFileTool(private val ws: Workspace, private val registry: ArtifactRegistry?) : Tool {
     override val name = "rename_file"
     override val category = ToolCategory.FILES
-    override val description = "Rename or move a file/folder in the workspace; the target must not exist."
+    override val description = "Rename or move a file/folder in the workspace; with copy=true copy it instead (folders too). The target must not exist."
     override val parametersSchema = toolSchema(
-        listOf(Triple("path", "string", "Current path"), Triple("new_path", "string", "")),
+        listOf(Triple("path", "string", "Current path"), Triple("new_path", "string", ""), Triple("copy", "boolean", "Copy, keep the original")),
         listOf("path", "new_path")
     )
-    override fun describe(arguments: JSONObject) = "Renaming ${arguments.optString("path")}"
-    override suspend fun execute(arguments: JSONObject): String {
+    override fun describe(arguments: JSONObject) =
+        (if (arguments.optBoolLenient("copy", false)) "Copying " else "Renaming ") + arguments.optString("path")
+
+    override suspend fun execute(arguments: JSONObject): String = execute(arguments, ToolContext.NONE)
+
+    override suspend fun execute(arguments: JSONObject, ctx: ToolContext): String {
         val from = arguments.requireString("path")
         val to = arguments.requireString("new_path")
+        if (arguments.optBoolLenient("copy", false)) {
+            val src = wsCall { ws.resolve(from) }
+            val dst = wsCall { ws.resolve(to) }
+            if (!src.exists()) throw ToolInputException("No such file or folder: ${ws.normalize(from)}")
+            if (dst.exists()) throw ToolInputException("${ws.normalize(to)} already exists")
+            if (src.isDirectory && (dst.path + "/").startsWith(src.path + "/")) throw ToolInputException("cannot copy a folder into itself")
+            dst.parentFile?.mkdirs()
+            val ok = if (src.isDirectory) src.copyRecursively(dst, overwrite = false) else { src.copyTo(dst, overwrite = false); true }
+            if (!ok) throw ToolInputException("the copy did not finish")
+            val normTo = ws.normalize(to)
+            val created = if (dst.isDirectory) ws.walkFiles(normTo, maxFiles = 500).map { ws.relative(it) } else listOf(normTo)
+            for (p in created) registry?.created(ctx, p)
+            return "Copied ${ws.normalize(from)} to $normTo (${created.size} file(s))."
+        }
         wsCall { ws.rename(from, to); "" }
         registry?.renamed(ws.normalize(from), ws.normalize(to))
         return "Renamed ${ws.normalize(from)} to ${ws.normalize(to)}."
@@ -417,11 +440,15 @@ class ExportZipTool(private val ws: Workspace, private val registry: ArtifactReg
 }
 
 fun registerFileTools(manager: ToolManager, ws: Workspace, registry: ArtifactRegistry?) {
+    val history = EditHistory()
     manager.registerTool(ListFilesTool(ws))
     manager.registerTool(ReadFileTool(ws))
     manager.registerTool(SearchFilesTool(ws))
-    manager.registerTool(CreateFileTool(ws, registry))
-    manager.registerTool(EditFileTool(ws, registry))
+    manager.registerTool(CreateFileTool(ws, registry, history))
+    manager.registerTool(EditFileTool(ws, registry, history))
+    manager.registerTool(EditLinesTool(ws, registry, history))
+    manager.registerTool(ReplaceInFilesTool(ws, registry, history))
+    manager.registerTool(UndoEditTool(ws, registry, history))
     manager.registerTool(RenameFileTool(ws, registry))
     manager.registerTool(DeleteFileTool(ws, registry))
     manager.registerTool(CreateFolderTool(ws, registry))
@@ -429,4 +456,4 @@ fun registerFileTools(manager: ToolManager, ws: Workspace, registry: ArtifactReg
     manager.registerTool(ExportZipTool(ws, registry))
 }
 
-val FILE_TOOL_NAMES = setOf("list_files", "read_file", "search_files", "create_file", "edit_file", "rename_file", "delete_file", "create_folder", "create_project", "export_zip")
+val FILE_TOOL_NAMES = setOf("list_files", "read_file", "search_files", "create_file", "edit_file", "edit_lines", "replace_in_files", "undo_edit", "rename_file", "delete_file", "create_folder", "create_project", "export_zip")

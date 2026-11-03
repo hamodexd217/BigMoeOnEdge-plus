@@ -13,6 +13,8 @@ import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -224,13 +226,28 @@ class AgentControllerTest {
     }
 
     @Test
-    fun toolLoopStopsAfterMaxRounds() = runTest {
+    fun toolRoundsAreNotCapped() = runTest {
         val e = env(this)
-        repeat(AgentController.MAX_TOOL_ROUNDS + 1) { e.fake.script.add(ScriptedTurn(tokens = listOf(call))) }
+        val rounds = 30
+        for (i in 1..rounds) {
+            e.fake.script.add(ScriptedTurn(tokens = listOf("""<tool_call>{"name":"web_search","arguments":{"query":"cats $i"}}</tool_call>""")))
+        }
+        e.fake.script.add(ScriptedTurn(tokens = listOf("All done.")))
         val events = e.agent.runAgentLoop(req(), e.sink).toList()
-        assertEquals(AgentController.MAX_TOOL_ROUNDS, e.tool.calls.size)
-        assertEquals(AgentController.MAX_TOOL_ROUNDS + 1, e.fake.calls.size)
-        assertTrue(events.filterIsInstance<AgentEvent.Notice>().any { it.text.contains("limit") })
+        assertEquals(rounds, e.tool.calls.size)
+        assertEquals(rounds + 1, e.fake.calls.size)
+        assertTrue(events.filterIsInstance<AgentEvent.Notice>().none { it.text.contains("stopped") || it.text.contains("limit") })
+        assertEquals("All done.", e.sink.saved.last().content)
+    }
+
+    @Test
+    fun aModelRepeatingTheSameCallForeverIsStopped() = runTest {
+        val e = env(this)
+        repeat(AgentController.MAX_IDENTICAL_ROUNDS + 3) { e.fake.script.add(ScriptedTurn(tokens = listOf(call))) }
+        val events = e.agent.runAgentLoop(req(), e.sink).toList()
+        // the first call plus MAX_IDENTICAL_ROUNDS identical repeats are answered; the next identical one stops the turn
+        assertEquals(AgentController.MAX_IDENTICAL_ROUNDS, e.tool.calls.size)
+        assertTrue(events.filterIsInstance<AgentEvent.Notice>().any { it.text.contains("same tool call") })
         assertTrue(events.last() is AgentEvent.Done)
     }
 
@@ -295,6 +312,7 @@ class AgentControllerTest {
         val always = auto.copy(webSearchMode = WebSearchMode.ALWAYS)
         assertFalse(AgentController.enabledToolNames(always, registered).contains("web_search"))
         assertTrue(AgentController.enabledToolNames(always, registered).contains("image_search"))
+        assertFalse(AgentController.enabledToolNames(always.copy(imageSearchEnabled = false), registered).contains("image_search"))
         assertTrue(AgentController.enabledToolNames(always, registered).contains("read_webpage"))
     }
 
@@ -304,6 +322,11 @@ class AgentControllerTest {
         assertEquals("Base", AgentController.buildSystemPrompt(s, false, "TOOLS"))
         assertEquals("Base\n\nTOOLS", AgentController.buildSystemPrompt(s, true, "TOOLS"))
         assertEquals("Base", AgentController.buildSystemPrompt(s, true, ""))
+        val interactive = AgentController.buildSystemPrompt(s.copy(interactiveUiEnabled = true), false)
+        assertTrue(interactive.contains("bmoe-ui"))
+        assertTrue(interactive.contains("native Jetpack Compose"))
+        assertTrue(interactive.contains("never use HTML"))
+        assertEquals("Base", AgentController.buildSystemPrompt(s.copy(interactiveUiEnabled = false), false))
     }
 
     @Test
@@ -344,5 +367,29 @@ class AgentControllerTest {
     fun searchQueryIsOneLineAndCapped() {
         assertEquals("a b c", AgentController.searchQueryFrom("a\n  b \n\nc"))
         assertEquals(200, AgentController.searchQueryFrom("x".repeat(500)).length)
+    }
+
+    @Test
+    fun roundsReportPrefillSpeedInputsAndToolRoundsAreTimed() = runTest {
+        val e = env(this)
+        val stats = GenerationStats(nGenerated = 5, nPrompt = 420, tokensPerSecond = 2.5, prefillSeconds = 0.5)
+        e.fake.script.add(ScriptedTurn(tokens = listOf("Let me check. ", call), stats = stats))
+        e.fake.script.add(ScriptedTurn(tokens = listOf("Cats are great."), stats = stats))
+        val events = e.agent.runAgentLoop(req(prompt = "tell me about cats"), e.sink).toList()
+
+        val rounds = events.filterIsInstance<AgentEvent.RoundStats>()
+        assertEquals(2, rounds.size)
+        assertEquals(420, rounds[0].prefillTokens)
+        assertEquals(500L, rounds[0].prefillMs)
+        assertEquals(2.5, rounds[0].tokensPerSecond, 0.0)
+        assertNull(rounds[0].thinkingMs) // this turn had no reasoning
+
+        val finished = events.filterIsInstance<AgentEvent.ToolsFinished>().single()
+        assertEquals(listOf("web_search"), finished.names)
+        assertTrue(finished.ms >= 0L)
+
+        val tool = e.sink.saved.single { it.role == MessageRole.TOOL }
+        assertNotNull(tool.toolMs)
+        assertEquals(420, e.sink.saved.first { it.role == MessageRole.ASSISTANT }.prefillTokens)
     }
 }

@@ -72,7 +72,25 @@ object OpenAiApi {
         val kw = body.optJSONObject("chat_template_kwargs")
         if (kw != null && kw.has("enable_thinking")) thinking = kw.optBoolean("enable_thinking", true)
 
-        for (k in listOf("n", "logit_bias", "logprobs", "response_format", "frequency_penalty", "presence_penalty", "min_p", "repeat_penalty", "grammar")) {
+        var jsonSchema = ""
+        if (body.has("response_format") && !body.isNull("response_format")) {
+            val format = body.optJSONObject("response_format")
+                ?: throw ApiRequestException("response_format must be an object")
+            when (format.optString("type", "text")) {
+                "text" -> Unit
+                "json_object" -> jsonSchema = "{\"type\":\"object\"}"
+                "json_schema" -> {
+                    val spec = format.optJSONObject("json_schema")
+                        ?: throw ApiRequestException("response_format.json_schema must be an object")
+                    val schema = spec.optJSONObject("schema")
+                        ?: throw ApiRequestException("response_format.json_schema.schema must be a JSON Schema object")
+                    jsonSchema = schema.toString()
+                }
+                else -> throw ApiRequestException("response_format.type must be text, json_object, or json_schema")
+            }
+        }
+
+        for (k in listOf("n", "logit_bias", "logprobs", "frequency_penalty", "presence_penalty", "min_p", "repeat_penalty", "grammar")) {
             if (body.has(k) && !body.isNull(k)) {
                 val v = body.opt(k)
                 // n=1 and zero penalties are what we do anyway.
@@ -100,7 +118,8 @@ object OpenAiApi {
             stream = body.optBoolean("stream", false),
             model = body.optString("model", ""),
             ignored = ignored,
-            includeUsage = includeUsage
+            includeUsage = includeUsage,
+            jsonSchema = jsonSchema
         )
     }
 

@@ -170,7 +170,10 @@ bool PrefillPath::open(llama_context * ctx,
     if (moe.enabled && !open_arena(cfg, moe, dense_per_layer, err)) return false;
     hook.count_device_nodes(true);
 
-    if (!reserve_on_device(ctx, vocab, cfg.min_tokens)) return fail(": the device-placed reservation decode failed");
+    if (!reserve_on_device(ctx, vocab, cfg.min_tokens)) {
+        return fail(": the device-placed reservation decode failed" +
+                    (last_error_.empty() ? std::string() : " (" + last_error_ + ")"));
+    }
     std::fprintf(stderr, "bmoe: prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there\n",
                  cfg.device.c_str(), dev_->n_tensors(), (double) dev_->bytes() / (1024.0 * 1024.0), cfg.min_tokens);
     return true;
@@ -236,7 +239,18 @@ void PrefillPath::place(bool on_device) {
 int PrefillPath::decode(llama_context * ctx, const llama_batch & b) {
     const bool dev = arena_ && dev_ && dev_->on_device();
     if (dev) arena_->begin_graph();
-    int rc = llama_decode(ctx, b);
+    int rc;
+    try {
+        rc = llama_decode(ctx, b);
+    } catch (const std::exception & e) {
+        // A device backend reports a buffer it could not map by THROWING from inside the graph compute (the
+        // Hexagon one: "fastrpc_mmap failed"). Nothing above this frame catches C++ exceptions, so it used to end
+        // in std::terminate and take the whole app down. Turn it into a failed decode: the caller already treats
+        // a non-zero return as an error and shows it.
+        last_error_ = e.what();
+        std::fprintf(stderr, "bmoe: prefill-device graph threw: %s\n", e.what());
+        rc = -1;
+    }
     if (dev) {
         arena_->end_graph();
         if (rc == 0 && arena_->failed()) rc = -1;

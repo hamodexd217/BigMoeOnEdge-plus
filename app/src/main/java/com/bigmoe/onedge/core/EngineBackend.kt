@@ -46,9 +46,28 @@ interface EngineBackend {
         )
     }
 
+    /**
+     * Generation with optional per-request sampler. Existing fake/legacy backends remain compatible;
+     * the native backend overrides this and applies sampling without reopening the model.
+     */
+    fun generateWithSampling(
+        system: String,
+        historyFlat: List<ChatTurn>,
+        prompt: String,
+        maxTokens: Int,
+        clearKv: Boolean,
+        think: Boolean,
+        images: List<ImageData>,
+        sampling: SamplingOverride?,
+        callback: NativeGenerationCallback
+    ) = generate(system, historyFlat, prompt, maxTokens, clearKv, think, images, callback)
+
     /** Thread-safe; makes a running generate() return promptly. */
     /** Blocking multiple-choice decision; returns a probability distribution over [choices]. */
     fun decide(request: DecisionRequest): DecisionResult
+
+    /** Empty means unavailable (including older prebuilt native libraries). */
+    fun telemetry(): LongArray = longArrayOf()
 
     fun stop()
 
@@ -105,6 +124,39 @@ class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBacken
             think = think,
             imageDims = IntArray(images.size * 2) { i -> if (i % 2 == 0) images[i / 2].width else images[i / 2].height },
             imageData = Array(images.size) { images[it].rgb },
+            overrideSampling = false,
+            temperature = 0f,
+            topP = 1f,
+            topK = 0,
+            seed = -1,
+            minP = 0f, repeatPenalty = 1f, repeatLastN = 0, frequencyPenalty = 0f, presencePenalty = 0f,
+            callback = callback
+        )
+    }
+
+    override fun generateWithSampling(
+        system: String,
+        historyFlat: List<ChatTurn>,
+        prompt: String,
+        maxTokens: Int,
+        clearKv: Boolean,
+        think: Boolean,
+        images: List<ImageData>,
+        sampling: SamplingOverride?,
+        callback: NativeGenerationCallback
+    ) {
+        val flat = ArrayList<ByteArray>(historyFlat.size * 2)
+        for (t in historyFlat) { flat.add(encodeUtf8(t.role)); flat.add(encodeUtf8(t.content)) }
+        val s = sampling
+        bridge.nativeGenerate(
+            system = encodeUtf8(system), historyFlat = flat.toTypedArray(), prompt = encodeUtf8(prompt),
+            maxTokens = maxTokens, clearKv = clearKv, think = think,
+            imageDims = IntArray(images.size * 2) { i -> if (i % 2 == 0) images[i / 2].width else images[i / 2].height },
+            imageData = Array(images.size) { images[it].rgb.map { b -> b.toInt() }.let { vals -> ByteArray(vals.size) { idx -> vals[idx].toByte() } } },
+            overrideSampling = s != null,
+            temperature = s?.temperature ?: 0f, topP = s?.topP ?: 1f, topK = s?.topK ?: 0, seed = s?.seed ?: -1,
+            minP = s?.minP ?: 0f, repeatPenalty = s?.repeatPenalty ?: 1f, repeatLastN = s?.repeatLastN ?: 0,
+            frequencyPenalty = s?.frequencyPenalty ?: 0f, presencePenalty = s?.presencePenalty ?: 0f,
             callback = callback
         )
     }
@@ -115,6 +167,7 @@ class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBacken
             messagesJson = encodeUtf8(request.messagesJson),
             toolsJson = encodeUtf8(request.toolsJson),
             toolChoice = encodeUtf8(request.toolChoice),
+            jsonSchema = encodeUtf8(request.jsonSchema),
             stop = Array(request.stop.size) { encodeUtf8(request.stop[it]) },
             maxTokens = request.maxTokens,
             think = request.think,
@@ -123,6 +176,11 @@ class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBacken
             topP = s?.topP ?: 1f,
             topK = s?.topK ?: 0,
             seed = s?.seed ?: -1,
+            minP = s?.minP ?: 0f,
+            repeatPenalty = s?.repeatPenalty ?: 1f,
+            repeatLastN = s?.repeatLastN ?: 0,
+            frequencyPenalty = s?.frequencyPenalty ?: 0f,
+            presencePenalty = s?.presencePenalty ?: 0f,
             callback = callback
         )
     }
@@ -138,6 +196,13 @@ class NativeEngineBackend(private val bridge: EngineNativeBridge) : EngineBacken
             )
         )
         return parseDecision(json, request.choices)
+    }
+
+    override fun telemetry(): LongArray = try {
+        bridge.nativeTelemetry()
+    } catch (_: UnsatisfiedLinkError) {
+        // Existing prebuilt libraries remain usable; unavailable must not mean zero performance.
+        longArrayOf()
     }
 
     override fun stop() = bridge.nativeStopGeneration()

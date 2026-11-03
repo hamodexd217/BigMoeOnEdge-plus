@@ -1,0 +1,18 @@
+{
+  "upstream": "Helldez/BigMoeOnEdge v0.35.0",
+  "target": "BigMoeOnEdge+ v0.6.0 (signing-fix-2 + prior Flint port)",
+  "core_file_counts": {
+    "modified": 41,
+    "upstream_only": 43,
+    "identical": 22,
+    "project_only": 2
+  },
+  "core_files_total": 108,
+  "upstream_llama_cpp_pin": "ad98071a583d66c922ba36264433e0435f0e0b42",
+  "target_llama_cpp_pin": "965f89794fd9395ad5b49dd0adb3c04d8b5c5e13",
+  "upstream_llama_commits_ahead": 619,
+  "pure_policy_build": "PASS (Linux; BMOE_HAVE_LLAMA=OFF)",
+  "active_android_merge": "NOT COMPLETE",
+  "android_apk_build": "NOT RUN",
+  "flint_real_gguf_test": "NOT RUN"
+}

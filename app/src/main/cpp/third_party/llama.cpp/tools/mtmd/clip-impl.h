@@ -50,6 +50,7 @@
 // vision-specific
 #define KEY_VISION_PROJ_TYPE        "clip.vision.projector_type" // for models with mixed modalities
 #define KEY_IMAGE_SIZE              "clip.vision.image_size"
+#define KEY_IMAGE_RESIZE_ALGO       "clip.vision.image_resize_algo"
 #define KEY_IMAGE_MIN_PIXELS        "clip.vision.image_min_pixels"
 #define KEY_IMAGE_MAX_PIXELS        "clip.vision.image_max_pixels"
 #define KEY_PREPROC_MIN_TILES       "clip.vision.preproc_min_tiles"
@@ -161,6 +162,12 @@
 #define TN_DEEPSTACK_NORM  "v.deepstack.%d.norm.%s"     // qwen3vl deepstack
 #define TN_DEEPSTACK_FC1   "v.deepstack.%d.fc1.%s"      // qwen3vl deepstack
 #define TN_DEEPSTACK_FC2   "v.deepstack.%d.fc2.%s"      // qwen3vl deepstack
+
+// lfm3vl
+#define TN_LFM3VL_EMBEDDING_NORM   "%s.embedding_norm.%s"
+#define TN_LFM3VL_CONV2D_IN_PROJ   "%s.blk.%d.conv2d_in_proj.%s"
+#define TN_LFM3VL_CONV2D_SPATIAL   "%s.blk.%d.conv2d_spatial.%s"
+#define TN_LFM3VL_CONV2D_OUT_PROJ  "%s.blk.%d.conv2d_out_proj.%s"
 
 // mimicpmv
 #define TN_MINICPMV_POS_EMBD_K "resampler.pos_embed_k"
@@ -474,6 +481,7 @@ enum projector_type {
     PROJECTOR_TYPE_MERALION,
     PROJECTOR_TYPE_MUSIC_FLAMINGO,
     PROJECTOR_TYPE_LFM2,
+    PROJECTOR_TYPE_LFM3VL,
     PROJECTOR_TYPE_KIMIVL,
     PROJECTOR_TYPE_PADDLEOCR,
     PROJECTOR_TYPE_LIGHTONOCR,
@@ -540,6 +548,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_MERALION,          "meralion"},
     { PROJECTOR_TYPE_MUSIC_FLAMINGO,    "musicflamingo"},
     { PROJECTOR_TYPE_LFM2,              "lfm2"},
+    { PROJECTOR_TYPE_LFM3VL,            "lfm3vl"},
     { PROJECTOR_TYPE_KIMIVL,            "kimivl"},
     { PROJECTOR_TYPE_PADDLEOCR,         "paddleocr"},
     { PROJECTOR_TYPE_LIGHTONOCR,        "lightonocr"},

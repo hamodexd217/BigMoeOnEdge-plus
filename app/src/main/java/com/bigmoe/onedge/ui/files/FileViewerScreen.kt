@@ -1,5 +1,6 @@
 package com.bigmoe.onedge.ui.files
 
+import com.bigmoe.onedge.ui.theme.AppCard
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -166,7 +167,7 @@ fun FileViewerScreen(
                 }
             }
             if (state.saved) {
-                Card(modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)) {
+                AppCard(modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)) {
                     Text("Saved", modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
                 }
             }
@@ -177,7 +178,7 @@ fun FileViewerScreen(
 /** What a JavaScript run printed, under the code. */
 @Composable
 private fun RunOutputPanel(running: Boolean, output: String?, onDismiss: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    AppCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Output", style = MaterialTheme.typography.titleSmall)
             if (running) {

@@ -12,6 +12,8 @@ namespace bmoe {
 // with the fused suffix in the first slot and a nullptr tail.
 static const MoeRecipe k_recipes[] = {
     {"qwen3moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // Flint has leading dense blocks and standard routed experts plus a resident shared expert.
+    {"flint", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     {"qwen2moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     // qwen35moe (Qwen3.5 MoE, e.g. 35B-A3B) is a hybrid attention/SSM stack: some layers run
     // full attention, others a Mamba-style SSM block, but every MoE layer names its experts

@@ -93,6 +93,9 @@ private:
                     std::string & err);
     bool reserve_on_device(llama_context * ctx, const llama_vocab * vocab, int n_tokens);
 
+    // What the last device graph threw, if it did (e.g. Hexagon's "fastrpc_mmap failed"); "" otherwise.
+    std::string last_error_;
+
     ggml_backend_dev_t devs_[2];
     RouterHook * hook_ = nullptr;
     std::vector<LayerExperts> arena_layers_;

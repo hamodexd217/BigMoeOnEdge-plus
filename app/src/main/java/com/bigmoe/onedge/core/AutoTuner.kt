@@ -156,16 +156,27 @@ object AutoTuner {
      * already at the floor, meaning this model cannot run safely on this phone.
      */
     fun safer(v: TunedValues): TunedValues? {
-        val cache = if (v.cacheMb > CACHE_CHOICES.first())
-            CACHE_CHOICES.filter { it <= (v.cacheMb * 0.7).toInt() }.maxOrNull() ?: CACHE_CHOICES.first()
-        else v.cacheMb
-        val ctx = max(1024, v.contextLength / 2)
-        val out = v.copy(
-            cacheMb = cache, contextLength = ctx, batchWidth = min(v.batchWidth, 256),
-            npuPrefill = false, predictPrefetch = false, predictSpecMax = 0, ioTwoWave = false,
-            substitutePct = 0, nExpertUsed = 0
-        )
-        return if (out == v) null else out
+        // Back off one knob at a time so recovery preserves as much performance as possible.
+        val cacheLower = CACHE_CHOICES.filter { it < v.cacheMb }.maxOrNull()
+        if (cacheLower != null) return v.copy(cacheMb = cacheLower)
+
+        val ctxLower = CTX_CHOICES.filter { it < v.contextLength }.maxOrNull()
+        if (ctxLower != null) return v.copy(contextLength = ctxLower)
+
+        if (v.batchWidth > 128) return v.copy(batchWidth = (v.batchWidth / 2).coerceAtLeast(128))
+        if (v.batchThreadCount > 1) return v.copy(batchThreadCount = max(1, v.batchThreadCount - 1))
+        if (v.threadCount > 1) return v.copy(threadCount = max(1, v.threadCount - 1))
+        if (v.npuPrefill) return v.copy(npuPrefill = false)
+        if (v.predictPrefetch) return v.copy(predictPrefetch = false)
+        if (v.predictSpecMax > 0) return v.copy(predictSpecMax = 0)
+        if (v.prefetchLayers > 0) return v.copy(prefetchLayers = 0)
+        if (v.routeAhead > 0) return v.copy(routeAhead = 0)
+        if (v.spec != SpecSource.OFF) return v.copy(spec = SpecSource.OFF)
+        if (v.nExpertUsed > 0) return v.copy(nExpertUsed = 0)
+        if (v.dropColdPct > 0) return v.copy(dropColdPct = 0)
+        if (v.ioTwoWave) return v.copy(ioTwoWave = false)
+        if (v.overlap) return v.copy(overlap = false)
+        return null
     }
 
     private fun kvMbPerToken(m: ModelFacts): Double = (if (m.isMoe) 0.04 else 0.12) * max(m.sizeGb, 0.5)

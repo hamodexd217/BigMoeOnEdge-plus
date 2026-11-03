@@ -42,6 +42,27 @@ class OpenAiApiTest {
     }
 
     @Test
+    fun jsonObjectResponseFormatProducesAnObjectSchema() {
+        val p = OpenAiApi.parse(JSONObject("""{"response_format":{"type":"json_object"},"messages":[{"role":"user","content":"x"}]}"""))
+        assertEquals("{\"type\":\"object\"}", p.jsonSchema)
+        assertFalse(p.ignored.contains("response_format"))
+    }
+
+    @Test
+    fun jsonSchemaResponseFormatPassesTheSchemaToTheEngine() {
+        val p = OpenAiApi.parse(JSONObject("""{"response_format":{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}},"messages":[{"role":"user","content":"x"}]}"""))
+        val schema = JSONObject(p.jsonSchema)
+        assertEquals("object", schema.getString("type"))
+        assertEquals("string", schema.getJSONObject("properties").getJSONObject("answer").getString("type"))
+        assertFalse(p.ignored.contains("response_format"))
+    }
+
+    @Test(expected = ApiRequestException::class)
+    fun unsupportedResponseFormatIsRejectedInsteadOfSilentlyIgnored() {
+        OpenAiApi.parse(JSONObject("""{"response_format":{"type":"xml"},"messages":[{"role":"user","content":"x"}]}"""))
+    }
+
+    @Test
     fun maxCompletionTokensWinsOverMaxTokens() {
         val p = OpenAiApi.parse(JSONObject("""{"max_tokens":10,"max_completion_tokens":20,"messages":[{"role":"user","content":"x"}]}"""))
         assertEquals(20, p.maxTokens)

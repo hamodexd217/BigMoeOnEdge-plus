@@ -24,17 +24,23 @@ const val DEFAULT_SYSTEM_PROMPT = ""
 /** When web search is switched on: the model decides (tool call) or the app searches for every message. */
 enum class WebSearchMode { AUTO, ALWAYS }
 
+/** Presentation style for major app surfaces. Liquid glass uses translucent surfaces and borders, avoiding costly live blur. */
+enum class AppVisualStyle { SOLID, GRADIENT, LIQUID_GLASS }
+
 /** Cache budget sentinel values (same convention as the original app's CACHE_AUTO / 0 / N MiB). */
 const val CACHE_AUTO_MB = -1
 const val CACHE_OFF_MB = 0
 
 /**
  * User settings. Three groups:
- *  - ENGINE (everything in [toLoadConfig]): the engine fixes these when a model is opened
- *    (bmoe::SessionConfig). Changing them only takes effect after the model is reloaded. The defaults are the
- *    original BigMoeOnEdge Android app's defaults (docs/settings-parity.md).
- *  - PER-REQUEST (maxTokens, thinkingEnabled, systemPrompt, web search): applied on the next message.
- *  - APP (theme, last model): never reach the engine.
+ *  - LOAD-TIME settings: context, threads, batch shape, cache, I/O, routing and backend options. The engine
+ *    fixes these when a model is opened; changing them requires reloading that model.
+ *  - PER-REQUEST settings: sampling (temperature/top-p/top-k/seed), max tokens, thinking, system prompt and
+ *    search/tool behavior. These are applied to the next generation where supported and do not require reload.
+ *  - APP settings: theme, last model and UI preferences; these do not configure the inference session.
+ *
+ * [toLoadConfig] still carries default sampler values for initial session setup and compatibility, but live chat
+ * generations override them per request through SamplingOverride.
  */
 data class EngineSettings(
     // ---- engine (needs reload) ----
@@ -44,11 +50,6 @@ data class EngineSettings(
     val batchThreadCount: Int = 4,
     /** Widest graph evaluated at once. Lower values conserve RAM; capped to the context at load. */
     val batchWidth: Int = 512,
-    val temperature: Float = 0.7f,
-    val topP: Float = 0.9f,
-    val topK: Int = 40,
-    /** -1 asks llama.cpp to choose a fresh random seed for each generation. */
-    val seed: Int = -1,
     /** -1 = auto, 0 = off, otherwise a fixed budget in MiB. */
     val cacheMb: Int = 2000,
     val cacheCeilMb: Int = 3000,
@@ -94,16 +95,42 @@ data class EngineSettings(
     /** Preserve the app's existing ability to choose a cache below the engine's 1500 MiB floor. */
     val forceCache: Boolean = true,
     // ---- per-request ----
+    // Sampling is sent for each generation; changing these values does not require reopening the model.
+    val temperature: Float = 0.7f,
+    val topP: Float = 0.9f,
+    val topK: Int = 40,
+    /** Drop tokens whose probability is below this fraction of the best one. 0 = off. */
+    val minP: Float = 0f,
+    /** > 1 discourages repeating recent tokens. 1 = off. */
+    val repeatPenalty: Float = 1f,
+    /** How many recent tokens the penalties look at. 0 = penalties off, -1 = the whole context. */
+    val repeatLastN: Int = 64,
+    /** Subtracted per earlier occurrence of a token. 0 = off. */
+    val frequencyPenalty: Float = 0f,
+    /** Subtracted once if the token appeared at all. 0 = off. */
+    val presencePenalty: Float = 0f,
+    /** -1 asks llama.cpp to choose a fresh random seed for each generation. */
+    val seed: Int = -1,
     /** <= 0 = as long as the context allows. */
     val maxTokens: Int = -1,
     val thinkingEnabled: Boolean = false,
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     val isWebSearchEnabled: Boolean = false,
     val webSearchMode: WebSearchMode = WebSearchMode.ALWAYS,
+    /** Allow compact, structured native UI blocks when explicitly requested; off keeps ordinary replies lean. */
+    val interactiveUiEnabled: Boolean = false,
+    /** Permit image_search alongside web search. */
+    val imageSearchEnabled: Boolean = true,
+    /** Automatically search images after a web search and attach compact results to the conversation context. */
+    val autoImageSearchAfterWebSearch: Boolean = false,
     val toolsFilesEnabled: Boolean = false,
     val toolsCodeEnabled: Boolean = false,
     /** Offline helpers: date/time, calculator, unit converter, random numbers, device status. */
     val toolsUtilitiesEnabled: Boolean = false,
+    /** The model may call the HTTP tools and MCP servers listed in [externalToolsJson]. */
+    val toolsExternalEnabled: Boolean = false,
+    /** The external-tools list as JSON (see ExternalToolsJson). Headers may hold API keys, stored like the search key. */
+    val externalToolsJson: String = "[]",
     /** Longest tool result handed back to the model, in characters. The model reads every one of them before it can go on. */
     val toolResultChars: Int = DEFAULT_TOOL_RESULT_CHARS,
     /** Reason again after a tool result. Off by default: reasoning tokens are generated at the model's (slow) decode speed. */
@@ -116,6 +143,7 @@ data class EngineSettings(
     val searxngUrl: String = "",
     // ---- app ----
     val themeId: String = "paper",
+    val visualStyle: AppVisualStyle = AppVisualStyle.SOLID,
     /** JSON array of user-made palettes, see ui/theme/PaletteStore. */
     val customPalettesJson: String = "[]",
     val lastModelPath: String = "",
@@ -154,6 +182,12 @@ data class EngineSettings(
         temperature = if (spec != SpecSource.OFF) 0f else temperature,
         topP = topP,
         topK = topK,
+        // The penalty stages change the argmax, which guess-ahead verification relies on, so they are off then.
+        minP = minP,
+        repeatPenalty = if (spec != SpecSource.OFF) 1f else repeatPenalty,
+        repeatLastN = repeatLastN,
+        frequencyPenalty = if (spec != SpecSource.OFF) 0f else frequencyPenalty,
+        presencePenalty = if (spec != SpecSource.OFF) 0f else presencePenalty,
         // The streaming/ordinary-load choice is made per model when it is opened (EngineController.loadModel).
         mmapBaseline = false,
         cacheMode = cacheMode,
@@ -201,8 +235,23 @@ const val DEFAULT_SERVER_QUEUE_SEC = 60
 
 /** True when a model loaded with [loaded] would behave differently after a reload with [settings]. */
 /** The streaming-or-ordinary mode is chosen automatically per model, so it never counts as a changed setting. */
-fun loadConfigDiffers(loaded: LoadConfig, settings: EngineSettings): Boolean =
-    loaded.copy(mmapBaseline = false) != settings.toLoadConfig().copy(mmapBaseline = false)
+fun loadConfigDiffers(loaded: LoadConfig, settings: EngineSettings): Boolean {
+    val desired = settings.toLoadConfig().copy(mmapBaseline = false)
+    // Sampling is supplied with every chat generation now. It must not trigger a model reload.
+    val normalizedLoaded = loaded.copy(
+        mmapBaseline = false,
+        temperature = desired.temperature,
+        topP = desired.topP,
+        topK = desired.topK,
+        minP = desired.minP,
+        repeatPenalty = desired.repeatPenalty,
+        repeatLastN = desired.repeatLastN,
+        frequencyPenalty = desired.frequencyPenalty,
+        presencePenalty = desired.presencePenalty,
+        seed = desired.seed
+    )
+    return normalizedLoaded != desired
+}
 
 class EngineSettingsDataStore(private val context: Context) {
 
@@ -214,6 +263,11 @@ class EngineSettingsDataStore(private val context: Context) {
         val TEMPERATURE = floatPreferencesKey("temperature")
         val TOP_P = floatPreferencesKey("top_p")
         val TOP_K = intPreferencesKey("top_k")
+        val MIN_P = floatPreferencesKey("min_p")
+        val REPEAT_PENALTY = floatPreferencesKey("repeat_penalty")
+        val REPEAT_LAST_N = intPreferencesKey("repeat_last_n")
+        val FREQUENCY_PENALTY = floatPreferencesKey("frequency_penalty")
+        val PRESENCE_PENALTY = floatPreferencesKey("presence_penalty")
         val SEED = intPreferencesKey("sampling_seed")
         val CACHE_MB = intPreferencesKey("cache_mb_v2")
         val CACHE_CEIL_MB = intPreferencesKey("cache_ceil_mb")
@@ -256,9 +310,14 @@ class EngineSettingsDataStore(private val context: Context) {
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
         val WEB_SEARCH = booleanPreferencesKey("is_web_search_enabled")
         val WEB_SEARCH_MODE = stringPreferencesKey("web_search_mode")
+        val INTERACTIVE_UI = booleanPreferencesKey("interactive_ui_enabled")
+        val IMAGE_SEARCH_ENABLED = booleanPreferencesKey("image_search_enabled")
+        val AUTO_IMAGE_SEARCH = booleanPreferencesKey("auto_image_search_after_web_search")
         val TOOLS_FILES = booleanPreferencesKey("tools_files")
         val TOOLS_CODE = booleanPreferencesKey("tools_code")
         val TOOLS_UTILITIES = booleanPreferencesKey("tools_utilities")
+        val TOOLS_EXTERNAL = booleanPreferencesKey("tools_external")
+        val EXTERNAL_TOOLS_JSON = stringPreferencesKey("external_tools_json")
         val TOOL_RESULT_CHARS = intPreferencesKey("tool_result_chars")
         val THINK_AFTER_TOOLS = booleanPreferencesKey("think_after_tools")
         val IMAGE_MAX_DIM = intPreferencesKey("image_max_dim")
@@ -267,6 +326,7 @@ class EngineSettingsDataStore(private val context: Context) {
         val BRAVE_API_KEY = stringPreferencesKey("brave_api_key")
         val SEARXNG_URL = stringPreferencesKey("searxng_url")
         val THEME_ID = stringPreferencesKey("theme_id")
+        val VISUAL_STYLE = stringPreferencesKey("visual_style")
         val CUSTOM_PALETTES = stringPreferencesKey("custom_palettes")
         val LAST_MODEL = stringPreferencesKey("last_model_path")
         val AUTO_LOAD = booleanPreferencesKey("auto_load_last_model")
@@ -289,6 +349,11 @@ class EngineSettingsDataStore(private val context: Context) {
             temperature = p[Keys.TEMPERATURE] ?: d.temperature,
             topP = p[Keys.TOP_P] ?: d.topP,
             topK = p[Keys.TOP_K] ?: d.topK,
+            minP = p[Keys.MIN_P] ?: d.minP,
+            repeatPenalty = p[Keys.REPEAT_PENALTY] ?: d.repeatPenalty,
+            repeatLastN = p[Keys.REPEAT_LAST_N] ?: d.repeatLastN,
+            frequencyPenalty = p[Keys.FREQUENCY_PENALTY] ?: d.frequencyPenalty,
+            presencePenalty = p[Keys.PRESENCE_PENALTY] ?: d.presencePenalty,
             seed = p[Keys.SEED] ?: d.seed,
             cacheMb = p[Keys.CACHE_MB] ?: d.cacheMb,
             cacheCeilMb = p[Keys.CACHE_CEIL_MB] ?: d.cacheCeilMb,
@@ -331,9 +396,14 @@ class EngineSettingsDataStore(private val context: Context) {
             systemPrompt = p[Keys.SYSTEM_PROMPT] ?: d.systemPrompt,
             isWebSearchEnabled = p[Keys.WEB_SEARCH] ?: d.isWebSearchEnabled,
             webSearchMode = enumOrDefault(p[Keys.WEB_SEARCH_MODE], d.webSearchMode),
+            interactiveUiEnabled = p[Keys.INTERACTIVE_UI] ?: d.interactiveUiEnabled,
+            imageSearchEnabled = p[Keys.IMAGE_SEARCH_ENABLED] ?: d.imageSearchEnabled,
+            autoImageSearchAfterWebSearch = p[Keys.AUTO_IMAGE_SEARCH] ?: d.autoImageSearchAfterWebSearch,
             toolsFilesEnabled = p[Keys.TOOLS_FILES] ?: d.toolsFilesEnabled,
             toolsCodeEnabled = p[Keys.TOOLS_CODE] ?: d.toolsCodeEnabled,
             toolsUtilitiesEnabled = p[Keys.TOOLS_UTILITIES] ?: d.toolsUtilitiesEnabled,
+            toolsExternalEnabled = p[Keys.TOOLS_EXTERNAL] ?: d.toolsExternalEnabled,
+            externalToolsJson = p[Keys.EXTERNAL_TOOLS_JSON] ?: d.externalToolsJson,
             toolResultChars = p[Keys.TOOL_RESULT_CHARS] ?: d.toolResultChars,
             thinkAfterTools = p[Keys.THINK_AFTER_TOOLS] ?: d.thinkAfterTools,
             imageMaxDim = p[Keys.IMAGE_MAX_DIM] ?: d.imageMaxDim,
@@ -342,6 +412,7 @@ class EngineSettingsDataStore(private val context: Context) {
             braveApiKey = p[Keys.BRAVE_API_KEY] ?: d.braveApiKey,
             searxngUrl = p[Keys.SEARXNG_URL] ?: d.searxngUrl,
             themeId = p[Keys.THEME_ID] ?: d.themeId,
+            visualStyle = runCatching { AppVisualStyle.valueOf(p[Keys.VISUAL_STYLE] ?: d.visualStyle.name) }.getOrDefault(d.visualStyle),
             customPalettesJson = p[Keys.CUSTOM_PALETTES] ?: d.customPalettesJson,
             lastModelPath = p[Keys.LAST_MODEL] ?: d.lastModelPath,
             autoLoadLastModel = p[Keys.AUTO_LOAD] ?: d.autoLoadLastModel,
@@ -393,6 +464,11 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateTemperature(v: Float) = set(Keys.TEMPERATURE, v.coerceIn(0f, 2f))
     suspend fun updateTopP(v: Float) = set(Keys.TOP_P, v.coerceIn(0.01f, 1f))
     suspend fun updateTopK(v: Int) = set(Keys.TOP_K, v.coerceIn(0, 200))
+    suspend fun updateMinP(v: Float) = set(Keys.MIN_P, v.coerceIn(0f, 1f))
+    suspend fun updateRepeatPenalty(v: Float) = set(Keys.REPEAT_PENALTY, v.coerceIn(0.5f, 2f))
+    suspend fun updateRepeatLastN(v: Int) = set(Keys.REPEAT_LAST_N, v.coerceIn(-1, 8192))
+    suspend fun updateFrequencyPenalty(v: Float) = set(Keys.FREQUENCY_PENALTY, v.coerceIn(-2f, 2f))
+    suspend fun updatePresencePenalty(v: Float) = set(Keys.PRESENCE_PENALTY, v.coerceIn(-2f, 2f))
     suspend fun updateSeed(v: Int) = set(Keys.SEED, v.coerceAtLeast(-1))
     suspend fun updateCacheMb(v: Int) = set(Keys.CACHE_MB, v.coerceAtLeast(CACHE_AUTO_MB))
     suspend fun updateCacheCeilMb(v: Int) = set(Keys.CACHE_CEIL_MB, v.coerceAtLeast(0))
@@ -437,9 +513,14 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateSystemPrompt(v: String) = set(Keys.SYSTEM_PROMPT, v)
     suspend fun updateWebSearchEnabled(v: Boolean) = set(Keys.WEB_SEARCH, v)
     suspend fun updateWebSearchMode(v: WebSearchMode) = set(Keys.WEB_SEARCH_MODE, v.name)
+    suspend fun updateInteractiveUiEnabled(v: Boolean) = set(Keys.INTERACTIVE_UI, v)
+    suspend fun updateImageSearchEnabled(v: Boolean) = set(Keys.IMAGE_SEARCH_ENABLED, v)
+    suspend fun updateAutoImageSearchAfterWebSearch(v: Boolean) = set(Keys.AUTO_IMAGE_SEARCH, v)
     suspend fun updateToolsFilesEnabled(v: Boolean) = set(Keys.TOOLS_FILES, v)
     suspend fun updateToolsCodeEnabled(v: Boolean) = set(Keys.TOOLS_CODE, v)
     suspend fun updateToolsUtilitiesEnabled(v: Boolean) = set(Keys.TOOLS_UTILITIES, v)
+    suspend fun updateToolsExternalEnabled(v: Boolean) = set(Keys.TOOLS_EXTERNAL, v)
+    suspend fun updateExternalToolsJson(v: String) = set(Keys.EXTERNAL_TOOLS_JSON, v)
     suspend fun updateToolResultChars(v: Int) = set(Keys.TOOL_RESULT_CHARS, v.coerceIn(500, 20_000))
     suspend fun updateThinkAfterTools(v: Boolean) = set(Keys.THINK_AFTER_TOOLS, v)
     suspend fun updateImageMaxDim(v: Int) = set(Keys.IMAGE_MAX_DIM, v.coerceIn(224, 1344))
@@ -450,6 +531,7 @@ class EngineSettingsDataStore(private val context: Context) {
 
     // ---- app ----
     suspend fun updateThemeId(v: String) = set(Keys.THEME_ID, v)
+    suspend fun updateVisualStyle(v: AppVisualStyle) = set(Keys.VISUAL_STYLE, v.name)
     suspend fun updateCustomPalettesJson(v: String) = set(Keys.CUSTOM_PALETTES, v)
     suspend fun updateLastModelPath(v: String) = set(Keys.LAST_MODEL, v)
     suspend fun updateAutoLoadLastModel(v: Boolean) = set(Keys.AUTO_LOAD, v)

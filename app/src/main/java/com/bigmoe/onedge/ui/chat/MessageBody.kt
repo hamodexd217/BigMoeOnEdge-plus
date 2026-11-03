@@ -58,6 +58,8 @@ fun MessageBody(
     textColor: Color,
     isStreaming: Boolean = false,
     onOpenAsArtifact: (language: String, code: String) -> Unit = { _, _ -> },
+    nativeUiEnabled: Boolean = false,
+    onNativeUiAction: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Parsing is pure and cheap, but streaming recomposes on every token: only redo it when the text changed.
@@ -70,7 +72,25 @@ fun MessageBody(
             when (block) {
                 is MarkdownBlock.Paragraph -> MarkdownParagraph(block.text, textColor)
                 is MarkdownBlock.Math -> MathBlock(block.tex, textColor)
-                is MarkdownBlock.Code -> CodeBlock(block, onOpenAsArtifact)
+                is MarkdownBlock.Code -> {
+                    // The dedicated fence (also its common misspellings) is always a native UI block. A plain
+                    // ```json block only counts when it is a complete spec that declares a known "type".
+                    val dedicatedFence = nativeUiEnabled && NativeUiParser.isUiLanguage(block.language)
+                    val jsonFence = nativeUiEnabled && !dedicatedFence && block.closed &&
+                        block.language.equals("json", ignoreCase = true) && NativeUiParser.looksLikeSpec(block.code)
+                    val isNativeUiBlock = dedicatedFence || jsonFence
+                    // Once streaming is over an unclosed block is still parsed (the model forgot the closing fence
+                    // or was cut off); while streaming it waits for the closing fence.
+                    val nativeUi = if (isNativeUiBlock && (block.closed || !isStreaming)) {
+                        remember(block.code) { NativeUiParser.parse(block.code) }
+                    } else null
+                    when {
+                        nativeUi != null -> NativeUiComponents(nativeUi, onNativeUiAction)
+                        isNativeUiBlock && isStreaming -> NativeUiStatus("Preparing interactive view…")
+                        isNativeUiBlock -> NativeUiStatus("This interactive view could not be rendered. Ask the model to try a simpler layout.")
+                        else -> CodeBlock(block, onOpenAsArtifact)
+                    }
+                }
                 is MarkdownBlock.Prompt -> PromptBlock(block.text, block.label)
             }
         }
@@ -443,5 +463,22 @@ private fun PromptBlock(text: String, label: String = "Prompt") {
                 )
             }
         }
+    }
+}
+
+
+@Composable
+private fun NativeUiStatus(message: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Text(
+            text = message,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

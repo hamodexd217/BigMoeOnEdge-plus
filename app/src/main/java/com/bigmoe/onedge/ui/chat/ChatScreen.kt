@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
@@ -43,6 +46,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -69,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.core.EngineState
+import com.bigmoe.onedge.core.GenerationPhase
 import com.bigmoe.onedge.ui.history.HistoryViewModel
 import com.bigmoe.onedge.ui.home.ChatHistoryPanel
 import com.bigmoe.onedge.ui.models.ModelPickerButton
@@ -79,6 +84,8 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import com.bigmoe.onedge.data.local.entity.MessageRole
 import com.bigmoe.onedge.workspace.FileKinds
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
+import com.bigmoe.onedge.ui.theme.AppTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,7 +123,7 @@ fun ChatScreen(
 
     // The live bubble shows while a response is in progress: reasoning-only counts too (a reasoning model
     // can think for a while before the first answer token), and so does a running tool.
-    val showLiveBubble = uiState.isGenerating
+    val showLiveBubble = uiState.isGeneratingHere
     val itemCount = uiState.messages.size + if (showLiveBubble) 1 else 0
 
     // Build web-source associations once per message-list update. Doing indexOfFirst/subList
@@ -178,8 +185,12 @@ fun ChatScreen(
         drawerState = chatsDrawerState,
         gesturesEnabled = !wideMode,
         drawerContent = {
-            ModalDrawerSheet {
+            ModalDrawerSheet(
+                drawerContainerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surfaceContainerLow
+                else MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            ) {
                 ChatHistoryPanel(
+                    embedded = true,
                     viewModel = historyViewModel,
                     selectedSessionId = uiState.currentSession?.id,
                     onNewChat = {
@@ -202,6 +213,9 @@ fun ChatScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surface else Color.Transparent
+                ),
                 title = {
                     Column {
                         Text(uiState.currentSession?.title ?: "New chat", maxLines = 1)
@@ -249,7 +263,8 @@ fun ChatScreen(
                 }
             )
         },
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surface else Color.Transparent
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -269,7 +284,7 @@ fun ChatScreen(
                                 if (ImageSearchResultParser.parse(message.text) != null) {
                                     ImageSearchResultsCard(body = message.text)
                                 } else {
-                                    ToolResultCard(body = message.text)
+                                    ToolResultCard(body = message.text, toolMs = message.toolMs)
                                 }
                             } else {
                                 val messageAttachments = uiState.attachments.filter { it.messageId == message.id }
@@ -291,10 +306,15 @@ fun ChatScreen(
                                         message.cacheHitPct,
                                         message.generationElapsedMs,
                                         message.contextUsed,
-                                        message.contextTotal
+                                        message.contextTotal,
+                                        message.prefillTokens,
+                                        message.thinkingMs
                                     ),
+                                    thinkingMs = message.thinkingMs,
                                     note = message.note,
                                     onOpenCodeArtifact = viewModel::saveCodeAsArtifact,
+                                    nativeUiEnabled = uiState.settings.interactiveUiEnabled,
+                                    onNativeUiAction = viewModel::sendMessage,
                                     // Long-press: user message -> Edit + Copy, assistant message -> Copy.
                                     onEdit = if (message.role == MessageRole.USER && !uiState.isGenerating) {
                                         { editingMessage = message }
@@ -315,37 +335,31 @@ fun ChatScreen(
                         }
                         if (showLiveBubble) {
                             item(key = "live_bubble") {
+                              Column {
                                 if (uiState.liveText.isEmpty() && uiState.liveReasoning.isEmpty()) {
-                                    LiveStatusRow(
-                                        uiState.liveStatus ?: "Reading…",
-                                        formatStats(
-                                            null, null, uiState.generationTokens, null,
-                                            uiState.generationElapsedMs, uiState.contextUsed, uiState.contextTotal
-                                        )
-                                    )
+                                    // Minimal activity affordance: no extra live-status/telemetry row.
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    }
                                 } else {
                                     ChatMessageBubble(
                                         text = uiState.liveText,
                                         isUser = false,
-                                        isStreaming = uiState.liveText.isNotEmpty() || uiState.liveStatus == null,
+                                        isStreaming = true,
                                         reasoning = uiState.liveReasoning.ifEmpty { null },
                                         isReasoningStreaming = uiState.liveText.isEmpty(),
-                                        stats = formatStats(
-                                            null, null, uiState.generationTokens, null,
-                                            uiState.generationElapsedMs, uiState.contextUsed, uiState.contextTotal
-                                        ),
-                                        onOpenCodeArtifact = viewModel::saveCodeAsArtifact
+                                        thinkingMs = uiState.liveTiming.thinkingMs,
+                                        thinkingStartedAt = uiState.liveTiming.phaseStartedAt.takeIf { uiState.liveTiming.phase == GenerationPhase.THINKING },
+                                        onOpenCodeArtifact = viewModel::saveCodeAsArtifact,
+                                        nativeUiEnabled = uiState.settings.interactiveUiEnabled,
+                                        onNativeUiAction = viewModel::sendMessage
                                     )
-                                    uiState.liveStatus?.let {
-                                        LiveStatusRow(
-                                            it,
-                                            formatStats(
-                                                null, null, uiState.generationTokens, null,
-                                                uiState.generationElapsedMs, uiState.contextUsed, uiState.contextTotal
-                                            )
-                                        )
-                                    }
                                 }
+                                LiveStatusLine(uiState.liveTiming)
+                              }
                             }
                         }
                     }
@@ -364,6 +378,10 @@ fun ChatScreen(
 
             uiState.notice?.let { NoticeBar(text = it, onDismiss = { viewModel.dismissNotice() }) }
 
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
             ChatInputBar(
                 textValue = uiState.inputDraft,
                 onTextChanged = viewModel::setInputDraft,
@@ -390,12 +408,17 @@ fun ChatScreen(
                 onToggleToolFiles = viewModel::toggleToolFiles,
                 onToggleToolCode = viewModel::toggleToolCode,
                 onToggleToolUtilities = viewModel::toggleToolUtilities,
+                toolsExternalEnabled = uiState.settings.toolsExternalEnabled,
+                onToggleToolExternal = viewModel::toggleToolExternal,
+                nativeUiEnabled = uiState.settings.interactiveUiEnabled,
+                onToggleNativeUi = viewModel::toggleNativeUi,
                 chooseFromOptions = uiState.chooseFromOptions,
                 choiceOptions = uiState.choiceOptions,
                 onToggleChooseFromOptions = viewModel::toggleChooseFromOptions,
                 onChoiceOptionsChanged = viewModel::setChoiceOptions,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(vertical = 8.dp)
             )
+            }
         }
     }
     }
@@ -587,17 +610,3 @@ private fun NoticeBar(text: String, onDismiss: () -> Unit) {
     }
 }
 
-@Composable
-private fun LiveStatusRow(text: String, telemetry: String? = null) {
-    Row(
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        SlowBlinkDot()
-        Text(text = text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
-        if (!telemetry.isNullOrBlank()) {
-            Text("• $telemetry", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
-        }
-    }
-}

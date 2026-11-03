@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.bigmoe.onedge.core.AutoSave
 import com.bigmoe.onedge.core.AutoSaveCodec
+import com.bigmoe.onedge.core.ModelProfileIdentity
 import com.bigmoe.onedge.core.AutoTier
 import com.bigmoe.onedge.core.AutoTuner
 import com.bigmoe.onedge.core.DeviceProfile
@@ -23,7 +24,10 @@ import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.core.applyTo
 import com.bigmoe.onedge.data.local.AutoSaveStore
 import com.bigmoe.onedge.data.local.datastore.EngineSettingsDataStore
+import com.bigmoe.onedge.data.local.datastore.EngineSettings
+import com.bigmoe.onedge.data.local.datastore.loadConfigDiffers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -50,7 +54,9 @@ data class AutoUiState(
     /** True after a save was switched on while a model is loaded: it needs a reload to take effect. */
     val reloadNeeded: Boolean = false,
     /** Opt-in: allow NPU prefill in newly created saves (off by default: least proven path). */
-    val useNpu: Boolean = false
+    val useNpu: Boolean = false,
+    /** Live persisted settings shown by the Custom Settings editor. */
+    val engineSettings: EngineSettings = EngineSettings()
 )
 
 class AutoTuneViewModel(
@@ -66,10 +72,19 @@ class AutoTuneViewModel(
     val ui: StateFlow<AutoUiState> = _ui.asStateFlow()
     val saves: StateFlow<List<AutoSave>> = store.saves
     val activeId: StateFlow<String?> = store.activeId
+    val modelProfiles: StateFlow<Map<String, String>> = store.modelProfiles
+    val autoApplyModelProfilesEnabled: StateFlow<Boolean> = store.autoApplyModelProfilesEnabled
+    private val _currentModelPath = MutableStateFlow((engineController.state.value as? EngineState.Ready)?.info?.path)
+    val currentModelPath: StateFlow<String?> = _currentModelPath.asStateFlow()
 
     private var measureJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            dataStore.settingsFlow.collect { settings ->
+                _ui.update { it.copy(engineSettings = settings) }
+            }
+        }
         viewModelScope.launch {
             store.load()
             migrateOldSaves()
@@ -80,6 +95,7 @@ class AutoTuneViewModel(
         // The VM is created when the app starts, long before a model is added or loaded: follow the engine.
         viewModelScope.launch {
             engineController.state.collect { st ->
+                _currentModelPath.value = (st as? EngineState.Ready)?.info?.path
                 if (st is EngineState.Ready && _ui.value.busy == null) refreshModels()
             }
         }
@@ -94,6 +110,32 @@ class AutoTuneViewModel(
     }
 
     fun setUseNpu(on: Boolean) = _ui.update { it.copy(useNpu = on) }
+
+    /** Manual controls used by the Custom Settings mode; persistence and reload-diff logic are shared. */
+    private fun updateCustomSetting(change: suspend () -> Unit) {
+        viewModelScope.launch {
+            change()
+            val saved = dataStore.settingsFlow.first()
+            val loaded = (engineController.state.value as? EngineState.Ready)?.info
+            _ui.update {
+                it.copy(
+                    engineSettings = saved,
+                    reloadNeeded = loaded != null && loadConfigDiffers(loaded.config, saved),
+                    message = null
+                )
+            }
+        }
+    }
+    fun updateCustomContext(v: Int) = updateCustomSetting { dataStore.updateContextLength(v) }
+    fun updateCustomThreads(v: Int) = updateCustomSetting { dataStore.updateThreadCount(v) }
+    fun updateCustomBatchThreads(v: Int) = updateCustomSetting { dataStore.updateBatchThreadCount(v) }
+    fun updateCustomBatchWidth(v: Int) = updateCustomSetting { dataStore.updateBatchWidth(v) }
+    fun updateCustomCache(v: Int) = updateCustomSetting { dataStore.updateCacheMb(v) }
+    fun updateCustomIoThreads(v: Int) = updateCustomSetting { dataStore.updateIoThreads(v) }
+    fun updateCustomTemperature(v: Float) = updateCustomSetting { dataStore.updateTemperature(v) }
+    fun updateCustomTopP(v: Float) = updateCustomSetting { dataStore.updateTopP(v) }
+    fun updateCustomTopK(v: Int) = updateCustomSetting { dataStore.updateTopK(v) }
+    fun updateCustomSeed(v: Int) = updateCustomSetting { dataStore.updateSeed(v) }
 
     /**
      * If the previous run died in the middle of a measurement (Android killed the app for memory, or a native
@@ -197,33 +239,27 @@ class AutoTuneViewModel(
 
     // ---------------------------------------------------------------- saves
 
-    /** Builds one save per tier for the selected model. */
-    fun createSaves() {
+    /** Creates exactly one save for the goal selected by the user. */
+    fun createSaves(tier: AutoTier) {
         val state = _ui.value
         val device = state.device ?: return say("Scan the device first.")
         val facts = state.facts ?: return say("Pick a model first.")
         viewModelScope.launch {
-            val now = System.currentTimeMillis()
-            AutoTier.values().forEachIndexed { i, tier ->
-                val values = AutoTuner.plan(device, facts, tier, allowNpu = state.useNpu)
-                store.upsert(
-                    AutoSave(
-                        id = UUID.randomUUID().toString(),
-                        name = AutoSaveCodec.cleanName("${facts.name} · ${tier.title.substringBefore(" (")}"),
-                        tier = tier,
-                        kind = facts.kind.name,
-                        modelName = facts.name,
-                        createdAt = now + i,
-                        values = values,
-                        estTps = AutoTuner.estimateTps(device, facts, tier, values)
-                    )
-                )
-            }
-            val tight = AutoTier.values().any { !AutoTuner.fitsInRam(device, facts, AutoTuner.plan(device, facts, it, state.useNpu)) }
-            say(
-                if (tight) "Created 3 saves, but this model is very large for your phone's RAM. Measuring may be refused to protect the app."
-                else "Created 3 saves. Estimates are approximate; use Measure for the real speed on this phone."
+            val values = AutoTuner.plan(device, facts, tier, allowNpu = state.useNpu)
+            val fits = AutoTuner.fitsInRam(device, facts, values)
+            val save = AutoSave(
+                id = UUID.randomUUID().toString(),
+                name = AutoSaveCodec.cleanName("${facts.name} · ${tier.title.substringBefore(" (")}"),
+                tier = tier,
+                kind = facts.kind.name,
+                modelName = facts.name,
+                createdAt = System.currentTimeMillis(),
+                values = values,
+                estTps = AutoTuner.estimateTps(device, facts, tier, values),
+                lastError = if (fits) null else "The initial plan may exceed the conservative RAM estimate; measure only after reviewing the settings."
             )
+            store.upsert(save)
+            say("Created ${tier.title} settings for ${facts.name}. The speed is an estimate; measure it to verify real performance.")
         }
     }
 
@@ -235,25 +271,56 @@ class AutoTuneViewModel(
         viewModelScope.launch { store.delete(id) }
     }
 
-    /** Switches a save on: writes its settings and remembers it as the active one. */
+    /** Applies a save as this model's override when possible; otherwise retains legacy global-save behavior. */
     fun use(id: String) {
         val save = store.saves.value.firstOrNull { it.id == id } ?: return
         viewModelScope.launch {
-            dataStore.applyTunedValues(save.values)
-            store.setActive(id)
-            val loaded = engineController.loadedModel() != null
-            _ui.update { it.copy(reloadNeeded = loaded) }
-            say(
-                if (loaded) "“${save.name}” is on. Reload the model to use it."
-                else "“${save.name}” is on. It applies the next time a model loads."
-            )
+            val ready = engineController.state.value as? EngineState.Ready
+            val identity = ready?.info?.path?.let { ModelProfileIdentity.fromPath(it) }
+            if (identity != null && store.autoApplyModelProfilesEnabled.value) {
+                if (!store.setModelProfile(identity, id)) {
+                    say("Couldn't save this model profile. The current settings were left unchanged.")
+                    return@launch
+                }
+                store.setActive(id)
+                _ui.update { it.copy(reloadNeeded = true) }
+                say("“${save.name}” is now this model's profile. Reload the model to apply it; other models keep their own settings.")
+            } else {
+                dataStore.applyTunedValues(save.values)
+                store.setActive(id)
+                val loaded = ready != null
+                _ui.update { it.copy(reloadNeeded = loaded) }
+                say(if (loaded) "“${save.name}” is on. Reload the model to use it."
+                    else "“${save.name}” is on as the global default. It applies the next time a model loads.")
+            }
+        }
+    }
+
+    fun setAutoApplyModelProfilesEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            if (!store.setAutoApplyModelProfilesEnabled(enabled)) say("Couldn't save the profile preference.")
+        }
+    }
+
+    fun resetCurrentModelProfile() {
+        viewModelScope.launch {
+            val path = (engineController.state.value as? EngineState.Ready)?.info?.path
+            val identity = path?.let { ModelProfileIdentity.fromPath(it) }
+            if (identity == null) {
+                say("Load a model to reset its profile.")
+            } else if (store.setModelProfile(identity, null)) {
+                say("Model profile cleared. The next load uses global defaults.")
+            } else {
+                say("Couldn't clear this model profile.")
+            }
         }
     }
 
     fun reloadModel() {
         viewModelScope.launch {
             val ready = engineController.state.value as? EngineState.Ready ?: return@launch
-            val s = dataStore.settingsFlow.first()
+            val base = dataStore.settingsFlow.first()
+            val s = store.settingsForModelPath(ready.info.path, base)
             val draft = if (s.spec == SpecSource.MTP && s.separateMtpDraftEnabled)
                 modelManager.draftForModel(ready.info.path) else null
             _ui.update { it.copy(reloadNeeded = false, busy = "Reloading the model…") }
@@ -353,7 +420,7 @@ class AutoTuneViewModel(
                             save.copy(
                                 measuredTps = null, measuredAt = null,
                                 lastError = "Needs about ${gbText(need)} but this phone can safely give about ${gbText(can)}. " +
-                                    "Not measured, to keep the app from being killed. Tap Lower memory, or use a smaller model."
+                                    "Not measured, to keep the app from being killed. create a new settings profile with a smaller context/cache, or use a smaller model."
                             )
                         )
                         continue

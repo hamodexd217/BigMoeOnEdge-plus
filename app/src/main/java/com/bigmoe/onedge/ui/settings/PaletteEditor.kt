@@ -1,5 +1,10 @@
 package com.bigmoe.onedge.ui.settings
 
+import com.bigmoe.onedge.ui.theme.appSurfaceModifier
+import com.bigmoe.onedge.ui.theme.appBackgroundModifier
+import com.bigmoe.onedge.ui.theme.BigMoeTheme
+import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -121,41 +126,59 @@ fun PaletteChip(palette: PaletteSpec, selected: Boolean, onClick: () -> Unit, mo
     }
 }
 
-/** Live preview of a palette: background, user bubble, AI bubble and a code block. */
+/**
+ * Live preview of a palette in the surface style currently chosen in Settings (Solid, Gradient or Glass).
+ * It re-themes its own subtree with the draft palette, so the preview is drawn by the same backdrop and surface
+ * code as the real screens instead of a hand-painted imitation.
+ */
 @Composable
-private fun PalettePreview(p: PaletteSpec) {
-    Surface(shape = RoundedCornerShape(16.dp), color = Color(p.background), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(
-                Modifier.align(Alignment.End).clip(RoundedCornerShape(14.dp)).background(Color(p.userMessage))
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) { Text("Hello!", color = Color(ColorMath.onColor(p.userMessage))) }
-            Box(
-                Modifier.clip(RoundedCornerShape(14.dp)).background(Color(p.aiMessage))
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) { Text("Hi, how can I help?", color = Color(ColorMath.onColor(p.aiMessage))) }
-            Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(p.codeBlock)).padding(10.dp)
-            ) {
-                Text("fun main() = println(\"hi\")", fontFamily = FontFamily.Monospace, color = Color(ColorMath.onColor(p.codeBlock)))
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun PalettePreview(p: PaletteSpec, style: AppVisualStyle) {
+    BigMoeTheme(palette = p, visualStyle = style, applySystemBars = false) {
+        val frame = RoundedCornerShape(16.dp)
+        val bubble = RoundedCornerShape(14.dp)
+        val chip = RoundedCornerShape(10.dp)
+        val solid = style == AppVisualStyle.SOLID
+        // Clip + backdrop = what AppNavigation paints behind every real screen.
+        Box(Modifier.fillMaxWidth().clip(frame).then(appBackgroundModifier())) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    when (style) {
+                        AppVisualStyle.SOLID -> "Preview · Solid colors"
+                        AppVisualStyle.GRADIENT -> "Preview · Gradient"
+                        AppVisualStyle.LIQUID_GLASS -> "Preview · Glass"
+                    },
+                    style = MaterialTheme.typography.labelSmall, color = Color(p.text).copy(alpha = 0.7f)
+                )
                 Box(
-                    Modifier.clip(RoundedCornerShape(10.dp)).background(Color(p.primary))
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("Primary", color = Color(ColorMath.onColor(p.primary))) }
+                    Modifier.align(Alignment.End).clip(bubble)
+                        .then(if (solid) Modifier.background(Color(p.userMessage)) else appSurfaceModifier(bubble, Color(p.userMessage), strong = true))
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) { Text("Hello!", color = Color(ColorMath.onColor(p.userMessage))) }
                 Box(
-                    Modifier.clip(RoundedCornerShape(10.dp)).background(Color(p.secondary))
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("Secondary", color = Color(ColorMath.onColor(p.secondary))) }
+                    Modifier.clip(bubble)
+                        .then(if (solid) Modifier.background(Color(p.aiMessage)) else appSurfaceModifier(bubble, Color(p.aiMessage), strong = true))
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) { Text("Hi, how can I help?", color = Color(ColorMath.onColor(p.aiMessage))) }
+                Box(Modifier.fillMaxWidth().clip(chip).background(Color(p.codeBlock)).padding(10.dp)) {
+                    Text("fun main() = println(\"hi\")", fontFamily = FontFamily.Monospace, color = Color(ColorMath.onColor(p.codeBlock)))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.clip(chip).background(Color(p.primary)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Text("Primary", color = Color(ColorMath.onColor(p.primary)))
+                    }
+                    Box(Modifier.clip(chip).background(Color(p.secondary)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Text("Secondary", color = Color(ColorMath.onColor(p.secondary)))
+                    }
+                    Box(Modifier.clip(chip).background(Color(p.accent)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Text("Accent", color = Color(ColorMath.onColor(p.accent)))
+                    }
+                }
+                Text("Body text on background", color = Color(p.text))
                 Box(
-                    Modifier.clip(RoundedCornerShape(10.dp)).background(Color(p.accent))
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("Accent", color = Color(ColorMath.onColor(p.accent))) }
-            }
-            Text("Body text on background", color = Color(p.text))
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(p.surface)).padding(10.dp)) {
-                Text("Text on surface", color = Color(p.text))
+                    Modifier.fillMaxWidth().clip(chip)
+                        .then(appSurfaceModifier(chip, Color(p.surface)))
+                        .padding(10.dp)
+                ) { Text("Text on surface", color = Color(p.text)) }
             }
         }
     }
@@ -181,7 +204,7 @@ fun PaletteEditorDialog(
         title = { Text(if (onDelete == null) "New palette" else "Edit palette") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                PalettePreview(draft)
+                PalettePreview(draft, AppTheme.visualStyle)
                 OutlinedTextField(
                     value = draft.name,
                     onValueChange = { draft = draft.copy(name = it.take(30)) },

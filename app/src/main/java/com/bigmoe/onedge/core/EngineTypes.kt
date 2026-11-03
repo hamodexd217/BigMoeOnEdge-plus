@@ -48,6 +48,12 @@ data class LoadConfig(
     val topK: Int,
     /** -1 = random per run, non-negative = repeatable sampler seed. */
     val seed: Int,
+    // Extra sampler stages (neutral defaults = exactly the old chain). Wire format: see FloatIdx / I_REPEAT_LAST_N.
+    val minP: Float = 0f,
+    val repeatPenalty: Float = 1f,
+    val repeatLastN: Int = 64,
+    val frequencyPenalty: Float = 0f,
+    val presencePenalty: Float = 0f,
     /** true = llama.cpp's ordinary mmap load, no expert streaming (the original app's "mmap baseline"). */
     val mmapBaseline: Boolean,
     val cacheMode: CacheMode,
@@ -121,16 +127,20 @@ data class LoadConfig(
         ngramMinMatch.coerceIn(1, 64), ngramMaxMatch.coerceIn(1, 64),
         if (dropRenorm) 1 else 0, if (dropInPrefill) 1 else 0,
         if (predictionProbe) 1 else 0, if (loadAllExpertsForBenchmark) 1 else 0,
-        decisionPrefixCache.code, if (forceCache) 1 else 0
+        decisionPrefixCache.code, if (forceCache) 1 else 0,
+        repeatLastN.coerceIn(-1, 8192)
     )
 
-    fun toFloatArray(): FloatArray = floatArrayOf(temperature, topP)
+    fun toFloatArray(): FloatArray = floatArrayOf(
+        temperature, topP,
+        minP.coerceIn(0f, 1f), repeatPenalty.coerceIn(0.5f, 2f), frequencyPenalty.coerceIn(-2f, 2f), presencePenalty.coerceIn(-2f, 2f)
+    )
 
     companion object {
         const val UBATCH = 512
         /** Length of [toIntArray]; must equal I_COUNT in native-bridge.cpp. */
-        const val INT_COUNT = 44
-        const val FLOAT_COUNT = 2
+        const val INT_COUNT = 45
+        const val FLOAT_COUNT = 6
     }
 }
 
@@ -226,7 +236,9 @@ data class GenerationRequest(
     val maxTokens: Int,
     val think: Boolean,
     /** Images for THIS turn only; needs a loaded vision projector. */
-    val images: List<ImageData> = emptyList()
+    val images: List<ImageData> = emptyList(),
+    /** Sampling is cheap to change per request; null keeps the session's load-time sampler for internal jobs. */
+    val sampling: SamplingOverride? = null
 )
 
 

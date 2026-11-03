@@ -1,5 +1,6 @@
 package com.bigmoe.onedge.ui.files
 
+import com.bigmoe.onedge.ui.theme.AppCard
 import android.content.ClipData
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
@@ -71,7 +72,7 @@ fun WorkspaceScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(state.browserEntries, key = { it.path }) { entry ->
-                    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp).clickable {
+                    AppCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp).clickable {
                         if (entry.isDirectory) viewModel.loadWorkspace(entry.path) else onOpenFile(entry.path)
                     }) {
                         Row(

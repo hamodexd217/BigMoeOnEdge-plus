@@ -78,8 +78,9 @@ android {
         // dependable from Android 10 (upstream uses 29); the NDK toolchain also links against this platform level.
         minSdk = 29
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.6.0"
+        // Keep the source ZIP's first rebuilt APK distinguishable from the older 0.6.0 build.
+        versionCode = 19
+        versionName = "0.6.5"
         manifestPlaceholders["bmoeAppCategory"] = bmoeAppCategory
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

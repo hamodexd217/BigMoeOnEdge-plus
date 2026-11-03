@@ -49,7 +49,7 @@ After Phase 1, the feature pass added the following and these items are now impl
   ToolProtocol now repairs raw newlines inside JSON strings (validated with a Python port).
 * AgentController: enabledToolNames(settings, registered) (files/code switches, web-page tools when web search on,
   web_search only in AUTO mode), AgentRequest.contextText/images, ToolContext(sessionId, assistantMessageId) passed to
-  tools, MAX_TOOL_ROUNDS=6, image turn → engine state invalidated (next turn replays text).
+  tools, no cap on tool rounds (MAX_IDENTICAL_ROUNDS=8 stops only an identical repeated call), image turn → engine state invalidated (next turn replays text).
 * attachments package: AttachmentManager (import to workspace/uploads with validation, prepareMedia),
   MediaProcessor (decode+EXIF rotate+scale, RGB bytes, video frames via MediaMetadataRetriever; fitSize/rgbFromArgb/
   frameTimesUs are pure).

@@ -1,0 +1,21 @@
+BigMoeOnEdge+ 0.6.0 — upstream 0.35.0 migration validation tranche 03
+Date: 2026-10-24
+
+PASS: Appearance settings default is collapsed (appearanceExpanded = false)
+PASS: CacheBrake policy unit test compiled; all 9 checks passed
+PASS: upstream expert_layout_test.cpp compiled against target expert_layout.cpp + tensor_names.cpp; all layout checks passed
+PASS: full llama.cpp-dependent host build: cmake --build /tmp/bmoe_full_host_build --target bmoe_core -j4
+PASS: native-bridge.cpp host syntax-only compile using JDK JNI headers and temporary android/log.h stub
+PASS: earlier C++17 syntax checks for log.cpp, expert_layout.cpp, tensor_names.cpp
+PASS: Kotlin tests added for response_format json_object/json_schema/errors/schema propagation (source review only)
+BLOCKED: Android Gradle assembleDevRelease; wrapper attempted to download Gradle 8.9 and failed with UnknownHostException: services.gradle.org
+NOT RUN: Kotlin/JUnit tests (Gradle unavailable)
+NOT RUN: Android NDK build, APK inspection, installation or device runtime tests
+NOT RUN: real-model structured JSON/schema conformance, including template-specific grammar behavior
+NOT RUN: Flint GGUF runtime test
+NOT RUN: device-side MTP, mmproj, API server or Hexagon/NPU regression tests
+
+Notes:
+- Structured-output sampler logic was adjusted to constrain the candidate set before applying/accepting a sampling-chain token; full host bmoe_core build passed after that change.
+- The planner/placement code was not copied into active CMake because upstream v0.35.0 config/probe assumptions do not match the target's RunConfig/PrefillDeviceConfig.
+- This log records completed checks only; it does not claim an Android release build.

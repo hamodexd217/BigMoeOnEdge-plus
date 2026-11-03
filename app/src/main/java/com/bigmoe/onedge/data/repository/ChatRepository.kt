@@ -44,7 +44,10 @@ data class ChatMessageDomainModel(
     val generationElapsedMs: Long? = null,
     val contextUsed: Int? = null,
     val contextTotal: Int? = null,
-    val note: String? = null
+    val note: String? = null,
+    val prefillTokens: Int? = null,
+    val thinkingMs: Long? = null,
+    val toolMs: Long? = null
 )
 
 data class AttachmentDomainModel(
@@ -138,7 +141,10 @@ class ChatRepository(
                 prefillMs = message.stats?.let { (it.prefillSeconds * 1000.0).toLong() },
                 generatedTokens = message.stats?.nGenerated,
                 cacheHitPct = message.stats?.cacheHitPct?.takeIf { it >= 0.0 },
-                note = message.note
+                note = message.note,
+                prefillTokens = message.prefillTokens,
+                thinkingMs = message.thinkingMs,
+                toolMs = message.toolMs
             )
         )
         sessionDao.touchSession(sessionId, now)
@@ -225,6 +231,7 @@ class ChatRepository(
         id = id, sessionId = sessionId, role = role, content = content, timestamp = timestamp,
         reasoning = reasoning, tokensPerSecond = tokensPerSecond, prefillMs = prefillMs,
         generatedTokens = generatedTokens, cacheHitPct = cacheHitPct,
-        generationElapsedMs = generationElapsedMs, contextUsed = contextUsed, contextTotal = contextTotal, note = note
+        generationElapsedMs = generationElapsedMs, contextUsed = contextUsed, contextTotal = contextTotal, note = note,
+        prefillTokens = prefillTokens, thinkingMs = thinkingMs, toolMs = toolMs
     )
 }

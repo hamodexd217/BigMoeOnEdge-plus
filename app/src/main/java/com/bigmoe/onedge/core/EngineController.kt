@@ -59,6 +59,14 @@ class EngineController(
     /** The loaded model, or null when none is ready. */
     fun loadedModel(): ModelInfo? = (_state.value as? EngineState.Ready)?.info
 
+    /** Native implementation reads atomics only: no lifecycle lock or second inference session. */
+    fun performanceSnapshot(): InferenceTelemetry? {
+        if (_state.value !is EngineState.Ready) return null
+        return try { InferenceTelemetry.fromWire(backend.telemetry()) }
+        catch (_: LinkageError) { null }
+        catch (_: RuntimeException) { null }
+    }
+
     /** Build-time features of the native library; all false if the library cannot be loaded. */
     val capabilities: EngineCaps by lazy {
         try { backend.capabilities() } catch (_: Throwable) { EngineCaps(overlapHook = false, multimodal = false, npuPrefill = false) }
@@ -129,6 +137,7 @@ class EngineController(
                 }
             }
             if (error != null) {
+                error = ModelFamilies.explainLoadError(error)
                 _state.value = EngineState.Failed(modelPath, error)
                 return@withLock error
             }
@@ -435,7 +444,7 @@ class EngineController(
             val stopped = AtomicBoolean(false)
             val worker = launch(ioDispatcher) {
                 try {
-                    backend.generate(
+                    backend.generateWithSampling(
                         system = request.system,
                         historyFlat = history,
                         prompt = prompt,
@@ -443,6 +452,7 @@ class EngineController(
                         clearKv = needsReplay,
                         think = request.think,
                         images = request.images,
+                        sampling = request.sampling,
                         callback = object : NativeGenerationCallback {
                             private var generated = 0
                             override fun onToken(answerDelta: ByteArray, reasoningDelta: ByteArray): Boolean {

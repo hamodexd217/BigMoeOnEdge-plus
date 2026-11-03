@@ -61,7 +61,8 @@ class AppContainer(private val context: Context) {
             // for generation/model metadata so existing v2 chats remain intact.
             .addMigrations(
                 com.bigmoe.onedge.data.local.MIGRATION_2_3,
-                com.bigmoe.onedge.data.local.MIGRATION_3_4
+                com.bigmoe.onedge.data.local.MIGRATION_3_4,
+                com.bigmoe.onedge.data.local.MIGRATION_4_5
             )
             .fallbackToDestructiveMigration()
             .build()
@@ -182,12 +183,13 @@ class AppContainer(private val context: Context) {
     /** Called once from Application.onCreate: honours "load the last model on app start". */
     fun autoLoadLastModelIfEnabled() {
         appScope.launch {
-            val s = settingsDataStore.settingsFlow.first()
-            if (s.autoLoadLastModel && s.lastModelPath.isNotBlank() && File(s.lastModelPath).isFile) {
-                val projector = s.lastMmprojPath.takeIf { it.isNotBlank() && File(it).isFile }
+            val base = settingsDataStore.settingsFlow.first()
+            if (base.autoLoadLastModel && base.lastModelPath.isNotBlank() && File(base.lastModelPath).isFile) {
+                val s = autoSaveStore.settingsForModelPath(base.lastModelPath, base)
+                val projector = base.lastMmprojPath.takeIf { it.isNotBlank() && File(it).isFile }
                 val draftPath = if (s.spec == com.bigmoe.onedge.core.SpecSource.MTP && s.separateMtpDraftEnabled)
-                    modelManager.draftForModel(s.lastModelPath) else null
-                engineController.loadModel(s.lastModelPath, s.toLoadConfig(), projector, draftPath)
+                    modelManager.draftForModel(base.lastModelPath) else null
+                engineController.loadModel(base.lastModelPath, s.toLoadConfig(), projector, draftPath)
             }
         }
     }

@@ -10,6 +10,7 @@ import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.ModelManager
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
 import com.bigmoe.onedge.data.local.datastore.EngineSettingsDataStore
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import com.bigmoe.onedge.data.local.datastore.WebSearchMode
 import com.bigmoe.onedge.ui.theme.PalettePresets
 import com.bigmoe.onedge.ui.theme.PaletteSpec
@@ -45,11 +46,16 @@ class SettingsViewModel(
     fun updateThinkingEnabled(v: Boolean) = launch { dataStore.updateThinkingEnabled(v) }
     fun updateWebSearchEnabled(v: Boolean) = launch { dataStore.updateWebSearchEnabled(v) }
     fun updateWebSearchMode(v: WebSearchMode) = launch { dataStore.updateWebSearchMode(v) }
+    fun updateInteractiveUiEnabled(v: Boolean) = launch { dataStore.updateInteractiveUiEnabled(v) }
+    fun updateImageSearchEnabled(v: Boolean) = launch { dataStore.updateImageSearchEnabled(v) }
+    fun updateAutoImageSearchAfterWebSearch(v: Boolean) = launch { dataStore.updateAutoImageSearchAfterWebSearch(v) }
     fun updateBraveApiKey(v: String) = launch { dataStore.updateBraveApiKey(v.trim()) }
     fun updateSearxngUrl(v: String) = launch { dataStore.updateSearxngUrl(v.trim()) }
     fun updateToolsFilesEnabled(v: Boolean) = launch { dataStore.updateToolsFilesEnabled(v) }
     fun updateToolsCodeEnabled(v: Boolean) = launch { dataStore.updateToolsCodeEnabled(v) }
     fun updateToolsUtilitiesEnabled(v: Boolean) = launch { dataStore.updateToolsUtilitiesEnabled(v) }
+    fun updateToolsExternalEnabled(v: Boolean) = launch { dataStore.updateToolsExternalEnabled(v) }
+    fun updateExternalToolsJson(v: String) = launch { dataStore.updateExternalToolsJson(v) }
     fun updateToolResultChars(v: Int) = launch { dataStore.updateToolResultChars(v) }
     fun updateThinkAfterTools(v: Boolean) = launch { dataStore.updateThinkAfterTools(v) }
     fun updateImageMaxDim(v: Int) = launch { dataStore.updateImageMaxDim(v) }
@@ -63,6 +69,11 @@ class SettingsViewModel(
     fun updateTemperature(v: Float) = launch { dataStore.updateTemperature(v) }
     fun updateTopP(v: Float) = launch { dataStore.updateTopP(v) }
     fun updateTopK(v: Int) = launch { dataStore.updateTopK(v) }
+    fun updateMinP(v: Float) = launch { dataStore.updateMinP(v) }
+    fun updateRepeatPenalty(v: Float) = launch { dataStore.updateRepeatPenalty(v) }
+    fun updateRepeatLastN(v: Int) = launch { dataStore.updateRepeatLastN(v) }
+    fun updateFrequencyPenalty(v: Float) = launch { dataStore.updateFrequencyPenalty(v) }
+    fun updatePresencePenalty(v: Float) = launch { dataStore.updatePresencePenalty(v) }
     fun updateSeed(v: Int) = launch { dataStore.updateSeed(v) }
     fun updateCacheMb(v: Int) = launch { dataStore.updateCacheMb(v) }
     fun updateCacheCeilMb(v: Int) = launch { dataStore.updateCacheCeilMb(v) }
@@ -112,6 +123,7 @@ class SettingsViewModel(
 
     // ---- appearance ----
     fun selectTheme(id: String) = launch { dataStore.updateThemeId(id) }
+    fun updateVisualStyle(style: AppVisualStyle) = launch { dataStore.updateVisualStyle(style) }
 
     /** Saves (insert or replace) a custom palette and selects it. */
     fun saveCustomPalette(palette: PaletteSpec) = launch {

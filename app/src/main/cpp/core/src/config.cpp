@@ -1,3 +1,4 @@
+#include <cmath>
 #include "bmoe/config.h"
 
 #include <utility>
@@ -80,6 +81,17 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.sampling.top_p <= 0.0f || cfg.sampling.top_p > 1.0f) {
             return fail("sampling.top_p must be in (0, 1]");
         }
+    }
+
+    // The penalty stages also run under greedy decoding, so they are checked whatever the temperature is.
+    if (!(cfg.sampling.repeat_penalty > 0.0f) || !std::isfinite(cfg.sampling.repeat_penalty)) {
+        return fail("sampling.repeat_penalty must be > 0 (1 = off)");
+    }
+    if (!std::isfinite(cfg.sampling.freq_penalty) || !std::isfinite(cfg.sampling.presence_penalty)) {
+        return fail("sampling.freq_penalty / presence_penalty must be finite (0 = off)");
+    }
+    if (!(cfg.sampling.min_p >= 0.0f && cfg.sampling.min_p <= 1.0f)) {
+        return fail("sampling.min_p must be in [0, 1] (0 = off)");
     }
 
     // Verification is exact only because greedy acceptance compares argmax against argmax. Under a

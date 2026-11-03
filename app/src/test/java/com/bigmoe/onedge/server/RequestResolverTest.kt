@@ -18,8 +18,9 @@ class RequestResolverTest {
         ApiRuntime("k", true, force, thinking, maxTokens, 1000L)
 
     private fun parsed(
-        maxTokens: Int? = 1000, temperature: Double? = null, topP: Double? = null, topK: Int? = null, thinking: Boolean? = null, seed: Int? = null
-    ) = ParsedChat("[]", "", "", listOf("END"), maxTokens, temperature, topP, topK, seed, thinking, false, "m", emptyList())
+        maxTokens: Int? = 1000, temperature: Double? = null, topP: Double? = null, topK: Int? = null,
+        thinking: Boolean? = null, seed: Int? = null, jsonSchema: String = ""
+    ) = ParsedChat("[]", "", "", listOf("END"), maxTokens, temperature, topP, topK, seed, thinking, false, "m", emptyList(), jsonSchema = jsonSchema)
 
     @Test
     fun requestSamplingIsHonouredWhenNotForced() {
@@ -31,6 +32,12 @@ class RequestResolverTest {
         assertEquals(0.95f, s.topP, 1e-6f) // not given: the loaded model's value
         assertEquals(listOf("END"), r.request.stop)
         assertTrue(r.ignored.isEmpty())
+    }
+
+    @Test
+    fun structuredOutputSchemaSurvivesRequestResolution() {
+        val schema = """{"type":"object"}"""
+        assertEquals(schema, RequestResolver.resolve(parsed(jsonSchema = schema), rt(), loaded).request.jsonSchema)
     }
 
     @Test

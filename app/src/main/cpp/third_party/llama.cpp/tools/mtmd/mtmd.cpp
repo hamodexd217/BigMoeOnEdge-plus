@@ -709,6 +709,13 @@ struct mtmd_context {
                     img_end = "]<]end of image[>[";
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
                 } break;
+            case PROJECTOR_TYPE_LFM3VL:
+                {
+                    // <|vision_start|> ... (image embeddings) ... <|vision_end|>
+                    img_beg = "<|vision_start|>";
+                    img_end = "<|vision_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_lfm3vl>(ctx_v);
+                } break;
             case PROJECTOR_TYPE_MUSE_GLIMMER:
                 {
                     img_beg = "<|image_start|>";

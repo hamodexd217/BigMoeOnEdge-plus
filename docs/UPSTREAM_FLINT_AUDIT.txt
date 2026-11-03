@@ -1,0 +1,28 @@
+BigMoeOnEdge+ 0.6.0 — upstream/Flint source audit
+Date: 2026-10-24
+
+WHAT I VERIFIED
+- App source is native Android/Kotlin/JNI with custom BigMoeOnEdge core 0.28.1, based on 0.28.0.
+- The app's CMakeLists identifies its vendored llama.cpp as snapshot 965f897 (2026-09-26); its source lacks LLM_ARCH_FLINT and src/models/flint.cpp.
+- The app's expert-streaming registry has no "flint" recipe.
+- The provided BigMoeOnEdge 0.35.0 ZIP has an empty third_party/llama.cpp directory because this dependency is a Git submodule.
+- GitHub metadata for Helldez/BigMoeOnEdge tag v0.35.0 pins that submodule to ad98071a583d66c922ba36264433e0435f0e0b42. At that commit, src/models/flint.cpp and LLM_ARCH_FLINT are present.
+- Upstream llama.cpp PR #30928 adding Flint support was merged 2026-10-21: https://github.com/ggml-org/llama.cpp/pull/30928
+
+WHY I DID NOT BLINDLY MERGE
+The matching llama.cpp source is absent from the supplied ZIP, and the upstream core 0.35.0 has a newer planner/runtime API than the app's JNI/Kotlin integration. Replacing either native tree wholesale could break local expert-ready-hook changes, Qwen4Exp, MTP, multimodal requests, or app API contracts. A complete Flint port also needs the model graph, vocabulary/tokenizer/template changes, tensor mapping, numerical scaling behavior, and an expert-streamer recipe; adding an architecture string alone is not support.
+
+FILES ADDED TO SOURCE ZIP
+- docs/UPSTREAM_0.35.0_FLINT_READINESS.md: findings, exact submodule pin, risks, and staged implementation plan.
+- scripts/audit-upstream-0.35.0.sh: read-only audit that checks the local vendored tree and optional extracted upstream tree.
+- README.md: clearly states Flint is not supported in this source revision.
+
+VALIDATION
+- New audit script bash syntax: PASS.
+- scripts/validate-upgrade-0.5.7.sh: PASS (settings wiring, JNI config array length 44, version alignment).
+- scripts/validate-npu-source.sh: PASS (static checks only; does not build an APK or prove HTP execution).
+- scripts/kt_lint.py: returned 31 findings across 165 files; full output is in kt_lint_audit.txt. No Kotlin files were modified in this audit.
+- ./gradlew testDebugUnitTest --no-daemon: BLOCKED because Gradle 8.9 download failed with UnknownHostException: services.gradle.org. No JUnit tests ran and no APK was built.
+
+STATUS
+This is a safety/readiness update, NOT a completed upstream 0.35.0 merge and NOT Flint runtime support. The full implementation still requires the pinned llama.cpp source to be ported against the app's local modifications and then compiled/tested.

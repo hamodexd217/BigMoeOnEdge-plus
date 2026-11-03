@@ -20,7 +20,7 @@ import com.bigmoe.onedge.data.local.entity.ChatSessionEntity
         AttachmentEntity::class,
         ArtifactEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

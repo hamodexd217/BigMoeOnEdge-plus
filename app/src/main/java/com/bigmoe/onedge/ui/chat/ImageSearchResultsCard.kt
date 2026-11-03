@@ -1,5 +1,6 @@
 package com.bigmoe.onedge.ui.chat
 
+import com.bigmoe.onedge.ui.theme.AppCard
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
@@ -8,7 +9,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -41,9 +41,9 @@ import java.net.URL
 fun ImageSearchResultsCard(body: String, modifier: Modifier = Modifier) {
     val results = ImageSearchResultParser.parse(body) ?: return
     val uriHandler = LocalUriHandler.current
-    Card(
+    AppCard(
         modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        base = MaterialTheme.colorScheme.surfaceContainer,
         shape = RoundedCornerShape(16.dp)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -75,7 +75,7 @@ fun ImageSearchResultsCard(body: String, modifier: Modifier = Modifier) {
                     }
                 }
             }
-            Text("Tap a preview to open its source page.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Tap a preview to open its source page inside the app.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

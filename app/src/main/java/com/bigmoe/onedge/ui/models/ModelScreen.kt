@@ -1,5 +1,6 @@
 package com.bigmoe.onedge.ui.models
 
+import com.bigmoe.onedge.ui.theme.AppCard
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -42,6 +43,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,11 +55,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import java.io.File
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
 import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.ModelFile
 import com.bigmoe.onedge.core.ModelManager
 import com.bigmoe.onedge.core.SpecSource
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
+import com.bigmoe.onedge.ui.theme.AppTheme
 import com.bigmoe.onedge.data.local.datastore.loadConfigDiffers
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -149,12 +154,16 @@ fun ModelScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surface else Color.Transparent
+                ),
                 title = {
                     Text("MODELS", style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold)
                 }
             )
         },
-        modifier = modifier
+        modifier = modifier,
+        containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.background else Color.Transparent
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
@@ -165,7 +174,7 @@ fun ModelScreen(
             item { SupportedModelsCard() }
 
             item {
-                Card(modifier = Modifier.fillMaxWidth()) {
+                AppCard(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Add a model / mmproj", style = MaterialTheme.typography.titleMedium)
                         Text(
@@ -260,7 +269,7 @@ fun ModelScreen(
 
             ui.message?.let { msg ->
                 item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    AppCard(modifier = Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(msg, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = viewModel::dismissMessage) { Text("OK") }
@@ -282,7 +291,7 @@ fun ModelScreen(
                     Text("Attach one to each target above. Sidecars are hidden from the target-model list.", style = MaterialTheme.typography.bodySmall)
                 }
                 items(ui.drafts, key = { "draft:${it.path}" }) { draft ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    AppCard(modifier = Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(draft.name, style = MaterialTheme.typography.titleSmall)
@@ -301,7 +310,7 @@ fun ModelScreen(
                     }
                 }
                 items(ui.incompleteImports, key = { "incomplete:${it.id}" }) { pending ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    AppCard(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(pending.displayName, style = MaterialTheme.typography.titleSmall)
                             Text("${pending.presentShardIndices.size}/${pending.expectedShardCount} shards imported • ${ModelManager.formatBytes(pending.totalSizeBytes)}", style = MaterialTheme.typography.bodySmall)
@@ -391,7 +400,7 @@ internal fun PendingLoadDialog(viewModel: ModelViewModel, pending: PendingLoad) 
 
 @Composable
 private fun SupportedModelsCard() {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Any MoE model will work.", style = MaterialTheme.typography.titleMedium)
             Text(
@@ -445,7 +454,7 @@ private fun StatusCard(
     onUnload: () -> Unit,
     onReload: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when (engine) {
                 EngineState.Unloaded -> Text("No model loaded")
@@ -530,7 +539,7 @@ private fun ModelRow(
         SpecSource.NGRAM -> "Off (n-gram guess-ahead is on)"
         SpecSource.OFF -> if (attachedName != null) "Off \u2022 sidecar: $attachedName" else "Off"
     }
-    Card(modifier = Modifier.fillMaxWidth()) {
+    AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

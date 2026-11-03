@@ -12,7 +12,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -64,7 +63,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            BigMoeTheme(themeId = settings.themeId, customPalettesJson = settings.customPalettesJson) {
+            BigMoeTheme(themeId = settings.themeId, customPalettesJson = settings.customPalettesJson, visualStyle = settings.visualStyle) {
                 val chatViewModel: ChatViewModel = viewModel(factory = viewModelFactory)
                 val historyViewModel: HistoryViewModel = viewModel(factory = viewModelFactory)
                 val settingsViewModel: SettingsViewModel = viewModel(factory = viewModelFactory)
@@ -72,15 +71,17 @@ class MainActivity : ComponentActivity() {
                 val autoTuneViewModel: AutoTuneViewModel = viewModel(factory = viewModelFactory)
                 val fileViewModel: com.bigmoe.onedge.ui.files.FileViewModel = viewModel(factory = viewModelFactory)
 
-                AppNavigation(
-                    chatViewModel = chatViewModel,
-                    historyViewModel = historyViewModel,
-                    settingsViewModel = settingsViewModel,
-                    modelViewModel = modelViewModel,
-                    autoTuneViewModel = autoTuneViewModel,
-                    fileViewModel = fileViewModel,
-                    initialSessionId = intent.getStringExtra(EXTRA_OPEN_SESSION_ID)
-                )
+                com.bigmoe.onedge.ui.browser.ProvideInAppBrowser {
+                    AppNavigation(
+                        chatViewModel = chatViewModel,
+                        historyViewModel = historyViewModel,
+                        settingsViewModel = settingsViewModel,
+                        modelViewModel = modelViewModel,
+                        autoTuneViewModel = autoTuneViewModel,
+                        fileViewModel = fileViewModel,
+                        initialSessionId = intent.getStringExtra(EXTRA_OPEN_SESSION_ID)
+                    )
+                }
 
                 if (showRoomUpgradeWarning) {
                     AlertDialog(

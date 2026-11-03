@@ -706,6 +706,34 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
         evict_tail();
 }
 
+double ExpertStreamSource::cache_lost_frac(int n) {
+    if (cache_max_ == 0 || chead_ == -1 || n <= 0 || n_expert_ <= 0) return -1.0;
+    // Sample across the entire LRU so reclaim of cold entries is detected early too.
+    size_t entries = 0;
+    for (int32_t id = chead_; id != -1; id = cnext_[id]) ++entries;
+    if (entries == 0) return -1.0;
+    const size_t stride = std::max<size_t>(1, entries / (size_t) n);
+    size_t sampled = 0, resident = 0, i = 0;
+    for (int32_t id = chead_; id != -1; id = cnext_[id], ++i) {
+        if (i % stride != 0 || !cvalid_[id]) continue;
+        const int il = id / n_expert_, e = id % n_expert_;
+        if (il < 0 || il >= (int) layers_.size() || e < 0 || e >= n_expert_) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t slice = layers_[il].proj[p].nb2;
+            if (!layers_[il].proj[p].tensor || slice < 2 * page_ || !lbuf_[p][il]) continue;
+            // Choose a page wholly inside the slice so neighboring experts never share a sample.
+            const uintptr_t start = (uintptr_t) lbuf_[p][il] + (uint64_t) e * slice;
+            const uintptr_t pg = (start + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            // vm_resident_sample counts only pages the OS successfully inspected. A failed query
+            // therefore yields a partial sample when some pages were available, or -1 below.
+            (void) pio::vm_resident_sample((void *) pg, page_, &sampled, &resident);
+            break;
+        }
+    }
+    if (sampled == 0) return -1.0;
+    return 1.0 - (double) resident / (double) sampled;
+}
+
 size_t ExpertStreamSource::worst_cycle_bytes(int top_k) const {
     // entry_bytes prices a layer's experts uniformly (one entry = every projection of one expert
     // of that layer), so the worst token demands top_k entries from every bound layer. Clamped

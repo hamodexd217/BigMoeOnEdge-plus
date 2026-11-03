@@ -57,6 +57,9 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.attachments.PendingAttachment
 import com.bigmoe.onedge.data.local.entity.AttachmentKind
+import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.ui.theme.appSurfaceModifier
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,6 +84,10 @@ fun ChatInputBar(
     onToggleToolFiles: () -> Unit,
     onToggleToolCode: () -> Unit,
     onToggleToolUtilities: () -> Unit,
+    toolsExternalEnabled: Boolean = false,
+    onToggleToolExternal: () -> Unit = {},
+    nativeUiEnabled: Boolean = false,
+    onToggleNativeUi: () -> Unit = {},
     chooseFromOptions: Boolean = false,
     choiceOptions: String = "",
     onToggleChooseFromOptions: () -> Unit = {},
@@ -107,12 +114,14 @@ fun ChatInputBar(
         ActivityResultContracts.GetMultipleContents()
     ) { uris -> uris.forEach { onAddAttachment(it, AttachmentKind.VIDEO) } }
 
+    val inputShape = RoundedCornerShape(24.dp)
+    val styledSurface = AppTheme.visualStyle != AppVisualStyle.SOLID
     Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shadowElevation = 2.dp
+        modifier = modifier.fillMaxWidth().then(if (styledSurface) appSurfaceModifier(inputShape) else Modifier),
+        shape = inputShape,
+        color = if (styledSurface) Color.Transparent else MaterialTheme.colorScheme.surface,
+        border = if (styledSurface) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = if (styledSurface) 0.dp else 2.dp
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Box(
@@ -242,7 +251,7 @@ fun ChatInputBar(
                     Box {
                         ToggleIcon(
                             icon = Icons.Default.Build,
-                            on = toolsFilesEnabled || toolsCodeEnabled || toolsUtilitiesEnabled,
+                            on = toolsFilesEnabled || toolsCodeEnabled || toolsUtilitiesEnabled || toolsExternalEnabled || nativeUiEnabled,
                             description = "Tool access",
                             onClick = { toolsMenu = true }
                         )
@@ -262,6 +271,16 @@ fun ChatInputBar(
                                 label = "Utilities",
                                 checked = toolsUtilitiesEnabled,
                                 onCheckedChange = onToggleToolUtilities
+                            )
+                            ToolToggleRow(
+                                label = "External",
+                                checked = toolsExternalEnabled,
+                                onCheckedChange = onToggleToolExternal
+                            )
+                            ToolToggleRow(
+                                label = "Native UI",
+                                checked = nativeUiEnabled,
+                                onCheckedChange = onToggleNativeUi
                             )
                         }
                     }

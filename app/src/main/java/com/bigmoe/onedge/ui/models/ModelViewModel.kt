@@ -10,8 +10,10 @@ import com.bigmoe.onedge.core.LoadAdvice
 import com.bigmoe.onedge.core.ModelFile
 import com.bigmoe.onedge.core.ModelManager
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
+import com.bigmoe.onedge.data.local.AutoSaveStore
 import com.bigmoe.onedge.data.local.datastore.EngineSettingsDataStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +53,7 @@ class ModelViewModel(
     private val modelManager: ModelManager,
     private val engineController: EngineController,
     private val settingsDataStore: EngineSettingsDataStore,
+    private val autoSaveStore: AutoSaveStore,
     private val totalRamBytes: () -> Long
 ) : ViewModel() {
 
@@ -223,7 +226,8 @@ class ModelViewModel(
 
     private fun loadNow(path: String, mmprojPath: String?, currentDraftPath: String? = null) {
         viewModelScope.launch {
-            val s = settingsDataStore.settingsFlow.first()
+            val base = settingsDataStore.settingsFlow.first()
+            val s = autoSaveStore.settingsForModelPath(path, base)
             val draftPath = if (s.spec == com.bigmoe.onedge.core.SpecSource.MTP && s.separateMtpDraftEnabled)
                 currentDraftPath?.takeIf { File(it).isFile } ?: modelManager.draftForModel(path) else null
             val error = engineController.loadModel(path, s.toLoadConfig(), mmprojPath, draftPath)

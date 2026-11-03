@@ -118,6 +118,10 @@ public:
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
 
+    // Approximate the share of cache pages the OS has reclaimed, sampling at most n LRU entries.
+    // Called between decode calls; returns -1 when no valid sample is available.
+    double cache_lost_frac(int n);
+
     // The cliff from cache-sizing.md, computed at init from model shape alone: the bytes one
     // token's pass over the layer stack demands in the worst case, i.e. every bound layer's top_k
     // most expensive experts. A global-LRU budget below this thrashes to exactly 0% hits — it

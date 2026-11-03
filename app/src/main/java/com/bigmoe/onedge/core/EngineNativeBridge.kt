@@ -111,6 +111,16 @@ class EngineNativeBridge {
         think: Boolean,
         imageDims: IntArray,
         imageData: Array<ByteArray>,
+        overrideSampling: Boolean,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        seed: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        repeatLastN: Int,
+        frequencyPenalty: Float,
+        presencePenalty: Float,
         callback: NativeGenerationCallback
     ): Boolean
 
@@ -124,6 +134,7 @@ class EngineNativeBridge {
         messagesJson: ByteArray,
         toolsJson: ByteArray,
         toolChoice: ByteArray,
+        jsonSchema: ByteArray,
         stop: Array<ByteArray>,
         maxTokens: Int,
         think: Boolean,
@@ -132,6 +143,11 @@ class EngineNativeBridge {
         topP: Float,
         topK: Int,
         seed: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        repeatLastN: Int,
+        frequencyPenalty: Float,
+        presencePenalty: Float,
         callback: NativeChatCallback
     ): Boolean
 
@@ -141,6 +157,9 @@ class EngineNativeBridge {
         choices: Array<ByteArray>,
         reusePrefix: Boolean
     ): ByteArray
+
+    /** Lock-free snapshot, microsecond durations. Never reads a live context pointer. */
+    external fun nativeTelemetry(): LongArray
 
     external fun nativeStopGeneration()
 

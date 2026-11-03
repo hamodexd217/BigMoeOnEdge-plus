@@ -2311,8 +2311,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
-    if (arch == LLM_ARCH_MISTRAL4) {
-        // src1 can exceed F16 range
+    if (arch == LLM_ARCH_MISTRAL4 || arch == LLM_ARCH_FLINT) {
+        // Flint activation sums can exceed F16 range; use F32 source precision as a safe fallback
+        // because this vendored snapshot predates upstream build_amax_src1_f16 support.
         ggml_prec_set_src(experts, GGML_PREC_F32, 1);
     }
     cb(experts, "ffn_moe_down", il);

@@ -133,6 +133,7 @@ struct GenerateRequest {
     std::string chat_messages_json;
     std::string chat_tools_json;   // OpenAI `tools` array, "" = none
     std::string chat_tool_choice;  // "", "auto", "required" or "none"
+    std::string json_schema;       // OpenAI response_format JSON Schema; empty = ordinary output
     // Stop strings, matched against the ANSWER text (never the reasoning). Text before the first match
     // is delivered, the match itself and everything after it are not; text that could still turn into
     // a match is held back until it cannot. Stateless chat mode only.

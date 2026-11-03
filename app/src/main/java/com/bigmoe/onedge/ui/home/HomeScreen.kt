@@ -2,7 +2,6 @@ package com.bigmoe.onedge.ui.home
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +46,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.data.repository.ChatSessionDomainModel
 import com.bigmoe.onedge.ui.history.HistoryViewModel
+import com.bigmoe.onedge.ui.theme.appBackgroundModifier
+import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.ui.theme.appSurfaceModifier
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
+import androidx.compose.ui.graphics.Color
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -65,8 +69,8 @@ fun HomeScreen(
     var renaming by remember { mutableStateOf<ChatSessionDomainModel?>(null) }
     var deleting by remember { mutableStateOf<ChatSessionDomainModel?>(null) }
 
-    // The palette background is drawn here: without it the window's default (white) colour shows through.
-    Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding()) {
+    // The palette background is painted once by AppNavigation behind every screen.
+    Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -183,12 +187,15 @@ private fun SessionRow(
     val date = remember(session.updatedAt) {
         SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(session.updatedAt))
     }
+    val styled = AppTheme.visualStyle != AppVisualStyle.SOLID
+    val sessionShape = RoundedCornerShape(16.dp)
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
+        shape = sessionShape,
+        color = if (styled) Color.Transparent else MaterialTheme.colorScheme.surface,
+        tonalElevation = if (styled) 0.dp else 1.dp,
         modifier = Modifier
             .fillMaxWidth()
+            .then(if (styled) appSurfaceModifier(sessionShape, MaterialTheme.colorScheme.surface) else Modifier)
             .combinedClickable(onClick = onOpen, onLongClick = { menuOpen = true })
     ) {
         Row(

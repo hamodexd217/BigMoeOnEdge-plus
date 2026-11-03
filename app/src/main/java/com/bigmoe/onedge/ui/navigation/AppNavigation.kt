@@ -1,5 +1,18 @@
 package com.bigmoe.onedge.ui.navigation
 
+import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.expandHorizontally
@@ -10,12 +23,17 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -25,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -48,6 +67,7 @@ import com.bigmoe.onedge.ui.settings.AutoSettingsScreen
 import com.bigmoe.onedge.ui.settings.AutoTuneViewModel
 import com.bigmoe.onedge.ui.settings.SettingsScreen
 import com.bigmoe.onedge.ui.settings.SettingsViewModel
+import com.bigmoe.onedge.ui.theme.appBackgroundModifier
 
 sealed class Screen(val route: String) {
     data object Home : Screen("home")
@@ -112,7 +132,7 @@ fun AppNavigation(
         if (!initialSessionId.isNullOrBlank()) openChat(initialSessionId)
     }
 
-    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Box(modifier = modifier.fillMaxSize().then(appBackgroundModifier())) {
         NavHost(
             navController = navController,
             startDestination = Screen.Home.route,
@@ -184,17 +204,61 @@ fun AppNavigation(
                 BoxWithConstraints(Modifier.fillMaxSize()) {
                     val wide = maxWidth >= 840.dp
                     if (wide) {
+                        // The history pane is a slider: drag the handle left/right to hide/show it (it follows the
+                        // finger and snaps open or shut on release); tapping the handle or the menu button toggles it too.
+                        val density = LocalDensity.current
+                        val paneWidth = 344.dp
+                        val paneWidthPx = with(density) { paneWidth.toPx() }
+                        val paneScope = rememberCoroutineScope()
+                        var reveal by remember { mutableStateOf(if (chatHistoryPaneVisible) 1f else 0f) }
+                        var dragging by remember { mutableStateOf(false) }
+                        LaunchedEffect(chatHistoryPaneVisible) {
+                            val target = if (chatHistoryPaneVisible) 1f else 0f
+                            if (!dragging) animate(reveal, target, animationSpec = tween(240)) { v, _ -> if (!dragging) reveal = v }
+                        }
+                        val dragState = rememberDraggableState { delta ->
+                            reveal = (reveal + delta / paneWidthPx).coerceIn(0f, 1f)
+                        }
                         Row(Modifier.fillMaxSize()) {
-                            AnimatedVisibility(
-                                visible = chatHistoryPaneVisible,
-                                enter = slideInHorizontally(animationSpec = tween(240), initialOffsetX = { -it }) + expandHorizontally(animationSpec = tween(240), expandFrom = Alignment.Start) + fadeIn(animationSpec = tween(180)),
-                                exit = slideOutHorizontally(animationSpec = tween(220), targetOffsetX = { -it }) + shrinkHorizontally(animationSpec = tween(220), shrinkTowards = Alignment.Start) + fadeOut(animationSpec = tween(160))
+                            Box(Modifier.width(paneWidth * reveal).fillMaxHeight().clipToBounds()) {
+                                if (reveal > 0.001f) {
+                                    // Anchored to the pane's trailing edge, so it slides out to the left instead of squashing.
+                                    ChatHistoryPanel(
+                                        viewModel = historyViewModel,
+                                        selectedSessionId = chatUiState.currentSession?.id,
+                                        onNewChat = { chatViewModel.newChat() },
+                                        onOpenChat = { chatViewModel.loadSession(it) },
+                                        modifier = Modifier.wrapContentWidth(Alignment.End, unbounded = true)
+                                    )
+                                }
+                            }
+                            Box(
+                                modifier = Modifier.width(28.dp).fillMaxHeight()
+                                    .draggable(
+                                        state = dragState,
+                                        orientation = Orientation.Horizontal,
+                                        onDragStarted = { dragging = true },
+                                        onDragStopped = { velocity ->
+                                            dragging = false
+                                            val target = when {
+                                                velocity > 700f -> 1f
+                                                velocity < -700f -> 0f
+                                                reveal > 0.5f -> 1f
+                                                else -> 0f
+                                            }
+                                            val open = target == 1f
+                                            if (open != chatHistoryPaneVisible) chatHistoryPaneVisible = open
+                                            else paneScope.launch { animate(reveal, target, animationSpec = tween(200)) { v, _ -> reveal = v } }
+                                        }
+                                    )
+                                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                        chatHistoryPaneVisible = !chatHistoryPaneVisible
+                                    },
+                                contentAlignment = Alignment.Center
                             ) {
-                                ChatHistoryPanel(
-                                    viewModel = historyViewModel,
-                                    selectedSessionId = chatUiState.currentSession?.id,
-                                    onNewChat = { chatViewModel.newChat() },
-                                    onOpenChat = { chatViewModel.loadSession(it) }
+                                Box(
+                                    Modifier.width(5.dp).height(52.dp).clip(RoundedCornerShape(50))
+                                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f))
                                 )
                             }
                             ChatScreen(

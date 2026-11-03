@@ -69,5 +69,17 @@ data class ChatMessageEntity(
 
     /** Set when the turn ended with an error or was stopped by the user, for display. */
     @ColumnInfo(name = "note")
-    val note: String? = null
+    val note: String? = null,
+
+    /** Tokens the prompt processing actually had to read this turn (prompt minus what the KV already held). */
+    @ColumnInfo(name = "prefill_tokens")
+    val prefillTokens: Int? = null,
+
+    /** How long the model spent in its reasoning span (assistant messages that have one). */
+    @ColumnInfo(name = "thinking_ms")
+    val thinkingMs: Long? = null,
+
+    /** How long the tools of this round took, wall clock (tool-result messages). */
+    @ColumnInfo(name = "tool_ms")
+    val toolMs: Long? = null
 )

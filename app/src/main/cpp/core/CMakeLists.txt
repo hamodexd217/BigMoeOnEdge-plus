@@ -6,6 +6,10 @@
 
 add_library(bmoe_core STATIC
     src/config.cpp
+    src/log.cpp
+    src/engine/cache_brake.cpp
+    src/moe/expert_layout.cpp
+    src/moe/tensor_names.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
     src/engine/logits.cpp

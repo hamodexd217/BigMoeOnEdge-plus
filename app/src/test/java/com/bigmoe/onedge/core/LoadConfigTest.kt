@@ -25,6 +25,30 @@ class LoadConfigTest {
     }
 
     @Test
+    fun samplingExtrasAreAppendedAtTheEndOfBothArrays() {
+        val c = d.copy(minP = 0.05f, repeatPenalty = 1.1f, repeatLastN = 128, frequencyPenalty = 0.2f, presencePenalty = 0.3f)
+        val ints = c.toIntArray()
+        val floats = c.toFloatArray()
+        assertEquals(128, ints[LoadConfig.INT_COUNT - 1])   // I_REPEAT_LAST_N is the last int
+        assertEquals(0.05f, floats[2])                       // F_MIN_P
+        assertEquals(1.1f, floats[3])                        // F_REPEAT_PENALTY
+        assertEquals(0.2f, floats[4])                        // F_FREQ_PENALTY
+        assertEquals(0.3f, floats[5])                        // F_PRESENCE_PENALTY
+        // out-of-range values are clamped before they reach the engine
+        assertEquals(2f, d.copy(repeatPenalty = 9f).toFloatArray()[3])
+        assertEquals(0f, d.copy(minP = -1f).toFloatArray()[2])
+    }
+
+    @Test
+    fun guessAheadSwitchesThePenaltiesOff() {
+        val s = EngineSettings(spec = SpecSource.NGRAM, repeatPenalty = 1.2f, frequencyPenalty = 0.5f, presencePenalty = 0.5f).toLoadConfig()
+        assertEquals(1f, s.repeatPenalty)
+        assertEquals(0f, s.frequencyPenalty)
+        assertEquals(0f, s.presencePenalty)
+        assertEquals(1.2f, EngineSettings(repeatPenalty = 1.2f).toLoadConfig().repeatPenalty)
+    }
+
+    @Test
     fun indexLayoutMatchesNativeBridge() {
         val c = d.copy(
             nCtx = 8192, nThreads = 6, topK = 33, cacheMode = CacheMode.FIXED, cacheMb = 1750, cacheFloorMb = 11,

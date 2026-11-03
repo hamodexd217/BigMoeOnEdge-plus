@@ -1,5 +1,9 @@
 package com.bigmoe.onedge.ui.chat
 
+import com.bigmoe.onedge.ui.theme.appSurfaceModifier
+import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -68,17 +72,20 @@ fun EmptyChatView(
             maxItemsInEachRow = 2
         ) {
             suggestions.forEach { suggestion ->
+                val cardShape = RoundedCornerShape(16.dp)
+                val cardStyled = AppTheme.visualStyle != AppVisualStyle.SOLID
                 Surface(
                     modifier = Modifier
                         .widthIn(max = 160.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(cardShape)
+                        .then(if (cardStyled) appSurfaceModifier(cardShape, MaterialTheme.colorScheme.surface) else Modifier)
                         .clickable { onSuggestionSelected(suggestion) },
-                    color = MaterialTheme.colorScheme.surface,
-                    border = androidx.compose.foundation.BorderStroke(
+                    color = if (cardStyled) Color.Transparent else MaterialTheme.colorScheme.surface,
+                    border = if (cardStyled) null else androidx.compose.foundation.BorderStroke(
                         width = 1.dp,
                         color = MaterialTheme.colorScheme.outlineVariant
                     ),
-                    shape = RoundedCornerShape(16.dp)
+                    shape = cardShape
                 ) {
                     Text(
                         text = suggestion,
