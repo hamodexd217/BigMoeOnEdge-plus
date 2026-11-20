@@ -1,6 +1,5 @@
 package com.bigmoe.onedge.tools
 
-import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.After
@@ -10,7 +9,7 @@ import org.junit.Before
 import org.junit.Test
 import java.net.InetSocketAddress
 
-/** Talks to a real local HTTP server (JDK's built-in), no mocks of HttpURLConnection. */
+/** Talks to a real local HTTP server (see TestHttpServer.kt), no mocks of HttpURLConnection. */
 class WebSearchToolTest {
 
     private lateinit var server: HttpServer

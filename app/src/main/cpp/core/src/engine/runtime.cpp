@@ -16,6 +16,11 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;
+    sc.n_threads_batch = cfg.n_threads_batch;
+    sc.ctx_checkpoints = cfg.ctx_checkpoints;
+    sc.checkpoint_min_step = cfg.checkpoint_min_step;
+    sc.cache_type_k = cfg.cache_type_k;
+    sc.cache_type_v = cfg.cache_type_v;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;
     sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default

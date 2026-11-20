@@ -6,7 +6,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 for text in   'I_N_THREADS_BATCH' 'I_BATCH_WIDTH' 'I_IO_TWO_WAVE' 'I_ROW_STREAM_MB'   'I_NPU_MIN_TOKENS' 'I_NGRAM_MIN_MATCH' 'I_DROP_RENORM' 'I_LOAD_ALL_EXPERTS'   'I_DECIDE_PREFIX_CACHE' 'I_FORCE_CACHE'; do
   grep -q "$text" "$APP/src/main/cpp/native-bridge.cpp" || fail "missing native index $text"
 done
-grep -q 'const val INT_COUNT = 44' "$APP/src/main/java/com/bigmoe/onedge/core/EngineTypes.kt" || fail 'Kotlin/native int array count mismatch'
+grep -q 'const val INT_COUNT = 48' "$APP/src/main/java/com/bigmoe/onedge/core/EngineTypes.kt" || fail 'Kotlin/native int array count mismatch'
 grep -q 'val overlap: Boolean = true' "$APP/src/main/java/com/bigmoe/onedge/data/local/datastore/EngineSettingsDataStore.kt" || fail 'overlap is not enabled by default'
 grep -q 'llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads_batch)' "$APP/src/main/cpp/core/src/engine/session.cpp" || fail 'prompt thread count not applied to target context'
 grep -q 'llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads_batch)' "$APP/src/main/cpp/core/src/engine/session.cpp" || fail 'prompt thread count not applied to MTP context'
@@ -37,6 +37,6 @@ for char in arr:
 if token.strip(): values.append(token.strip())
 enum_body = re.search(r'enum IntIdx\s*\{(.*?)\n\};', n, re.S).group(1)
 indices = [m.group(1) for m in re.finditer(r'\b(I_[A-Z0-9_]+)\b', enum_body) if m.group(1) != 'I_COUNT']
-assert len(values) == len(indices) == 44, (len(values), len(indices))
-print('PASS: Kotlin array length exactly matches 44 native config indices.')
+assert len(values) == len(indices) == 48, (len(values), len(indices))
+print('PASS: Kotlin array length exactly matches 48 native config indices.')
 PY

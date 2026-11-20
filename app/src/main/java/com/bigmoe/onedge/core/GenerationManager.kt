@@ -10,7 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 /** What the running turn is doing right now (drives the live status line). */
-enum class GenerationPhase { PROMPT, THINKING, ANSWERING, TOOL }
+enum class GenerationPhase { PROMPT, THINKING, ANSWERING, TOOL, COMPACTING }
 
 /** Application-owned owner of the single active agent generation. */
 class GenerationManager(
@@ -178,6 +178,12 @@ class GenerationManager(
                                             lastAssistantMessageId = event.id
                                         }
                                         update { copy(liveText = "", liveReasoning = "") }
+                                    }
+                                    AgentEvent.Compacting -> update {
+                                        copy(phase = GenerationPhase.COMPACTING, phaseStartedAt = System.currentTimeMillis(), toolNames = emptyList())
+                                    }
+                                    is AgentEvent.Compacted -> update {
+                                        copy(phase = GenerationPhase.PROMPT, phaseStartedAt = System.currentTimeMillis())
                                     }
                                     is AgentEvent.Artifact, AgentEvent.Done -> Unit
                                     is AgentEvent.Text, is AgentEvent.Reasoning, is AgentEvent.GenerationProgress -> Unit

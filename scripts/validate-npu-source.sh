@@ -22,9 +22,9 @@ need "$ROOT/scripts/verify-npu-payload.sh" 'libggml-htp-v73.so'
 need "$ROOT/scripts/verify-npu-payload.sh" 'Hexagon DSP skeletons verified in assets directory'
 need "$ROOT/scripts/verify-npu-payload.sh" 'qualcomm[[:space:]]+dsp[0-9]+[[:space:]]+processor'
 need "$ROOT/scripts/verify-npu-payload.sh" 'ggml-hex: Hexagon backend (experimental)'
-need "$ROOT/.github/workflows/android-npu.yml" ':app:assembleDebug -PbmoePrebuiltNative=true'
-need "$ROOT/.github/workflows/android-npu.yml" 'Verify the packaged APK payload'
-need "$ROOT/.github/workflows/android-npu.yml" 'Disk before cleanup'
+need "$ROOT/.github/workflows/build.yml" ':app:assembleDebug -PbmoePrebuiltNative=true'
+need "$ROOT/.github/workflows/build.yml" 'Verify the packaged APK payload'
+need "$ROOT/.github/workflows/build.yml" 'Disk before cleanup'
 need "$APP/src/main/cpp/native-bridge.cpp" '#ifdef BMOE_HAVE_HEXAGON'
 need "$APP/src/main/cpp/native-bridge.cpp" 'cfg.prefill.device = "HTP0";'
 need "$APP/src/main/cpp/native-bridge.cpp" 'nativeNpuStatus'
@@ -40,13 +40,13 @@ need "$ROOT/docs/npu-android-build.md" 'device_nodes > 0'
 need "$ROOT/docs/NPU_FIX_VALIDATION.md" 'Not performed: Android/Kotlin compilation'
 
 # Check the workflow launches Gradle from repository root, not app/.
-if grep -Eq 'working-directory:[[:space:]]*app' "$ROOT/.github/workflows/android-npu.yml"; then
+if grep -Eq 'working-directory:[[:space:]]*app' "$ROOT/.github/workflows/build.yml"; then
   fail 'NPU Gradle workflow must run from repository root'
 fi
 
 bash -n "$ROOT/scripts/build-hexagon-onedge-engine.sh"
 bash -n "$ROOT/scripts/verify-npu-payload.sh"
-python - "$ROOT/.github/workflows/android-npu.yml" <<'PY'
+python - "$ROOT/.github/workflows/build.yml" <<'PY'
 import sys
 try:
     import yaml

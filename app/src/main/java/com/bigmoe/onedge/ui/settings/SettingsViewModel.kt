@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.bigmoe.onedge.core.DenseWeights
 import com.bigmoe.onedge.core.DecisionPrefixCache
+import com.bigmoe.onedge.core.KvCacheType
 import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.core.EngineController
 import com.bigmoe.onedge.core.EngineState
@@ -58,6 +59,8 @@ class SettingsViewModel(
     fun updateExternalToolsJson(v: String) = launch { dataStore.updateExternalToolsJson(v) }
     fun updateToolResultChars(v: Int) = launch { dataStore.updateToolResultChars(v) }
     fun updateThinkAfterTools(v: Boolean) = launch { dataStore.updateThinkAfterTools(v) }
+    fun updateAutoCompactEnabled(v: Boolean) = launch { dataStore.updateAutoCompactEnabled(v) }
+    fun updateAutoCompactThresholdPct(v: Int) = launch { dataStore.updateAutoCompactThresholdPct(v) }
     fun updateImageMaxDim(v: Int) = launch { dataStore.updateImageMaxDim(v) }
     fun updateVideoFrames(v: Int) = launch { dataStore.updateVideoFrames(v) }
 
@@ -108,6 +111,9 @@ class SettingsViewModel(
     fun updateNpuRoutedPrefill(v: Boolean) = launch { dataStore.updateNpuRoutedPrefill(v) }
     fun updateNpuRoutedFullPct(v: Int) = launch { dataStore.updateNpuRoutedFullPct(v) }
     fun updateNgramMinMatch(v: Int) = launch { dataStore.updateNgramMinMatch(v) }
+    fun updateCacheTypeK(v: KvCacheType) = launch { dataStore.updateCacheTypeK(v) }
+    fun updateCacheTypeV(v: KvCacheType) = launch { dataStore.updateCacheTypeV(v) }
+    fun updateCtxCheckpoints(v: Int) = launch { dataStore.updateCtxCheckpoints(v) }
     fun updateNgramMaxMatch(v: Int) = launch { dataStore.updateNgramMaxMatch(v) }
     fun updateDecisionPrefixCache(v: DecisionPrefixCache) = launch { dataStore.updateDecisionPrefixCache(v) }
     fun updateForceCache(v: Boolean) = launch { dataStore.updateForceCache(v) }

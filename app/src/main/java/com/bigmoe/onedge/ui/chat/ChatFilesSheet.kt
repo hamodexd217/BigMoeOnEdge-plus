@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import com.bigmoe.onedge.data.repository.ArtifactDomainModel
 import com.bigmoe.onedge.data.repository.AttachmentDomainModel
+import com.bigmoe.onedge.i18n.tr
 
 @Composable
 fun ChatFilesSheet(
@@ -47,23 +48,23 @@ fun ChatFilesSheet(
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Chat files", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "Close") }
+                Text(tr("Chat files"), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = tr("Close")) }
             }
             var collapsed by remember { mutableStateOf(emptySet<String>()) }
             val rows = ChatFileTree.build(artifacts, collapsed)
             if (rows.isEmpty() && attachments.isEmpty()) {
-                Text("No files attached or created in this chat.", modifier = Modifier.padding(vertical = 20.dp))
+                Text(tr("No files attached or created in this chat."), modifier = Modifier.padding(vertical = 20.dp))
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 24.dp)) {
                     if (attachments.isNotEmpty()) {
-                        item(key = "h-sent") { SectionLabel("Sent by you") }
+                        item(key = "h-sent") { SectionLabel(tr("Sent by you")) }
                         items(attachments, key = { "a-" + it.id }) { item ->
-                            ChatFileRow("Attachment", item.name, Icons.Default.Attachment, 0) { onOpenFile(item.path) }
+                            ChatFileRow(tr("Attachment"), item.name, Icons.Default.Attachment, 0) { onOpenFile(item.path) }
                         }
                     }
                     if (rows.isNotEmpty()) {
-                        item(key = "h-made") { SectionLabel("Created in this chat") }
+                        item(key = "h-made") { SectionLabel(tr("Created in this chat")) }
                         items(rows, key = { row ->
                             when (row) {
                                 is FileTreeRow.Folder -> "d-" + row.path
@@ -72,12 +73,12 @@ fun ChatFilesSheet(
                         }) { row ->
                             when (row) {
                                 is FileTreeRow.Folder -> ChatFileRow(
-                                    kind = if (row.fileCount == 1) "Folder · 1 file" else "Folder · ${row.fileCount} files",
+                                    kind = if (row.fileCount == 1) tr("Folder · 1 file") else tr("Folder · {0} files", row.fileCount),
                                     title = row.name,
                                     icon = if (row.expanded) Icons.Default.FolderOpen else Icons.Default.Folder,
                                     depth = row.depth
                                 ) { collapsed = if (row.expanded) collapsed + row.path else collapsed - row.path }
-                                is FileTreeRow.File -> ChatFileRow("Artifact", row.title, Icons.Default.Description, row.depth) { onOpenFile(row.path) }
+                                is FileTreeRow.File -> ChatFileRow(tr("Artifact"), row.title, Icons.Default.Description, row.depth) { onOpenFile(row.path) }
                             }
                         }
                     }

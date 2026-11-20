@@ -1,5 +1,12 @@
 # Patches against the vendored BigMoeOnEdge `core/` (0.28.0)
 
+> **0.7.0 note.** `app/src/main/cpp/core`'s streaming and I/O layers (`src/io`, `src/moe`, metrics sinks) are now
+> upstream BigMoeOnEdge **0.39.0**'s, no longer 0.28.0's, so patch **0006** (device-resident routing) and the
+> per-architecture recipe it touched are superseded by upstream's own implementation. Patches 0001, 0003, 0004 and
+> 0005 describe the app's session layer, which is still this app's. These patch files document history; they no
+> longer apply as written to the current tree. What changed and why: `docs/UPSTREAM_0.39_MERGE.md`.
+
+
 `app/src/main/cpp/core` is a customized vendored engine based on BigMoeOnEdge 0.28.0. Historical patch files 0001 and 0003–0005 document the existing customizations; 0002 belongs to the separately vendored llama.cpp tree. Patch 0006 is the new 0.5.6 follow-up and is already applied in this source tree. The original archives do not contain Git metadata, so reconstruction history should not be inferred from their filenames.
 
 | patch | what | why |

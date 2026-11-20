@@ -82,6 +82,7 @@ import com.bigmoe.onedge.ui.theme.appSurfaceModifier
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.bigmoe.onedge.i18n.tr
 
 /** Persistent tablet-side history panel; it deliberately uses the same HistoryViewModel as HomeScreen. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -119,12 +120,12 @@ fun ChatHistoryPanel(
             try {
                 withContext(Dispatchers.IO) {
                     val stream = context.contentResolver.openOutputStream(uri)
-                        ?: throw IOException("The selected destination could not be opened.")
+                        ?: throw IOException(tr("The selected destination could not be opened."))
                     stream.bufferedWriter(Charsets.UTF_8).use { it.write(document.contents) }
                 }
-                exportNotice = "Saved ${document.fileName}."
+                exportNotice = tr("Saved {0}.", document.fileName)
             } catch (error: Exception) {
-                exportError = error.message?.takeIf { it.isNotBlank() } ?: "The export could not be written."
+                exportError = error.message?.takeIf { it.isNotBlank() } ?: tr("The export could not be written.")
             } finally {
                 exportBusy = false
             }
@@ -147,7 +148,7 @@ fun ChatHistoryPanel(
             exportBusy = true
             try {
                 val document = viewModel.buildExport(sessionId, format, thinking)
-                    ?: throw IOException("This conversation is no longer available.")
+                    ?: throw IOException(tr("This conversation is no longer available."))
                 if (!share) {
                     pendingDocument = document
                     when (format) {
@@ -158,7 +159,7 @@ fun ChatHistoryPanel(
                 } else {
                     val uri = withContext(Dispatchers.IO) {
                         val directory = File(context.cacheDir, "conversation_exports")
-                        if (!directory.exists() && !directory.mkdirs()) throw IOException("Could not prepare a temporary share file.")
+                        if (!directory.exists() && !directory.mkdirs()) throw IOException(tr("Could not prepare a temporary share file."))
                         val file = File(directory, "${System.currentTimeMillis()}-${document.fileName}")
                         file.writeText(document.contents, Charsets.UTF_8)
                         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -169,10 +170,10 @@ fun ChatHistoryPanel(
                         clipData = ClipData.newUri(context.contentResolver, document.fileName, uri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
-                    context.startActivity(Intent.createChooser(send, "Share conversation"))
+                    context.startActivity(Intent.createChooser(send, tr("Share conversation")))
                 }
             } catch (error: Exception) {
-                exportError = error.message?.takeIf { it.isNotBlank() } ?: "The conversation could not be exported."
+                exportError = error.message?.takeIf { it.isNotBlank() } ?: tr("The conversation could not be exported.")
             } finally {
                 exportBusy = false
             }
@@ -197,7 +198,7 @@ fun ChatHistoryPanel(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "CHATS",
+                    tr("CHATS"),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold,
                     modifier = Modifier.weight(1f)
@@ -205,7 +206,7 @@ fun ChatHistoryPanel(
                 OutlinedButton(onClick = onNewChat) {
                     Icon(Icons.Default.Add, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
-                    Text("New chat")
+                    Text(tr("New chat"))
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -215,9 +216,9 @@ fun ChatHistoryPanel(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("No conversations yet", style = MaterialTheme.typography.titleMedium)
+                    Text(tr("No conversations yet"), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Start a chat with the button above.",
+                        tr("Start a chat with the button above."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -250,13 +251,13 @@ fun ChatHistoryPanel(
     exportTarget?.takeIf { selectedExportFormat == null }?.let { target ->
         AlertDialog(
             onDismissRequest = { exportTarget = null; selectedExportFormat = null },
-            title = { Text("Export conversation") },
+            title = { Text(tr("Export conversation")) },
             text = {
                 Column {
-                    Text("Choose a format. Thinking content is included only if you opt in and it was saved.")
+                    Text(tr("Choose a format. Thinking content is included only if you opt in and it was saved."))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = includeThinking, onCheckedChange = { includeThinking = it })
-                        Text("Include thinking / reasoning")
+                        Text(tr("Include thinking / reasoning"))
                     }
                     ConversationExportFormat.values().forEach { format ->
                         OutlinedButton(
@@ -267,7 +268,7 @@ fun ChatHistoryPanel(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { exportTarget = null; selectedExportFormat = null }) { Text("Cancel") }
+                TextButton(onClick = { exportTarget = null; selectedExportFormat = null }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -276,14 +277,14 @@ fun ChatHistoryPanel(
     if (targetFormat != null && targetSession != null) {
         AlertDialog(
             onDismissRequest = { exportTarget = null; selectedExportFormat = null },
-            title = { Text("${targetFormat.label} export") },
-            text = { Text("Save a file to a location you choose, or share it using Android's share sheet.") },
+            title = { Text(tr("{0} export", targetFormat.label)) },
+            text = { Text(tr("Save a file to a location you choose, or share it using Android's share sheet.")) },
             confirmButton = {
                 TextButton(onClick = {
                     requestConversationExport(targetSession.id, targetFormat, includeThinking, share = false)
                     exportTarget = null
                     selectedExportFormat = null
-                }) { Text("Save file") }
+                }) { Text(tr("Save file")) }
             },
             dismissButton = {
                 Row {
@@ -291,8 +292,8 @@ fun ChatHistoryPanel(
                         requestConversationExport(targetSession.id, targetFormat, includeThinking, share = true)
                         exportTarget = null
                         selectedExportFormat = null
-                    }) { Text("Share") }
-                    TextButton(onClick = { exportTarget = null; selectedExportFormat = null }) { Text("Cancel") }
+                    }) { Text(tr("Share")) }
+                    TextButton(onClick = { exportTarget = null; selectedExportFormat = null }) { Text(tr("Cancel")) }
                 }
             }
         )
@@ -300,24 +301,24 @@ fun ChatHistoryPanel(
     exportError?.let { message ->
         AlertDialog(
             onDismissRequest = { exportError = null },
-            title = { Text("Export failed") },
+            title = { Text(tr("Export failed")) },
             text = { Text(message) },
-            confirmButton = { TextButton(onClick = { exportError = null }) { Text("OK") } }
+            confirmButton = { TextButton(onClick = { exportError = null }) { Text(tr("OK")) } }
         )
     }
     exportNotice?.let { message ->
         AlertDialog(
             onDismissRequest = { exportNotice = null },
-            title = { Text("Export saved") },
+            title = { Text(tr("Export saved")) },
             text = { Text(message) },
-            confirmButton = { TextButton(onClick = { exportNotice = null }) { Text("OK") } }
+            confirmButton = { TextButton(onClick = { exportNotice = null }) { Text(tr("OK")) } }
         )
     }
     if (exportBusy) {
         AlertDialog(
             onDismissRequest = { },
-            title = { Text("Preparing export") },
-            text = { Text("Loading the saved conversation or writing the selected file…") },
+            title = { Text(tr("Preparing export")) },
+            text = { Text(tr("Loading the saved conversation or writing the selected file…")) },
             confirmButton = { }
         )
     }
@@ -326,29 +327,29 @@ fun ChatHistoryPanel(
         var text by remember(target.id) { mutableStateOf(target.title) }
         AlertDialog(
             onDismissRequest = { renaming = null },
-            title = { Text("Rename chat") },
+            title = { Text(tr("Rename chat")) },
             text = { OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.renameSession(target.id, text)
                     renaming = null
-                }) { Text("Save") }
+                }) { Text(tr("Save")) }
             },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text(tr("Cancel")) } }
         )
     }
     deleting?.let { target ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("Delete this chat?") },
-            text = { Text("\"${target.title}\" and its messages will be removed.") },
+            title = { Text(tr("Delete this chat?")) },
+            text = { Text(tr("\"{0}\" and its messages will be removed.", target.title)) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.deleteSession(target.id)
                     deleting = null
-                }) { Text("Delete") }
+                }) { Text(tr("Delete")) }
             },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text(tr("Cancel")) } }
         )
     }
 }
@@ -366,7 +367,7 @@ private fun PanelSessionRow(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val date = remember(session.updatedAt) {
-        SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(session.updatedAt))
+        SimpleDateFormat(tr("MMM d, HH:mm"), Locale.getDefault()).format(Date(session.updatedAt))
     }
     val rowShape = RoundedCornerShape(14.dp)
     val rowStyled = AppTheme.visualStyle != AppVisualStyle.SOLID
@@ -411,21 +412,21 @@ private fun PanelSessionRow(
                         )
                     }
                     IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Chat options")
+                        Icon(Icons.Default.MoreVert, contentDescription = tr("Chat options"))
                     }
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("Rename") },
+                        text = { Text(tr("Rename")) },
                         leadingIcon = { Icon(Icons.Default.Edit, null) },
                         onClick = { menuOpen = false; onRename() }
                     )
                     DropdownMenuItem(
-                        text = { Text("Export conversation") },
+                        text = { Text(tr("Export conversation")) },
                         onClick = { menuOpen = false; onExport() }
                     )
                     DropdownMenuItem(
-                        text = { Text("Delete") },
+                        text = { Text(tr("Delete")) },
                         leadingIcon = { Icon(Icons.Default.Delete, null) },
                         onClick = { menuOpen = false; onDelete() }
                     )

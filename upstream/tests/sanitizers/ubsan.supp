@@ -1,0 +1,14 @@
+# UndefinedBehaviorSanitizer findings in third_party/llama.cpp, which this project does not patch
+# (AGENTS.md hard rule 1). Each line names one upstream site and why it is here; our own code gets
+# no entry - a finding in core/, cli/, server/ or tests/ is a bug to fix, not to suppress.
+
+# ggml-rpc reads wire and resolver data through pointers it does not align: socket_t::connect takes
+# hostent::h_addr through a char**, and the server binds uint64_t references into its receive
+# buffer (both seen on macOS). Reached by gate G16, which registers a loopback rpc-server.
+alignment:*ggml-rpc*
+
+# The x86 IQ1_S dot product loads its block's high bits as a uint32_t, but an IQ1_S block is 50
+# bytes, so every other block starts at an address that is not 4-aligned - the layout of the format
+# itself, in a real model file as in the bandwidth probe's matrix. Reached by bandwidth_probe, which
+# runs a matmul in every format that needs importance weights.
+alignment:ggml_vec_dot_iq1_s_q8_K

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.bigmoe.onedge.workspace.FileKinds
+import com.bigmoe.onedge.i18n.tr
 
 @Composable
 fun WorkspaceScreen(
@@ -52,12 +53,12 @@ fun WorkspaceScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (state.browserPath.isBlank()) "Workspace" else parts.last()) },
+                title = { Text(if (state.browserPath.isBlank()) tr("Workspace") else parts.last()) },
                 navigationIcon = {
                     IconButton(onClick = {
                         if (state.browserPath.isBlank()) onNavigateBack()
                         else viewModel.loadWorkspace(state.browserPath.substringBeforeLast('/', ""))
-                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back")) }
                 }
             )
         },
@@ -98,11 +99,11 @@ fun WorkspaceScreen(
                                             putExtra(Intent.EXTRA_STREAM, uri)
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                             clipData = ClipData.newRawUri(file.name, uri)
-                                        }, "Share ${file.name}"))
+                                        }, tr("Share {0}", file.name)))
                                     }.onFailure { viewModel.closeError() }
-                                }) { Icon(Icons.Default.Share, contentDescription = "Share") }
+                                }) { Icon(Icons.Default.Share, contentDescription = tr("Share")) }
                                 IconButton(onClick = { viewModel.requestDelete(entry.path) }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete")
+                                    Icon(Icons.Default.Delete, contentDescription = tr("Delete"))
                                 }
                             }
                         }
@@ -115,10 +116,10 @@ fun WorkspaceScreen(
     state.pendingDelete?.let { path ->
         AlertDialog(
             onDismissRequest = viewModel::dismissDelete,
-            title = { Text("Delete ${path.substringAfterLast('/')}?") },
-            text = { Text("This permanently removes the file or folder from the workspace.") },
-            confirmButton = { TextButton(onClick = viewModel::confirmDelete) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = viewModel::dismissDelete) { Text("Cancel") } }
+            title = { Text(tr("Delete {0}?", path.substringAfterLast('/'))) },
+            text = { Text(tr("This permanently removes the file or folder from the workspace.")) },
+            confirmButton = { TextButton(onClick = viewModel::confirmDelete) { Text(tr("Delete")) } },
+            dismissButton = { TextButton(onClick = viewModel::dismissDelete) { Text(tr("Cancel")) } }
         )
     }
 }

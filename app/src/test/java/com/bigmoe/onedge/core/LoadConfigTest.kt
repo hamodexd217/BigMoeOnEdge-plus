@@ -60,7 +60,8 @@ class LoadConfigTest {
             npuMinTokens = 64, npuRoutedPrefill = false, npuRoutedFullPct = 70,
             ngramMinMatch = 4, ngramMaxMatch = 24, dropRenorm = false, dropInPrefill = true,
             predictionProbe = true, loadAllExpertsForBenchmark = true,
-            decisionPrefixCache = DecisionPrefixCache.ON, forceCache = false
+            decisionPrefixCache = DecisionPrefixCache.ON, forceCache = false,
+            cacheTypeK = KvCacheType.Q4_0, cacheTypeV = KvCacheType.Q5_0, ctxCheckpoints = 5
         )
         val v = c.toIntArray()
         // index order == enum IntIdx in native-bridge.cpp
@@ -111,6 +112,10 @@ class LoadConfigTest {
         assertEquals(1, v[41])                // I_LOAD_ALL_EXPERTS
         assertEquals(1, v[42])                // I_DECIDE_PREFIX_CACHE (On)
         assertEquals(0, v[43])                // I_FORCE_CACHE
+        assertEquals(3, v[45])                // I_CACHE_TYPE_K (q4_0)
+        assertEquals(2, v[46])                // I_CACHE_TYPE_V (q5_0)
+        assertEquals(5, v[47])                // I_CTX_CHECKPOINTS
+        assertEquals(LoadConfig.INT_COUNT, v.size)
     }
 
     @Test

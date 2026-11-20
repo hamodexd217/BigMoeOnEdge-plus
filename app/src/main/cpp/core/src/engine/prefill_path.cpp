@@ -185,7 +185,8 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
                              std::string & err) {
     arena_ = std::make_unique<DeviceExpertArena>();
     std::string perr;
-    if (!arena_->init(devs_[0], arena_shards_, arena_layers_, cfg.load_threads, moe.o_direct, perr)) {
+    if (!arena_->init(devs_[0], arena_shards_, arena_layers_, cfg.load_threads, moe.o_direct, cfg.slots,
+                      cfg.slots_on_demand, perr)) {
         err = "prefill device " + cfg.device + " expert arena: " + perr;
         return false;
     }

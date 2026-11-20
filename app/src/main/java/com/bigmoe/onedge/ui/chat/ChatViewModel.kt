@@ -2,6 +2,7 @@ package com.bigmoe.onedge.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.bigmoe.onedge.core.Compaction
 import com.bigmoe.onedge.core.ConversationEdit
 import com.bigmoe.onedge.core.AgentEvent
 import com.bigmoe.onedge.core.AgentRequest
@@ -50,6 +51,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.bigmoe.onedge.i18n.tr
 
 data class ChatUiState(
     val currentSession: ChatSessionDomainModel? = null,
@@ -327,7 +329,7 @@ class ChatViewModel(
                 }
                 completion.complete(Unit)
             } else {
-                _uiState.update { it.copy(notice = "Another chat is currently generating.") }
+                _uiState.update { it.copy(notice = tr("Another chat is currently generating.")) }
             }
             return
         }
@@ -338,7 +340,7 @@ class ChatViewModel(
             _uiState.update {
                 it.copy(
                     inputDraft = "", pendingAttachments = emptyList(),
-                    notice = if (count == 1) "Message queued. It will be sent automatically when the model finishes loading." else "$count messages queued. They will be sent in order when the model finishes loading."
+                    notice = if (count == 1) tr("Message queued. It will be sent automatically when the model finishes loading.") else tr("{0} messages queued. They will be sent in order when the model finishes loading.", count)
                 )
             }
             viewModelScope.launch { composerStore.clearSession(composerKey) }
@@ -346,7 +348,7 @@ class ChatViewModel(
             return
         }
         if (state.engineState !is EngineState.Ready) {
-            _uiState.update { it.copy(notice = NOTICE_NO_MODEL) }
+            _uiState.update { it.copy(notice = tr(NOTICE_NO_MODEL)) }
             completion?.complete(Unit)
             return
         }
@@ -357,13 +359,13 @@ class ChatViewModel(
         }
 
         if (pending.any { it.kind != AttachmentKind.FILE } && !state.visionActive) {
-            _uiState.update { it.copy(notice = NOTICE_NO_VISION) }
+            _uiState.update { it.copy(notice = tr(NOTICE_NO_VISION)) }
             completion?.complete(Unit)
             return
         }
 
         val settings = state.settings
-        val userText = text.ifEmpty { "Please look at the attached ${if (pending.any { it.kind != AttachmentKind.FILE }) "media" else "file(s)"}." }
+        val userText = text.ifEmpty { tr("Please look at the attached {0}.", if (pending.any { it.kind != AttachmentKind.FILE }) "media" else "file(s)") }
         val composerKey = state.currentSession?.id ?: ChatDraftState.NEW_CHAT_KEY
         _uiState.update {
             it.copy(isGenerating = true, isPreparingMessage = true, preparingSessionId = it.currentSession?.id, liveText = "", liveReasoning = "", liveStatus = null, notice = null)
@@ -402,7 +404,7 @@ class ChatViewModel(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false, notice = "Could not read an attachment: ${e.message ?: e.javaClass.simpleName}") }
+                        _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false, notice = tr("Could not read an attachment: {0}", e.message ?: e.javaClass.simpleName)) }
                         return@launch
                     }
                     if (contextText.isNotBlank()) repository.addMessage(sessionId, NewMessage(MessageRole.CONTEXT, contextText))
@@ -412,12 +414,12 @@ class ChatViewModel(
                 // flag until that state is active so the composer cannot accidentally enable a second send.
                 val started = generationManager.start(
                     session,
-                    AgentRequest(sessionId, history, userText, settings, contextText, images),
+                    AgentRequest(sessionId, history, userText, settings, contextText, images, contextUsedHint = session.contextUsed),
                     sink
                 )
                 _uiState.update { it.copy(isPreparingMessage = false, isGenerating = started || it.isGenerating) }
                 if (!started) {
-                    _uiState.update { it.copy(notice = "Another generation is already running.", isGenerating = false) }
+                    _uiState.update { it.copy(notice = tr("Another generation is already running."), isGenerating = false) }
                 } else if (completion != null) {
                     // start() publishes active synchronously. If a very short turn has already finished,
                     // the current state is inactive and we must not wait for a second active transition.
@@ -429,7 +431,7 @@ class ChatViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                _uiState.update { it.copy(notice = "Unexpected error: ${t.message ?: t.javaClass.simpleName}") }
+                _uiState.update { it.copy(notice = tr("Unexpected error: {0}", t.message ?: t.javaClass.simpleName)) }
             } finally {
                 _uiState.update { it.copy(isPreparingMessage = false, isGenerating = generationManager.state.value.active) }
                 completion?.complete(Unit)
@@ -495,23 +497,23 @@ class ChatViewModel(
         val options = rawOptions.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(26).toList()
         if (question.isEmpty()) { completion?.complete(Unit); return }
         if (options.size < 2) {
-            _uiState.update { it.copy(notice = "Give at least two options, one per line.") }
+            _uiState.update { it.copy(notice = tr("Give at least two options, one per line.")) }
             completion?.complete(Unit)
             return
         }
         if (_uiState.value.pendingAttachments.isNotEmpty()) {
-            _uiState.update { it.copy(notice = "Choose mode is text-only; remove attachments first.") }
+            _uiState.update { it.copy(notice = tr("Choose mode is text-only; remove attachments first.")) }
             completion?.complete(Unit)
             return
         }
         val settings = _uiState.value.settings
         if (generationManager.state.value.active) {
-            _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false, notice = "Another chat is currently generating.") }
+            _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false, notice = tr("Another chat is currently generating.")) }
             completion?.complete(Unit)
             return
         }
         val composerKey = _uiState.value.currentSession?.id ?: ChatDraftState.NEW_CHAT_KEY
-        _uiState.update { it.copy(isGenerating = true, isPreparingMessage = true, preparingSessionId = it.currentSession?.id, liveText = "", liveReasoning = "", liveStatus = "Choosing…", notice = null) }
+        _uiState.update { it.copy(isGenerating = true, isPreparingMessage = true, preparingSessionId = it.currentSession?.id, liveText = "", liveReasoning = "", liveStatus = tr("Choosing…"), notice = null) }
         viewModelScope.launch {
             try {
                 var session = _uiState.value.currentSession
@@ -525,22 +527,22 @@ class ChatViewModel(
                 val prefix = buildString {
                     if (settings.systemPrompt.isNotBlank()) append(settings.systemPrompt.trim()).append("\n\n")
                     if (history.isNotEmpty()) {
-                        append("Conversation so far:\n")
-                        history.forEach { m -> append(if (m.role == MessageRole.USER) "User" else "Assistant").append(": ").append(m.content).append("\n") }
+                        append(tr("Conversation so far:\n"))
+                        history.forEach { m -> append(if (m.role == MessageRole.USER) tr("User") else tr("Assistant")).append(": ").append(m.content).append("\n") }
                         append("\n")
                     }
                 }
                 val suffix = buildString {
                     append(question).append("\n\nOptions:\n")
                     options.forEachIndexed { i, option -> append(('A'.code + i).toChar()).append(") ").append(option).append('\n') }
-                    append("Answer with the letter of one option only.")
+                    append(tr("Answer with the letter of one option only."))
                 }
                 val result = engineController.decide(DecisionRequest(prefix, suffix, options, reusePrefix = true))
-                if (!result.ok) { _uiState.update { it.copy(notice = result.error.ifBlank { "Choose failed." }) }; return@launch }
+                if (!result.ok) { _uiState.update { it.copy(notice = result.error.ifBlank { tr("Choose failed.") }) }; return@launch }
                 val userText = buildString { append(question).append('\n'); options.forEachIndexed { i, option -> append(('A'.code + i).toChar()).append(") ").append(option).append('\n') } }.trimEnd()
                 repository.addMessage(session.id, NewMessage(MessageRole.USER, userText))
                 val body = buildString {
-                    append("Choice result\n")
+                    append(tr("Choice result\n"))
                     result.scores.forEach { score -> append(score.label).append(") ").append(score.text).append(" — ").append(String.format(java.util.Locale.US, "%.1f%%", score.probability * 100.0)).append('\n') }
                     if (result.best in result.scores.indices) append("\nSelected: ").append(result.scores[result.best].label)
                 }
@@ -549,7 +551,7 @@ class ChatViewModel(
                 if (composerKey != session.id) composerStore.clearSession(ChatDraftState.NEW_CHAT_KEY)
                 _uiState.update { it.copy(inputDraft = "", pendingAttachments = emptyList(), isGenerating = false, isPreparingMessage = false) }
             } catch (e: CancellationException) { throw e }
-            catch (t: Throwable) { _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false, notice = "Unexpected error: ${t.message ?: t.javaClass.simpleName}") } }
+            catch (t: Throwable) { _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false, notice = tr("Unexpected error: {0}", t.message ?: t.javaClass.simpleName)) } }
             finally {
                 _uiState.update { it.copy(isGenerating = false, isPreparingMessage = false) }
                 completion?.complete(Unit)
@@ -562,7 +564,7 @@ class ChatViewModel(
     /** Copies a picked document / picture / video into the workspace and queues it for the next message. */
     fun addAttachment(resolver: android.content.ContentResolver, uri: android.net.Uri, kind: AttachmentKind) {
         if (kind != AttachmentKind.FILE && !_uiState.value.visionActive) {
-            _uiState.update { it.copy(notice = NOTICE_NO_VISION) }
+            _uiState.update { it.copy(notice = tr(NOTICE_NO_VISION)) }
             return
         }
         val key = currentComposerKey()
@@ -583,7 +585,7 @@ class ChatViewModel(
             } catch (e: AttachmentException) {
                 _uiState.update { it.copy(notice = e.message) }
             } catch (e: Exception) {
-                _uiState.update { it.copy(notice = "Could not attach the file: ${e.message ?: e.javaClass.simpleName}") }
+                _uiState.update { it.copy(notice = tr("Could not attach the file: {0}", e.message ?: e.javaClass.simpleName)) }
             }
         }
     }
@@ -749,7 +751,7 @@ class ChatViewModel(
                 val rel = saveOrReuseArtifact(sessionId, stem, ext, artifact.content, artifact.title)
                 _uiState.update { it.copy(openFilePath = rel) }
             } catch (e: Exception) {
-                _uiState.update { it.copy(notice = "Could not save the artifact: ${e.message}") }
+                _uiState.update { it.copy(notice = tr("Could not save the artifact: {0}", e.message)) }
             }
         }
     }
@@ -762,7 +764,7 @@ class ChatViewModel(
                 val rel = saveOrReuseArtifact(sessionId, "artifact", extensionFor(language), code, null)
                 _uiState.update { it.copy(openFilePath = rel) }
             } catch (e: Exception) {
-                _uiState.update { it.copy(notice = "Could not save the code: ${e.message}") }
+                _uiState.update { it.copy(notice = tr("Could not save the code: {0}", e.message)) }
             }
         }
     }
@@ -780,6 +782,8 @@ class ChatViewModel(
             }
             is AgentEvent.Notice -> _uiState.update { it.copy(notice = ev.text) }
             AgentEvent.GenerationStarted, is AgentEvent.GenerationProgress -> Unit
+            AgentEvent.Compacting -> _uiState.update { it.copy(liveStatus = tr("Summarizing earlier messages…")) }
+            is AgentEvent.Compacted -> _uiState.update { it.copy(liveStatus = null) }
             is AgentEvent.ToolsFinished, is AgentEvent.RoundStats -> Unit // timings live in GenerationManager.State
             // The saved message is now in the list below; start a clean live bubble for the next round.
             is AgentEvent.MessageSaved -> _uiState.update { it.copy(liveText = "", liveReasoning = "") }
@@ -827,15 +831,15 @@ class ChatViewModel(
         val session = state.currentSession ?: return
         val clean = newText.trim()
         if (clean.isEmpty()) {
-            _uiState.update { it.copy(notice = "Message cannot be empty.") }
+            _uiState.update { it.copy(notice = tr("Message cannot be empty.")) }
             return
         }
         if (editInFlight || state.isGenerating || generationManager.state.value.active) {
-            _uiState.update { it.copy(notice = "Stop the current generation before editing a message.") }
+            _uiState.update { it.copy(notice = tr("Stop the current generation before editing a message.")) }
             return
         }
         if (state.engineState !is EngineState.Ready) {
-            _uiState.update { it.copy(notice = NOTICE_NO_MODEL) }
+            _uiState.update { it.copy(notice = tr(NOTICE_NO_MODEL)) }
             return
         }
         val settings = state.settings
@@ -848,14 +852,14 @@ class ChatViewModel(
                 val stored = repository.getMessages(session.id).map { HistoryMessage(it.id, it.role, it.content) }
                 val plan = ConversationEdit.plan(stored, messageId)
                 if (plan == null) {
-                    _uiState.update { it.copy(notice = "That message can no longer be edited.") }
+                    _uiState.update { it.copy(notice = tr("That message can no longer be edited.")) }
                     return@launch
                 }
                 val attachments = repository.getAttachmentsForMessage(session.id, messageId).map {
                     PendingAttachment(it.id, it.kind, it.name, it.path, it.mime, it.sizeBytes)
                 }
                 if (attachments.any { it.kind != AttachmentKind.FILE } && !visionActive) {
-                    _uiState.update { it.copy(notice = NOTICE_NO_VISION) }
+                    _uiState.update { it.copy(notice = tr(NOTICE_NO_VISION)) }
                     return@launch
                 }
                 val prepared = try {
@@ -863,11 +867,11 @@ class ChatViewModel(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    _uiState.update { it.copy(notice = "Could not read an attachment: ${e.message ?: e.javaClass.simpleName}") }
+                    _uiState.update { it.copy(notice = tr("Could not read an attachment: {0}", e.message ?: e.javaClass.simpleName)) }
                     return@launch
                 }
                 if (!repository.rewriteUserMessage(session.id, messageId, clean, plan.removeIds)) {
-                    _uiState.update { it.copy(notice = "That message can no longer be edited.") }
+                    _uiState.update { it.copy(notice = tr("That message can no longer be edited.")) }
                     return@launch
                 }
                 if (plan.isFirstUserMessage && session.title == titleFrom(plan.previousText)) {
@@ -886,11 +890,11 @@ class ChatViewModel(
                     AgentRequest(session.id, plan.history, clean, settings, prepared.contextText, prepared.images),
                     sink
                 )
-                if (!started) _uiState.update { it.copy(notice = "Another generation is already running.") }
+                if (!started) _uiState.update { it.copy(notice = tr("Another generation is already running.")) }
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                _uiState.update { it.copy(notice = "Unexpected error: ${t.message ?: t.javaClass.simpleName}") }
+                _uiState.update { it.copy(notice = tr("Unexpected error: {0}", t.message ?: t.javaClass.simpleName)) }
             } finally {
                 editInFlight = false
                 if (!started) _uiState.update { it.copy(isGenerating = false) }
@@ -931,6 +935,7 @@ class ChatViewModel(
             text = when (role) {
                 MessageRole.ASSISTANT -> MessageContent.displayText(content)
                 MessageRole.TOOL -> MessageContent.toolResultBody(content)
+                MessageRole.SUMMARY -> Compaction.decode(content)?.text.orEmpty()
                 else -> content
             },
             reasoning = reasoning,
@@ -955,9 +960,9 @@ class ChatViewModel(
     companion object {
         /** "Searching the web for “cats”…" for the search tool, "Running x…" otherwise. */
         fun statusForTool(name: String, argumentsJson: String): String {
-            if (name != "web_search") return "Running $name…"
+            if (name != "web_search") return tr("Running {0}…", name)
             val q = runCatching { org.json.JSONObject(argumentsJson).optString("query") }.getOrNull().orEmpty().trim()
-            return if (q.isEmpty()) "Searching the web…" else "Searching the web for \u201C${q.take(60)}\u201D…"
+            return if (q.isEmpty()) tr("Searching the web…") else tr("Searching the web for \u201C{0}\u201D…", q.take(60))
         }
 
         const val NOTICE_NO_VISION =

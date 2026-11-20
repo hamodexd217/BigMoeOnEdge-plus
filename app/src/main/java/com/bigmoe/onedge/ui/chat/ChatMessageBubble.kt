@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
@@ -35,7 +36,6 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Visibility
@@ -63,6 +63,7 @@ import com.bigmoe.onedge.parser.ArtifactType
 import com.bigmoe.onedge.ui.theme.AppTheme
 import com.bigmoe.onedge.ui.theme.appSurfaceModifier
 import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
+import com.bigmoe.onedge.i18n.tr
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -182,14 +183,14 @@ fun ChatMessageBubble(
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 if (onEdit != null) {
                     DropdownMenuItem(
-                        text = { Text("Edit") },
+                        text = { Text(tr("Edit")) },
                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                         onClick = { menuOpen = false; onEdit() }
                     )
                 }
                 if (onCopy != null) {
                     DropdownMenuItem(
-                        text = { Text("Copy") },
+                        text = { Text(tr("Copy")) },
                         leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
                         onClick = { menuOpen = false; onCopy() }
                     )
@@ -206,7 +207,7 @@ fun ChatMessageBubble(
             Spacer(modifier = Modifier.height(4.dp))
             InfoChip(
                 icon = Icons.Default.Visibility,
-                label = if (artifact.type == ArtifactType.CODE) "Open: ${artifact.title}" else "Preview: ${artifact.title}",
+                label = if (artifact.type == ArtifactType.CODE) tr("Open: {0}", artifact.title) else tr("Preview: {0}", artifact.title),
                 onClick = { onOpenArtifact(artifact) }
             )
         }
@@ -238,12 +239,12 @@ fun ChatMessageBubble(
                     ) {
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy message",
+                            contentDescription = tr("Copy message"),
                             tint = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "Copy",
+                            text = tr("Copy"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.secondary
                         )
@@ -260,7 +261,7 @@ fun ChatMessageBubble(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Speed,
-                            contentDescription = "Inference speed",
+                            contentDescription = tr("Inference speed"),
                             tint = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.size(12.dp)
                         )
@@ -283,7 +284,7 @@ fun ChatMessageBubble(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                                Icon(Icons.Default.Link, contentDescription = "Sources", modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
+                                Icon(Icons.Default.Link, contentDescription = tr("Sources"), modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.primary)
                                 Text(sources.size.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                             }
                         }
@@ -292,7 +293,7 @@ fun ChatMessageBubble(
                         sources.forEach { (url, label) ->
                             DropdownMenuItem(
                                 text = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
                                 onClick = {
                                     sourcesOpen = false
                                     if (url.startsWith("https://", true) || url.startsWith("http://", true)) {
@@ -372,14 +373,14 @@ fun ToolResultCard(body: String, modifier: Modifier = Modifier, toolMs: Long? = 
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (toolMs != null && toolMs > 0L) "Tool result · ${formatDuration(toolMs)}" else "Tool result",
+                        text = if (toolMs != null && toolMs > 0L) tr("Tool result · {0}", formatDuration(toolMs)) else tr("Tool result"),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Icon(
                         imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (expanded) "Collapse" else "Expand",
+                        contentDescription = if (expanded) tr("Collapse") else tr("Expand"),
                         tint = MaterialTheme.colorScheme.secondary,
                         modifier = Modifier.size(16.dp)
                     )
@@ -464,10 +465,10 @@ private fun ThinkingBlock(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = when {
-                        isStreaming && liveElapsed != null -> "Thinking… ${formatDuration(liveElapsed)}"
-                        isStreaming -> "Thinking…"
-                        thinkingMs != null && thinkingMs > 0L -> "Thought for ${formatDuration(thinkingMs)}"
-                        else -> "Thinking"
+                        isStreaming && liveElapsed != null -> tr("Thinking… {0}", formatDuration(liveElapsed))
+                        isStreaming -> tr("Thinking…")
+                        thinkingMs != null && thinkingMs > 0L -> tr("Thought for {0}", formatDuration(thinkingMs))
+                        else -> tr("Thinking")
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary
@@ -475,7 +476,7 @@ private fun ThinkingBlock(
                 Spacer(modifier = Modifier.width(4.dp))
                 Icon(
                     imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    contentDescription = if (isExpanded) tr("Collapse") else tr("Expand"),
                     tint = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.size(16.dp)
                 )

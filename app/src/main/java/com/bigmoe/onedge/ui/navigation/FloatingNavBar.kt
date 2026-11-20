@@ -30,11 +30,15 @@ import androidx.compose.ui.graphics.Color
 import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import com.bigmoe.onedge.ui.theme.AppTheme
 import com.bigmoe.onedge.ui.theme.appSurfaceModifier
+import com.bigmoe.onedge.i18n.tr
 
-enum class TopTab(val label: String, val icon: ImageVector) {
+enum class TopTab(private val englishLabel: String, val icon: ImageVector) {
     MODELS("Models", Icons.Default.Memory),
     CHATS("Chats", Icons.Default.ChatBubble),
-    SETTINGS("Settings", Icons.Default.Settings)
+    SETTINGS("Settings", Icons.Default.Settings);
+
+    /** Read when drawn, so a change of language shows without restarting the app. */
+    val label: String get() = tr(englishLabel)
 }
 
 /** Floating pill with three tabs (the selected one shows its label) and a "+" button for a new chat. */
@@ -104,7 +108,7 @@ fun FloatingNavBar(
                 .clickable(onClick = onNewChat),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.Add, contentDescription = "New chat", tint = MaterialTheme.colorScheme.onPrimary)
+            Icon(Icons.Default.Add, contentDescription = tr("New chat"), tint = MaterialTheme.colorScheme.onPrimary)
         }
     }
 }

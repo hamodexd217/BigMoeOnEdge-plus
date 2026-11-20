@@ -1,5 +1,7 @@
 package com.bigmoe.onedge.data.repository
 
+import com.bigmoe.onedge.core.Compaction
+import com.bigmoe.onedge.data.local.entity.MessageRole
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -28,10 +30,14 @@ object ConversationExportFormatter {
         includeThinking: Boolean
     ): ConversationExportDocument {
         val byMessage = attachments.groupBy { it.messageId }
+        // A compaction summary is exported as its text; the header that names the last message it covers is internal.
+        val exported = messages.map {
+            if (it.role == MessageRole.SUMMARY) it.copy(content = Compaction.decode(it.content)?.text ?: it.content) else it
+        }
         val content = when (format) {
-            ConversationExportFormat.MARKDOWN -> markdown(session, messages, byMessage, includeThinking)
-            ConversationExportFormat.PLAIN_TEXT -> plainText(session, messages, byMessage, includeThinking)
-            ConversationExportFormat.JSON -> json(session, messages, byMessage, includeThinking)
+            ConversationExportFormat.MARKDOWN -> markdown(session, exported, byMessage, includeThinking)
+            ConversationExportFormat.PLAIN_TEXT -> plainText(session, exported, byMessage, includeThinking)
+            ConversationExportFormat.JSON -> json(session, exported, byMessage, includeThinking)
         }
         val safeTitle = session.title.trim()
             .replace(Regex("[^\\p{L}\\p{N}._-]+"), "_")

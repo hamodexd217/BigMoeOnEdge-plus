@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.ui.artifact.ArtifactPreview
 import com.bigmoe.onedge.ui.chat.MessageBody
 import java.io.File
+import com.bigmoe.onedge.i18n.tr
 
 @Composable
 fun FileViewerScreen(
@@ -79,10 +80,10 @@ fun FileViewerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(state.path.substringAfterLast('/').ifEmpty { "File" }, maxLines = 1) },
+                title = { Text(state.path.substringAfterLast('/').ifEmpty { tr("File") }, maxLines = 1) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
                     }
                 },
                 actions = {
@@ -90,23 +91,23 @@ fun FileViewerScreen(
                         IconButton(onClick = { showSource = !showSource }) {
                             Icon(
                                 if (showSource) Icons.Default.Visibility else Icons.Default.Code,
-                                contentDescription = if (showSource) "Show formatted" else "Show source"
+                                contentDescription = if (showSource) tr("Show formatted") else tr("Show source")
                             )
                         }
                     }
                     if (viewModel.canRun && !editing) {
                         IconButton(onClick = { viewModel.runScript() }, enabled = !state.running) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Run JavaScript")
+                            Icon(Icons.Default.PlayArrow, contentDescription = tr("Run JavaScript"))
                         }
                     }
                     if (state.text != null && !editing) {
                         IconButton(onClick = { clipboard.setText(AnnotatedString(state.text.orEmpty())); viewModel.resetSavedFlag() }) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                            Icon(Icons.Default.ContentCopy, contentDescription = tr("Copy"))
                         }
                     }
                     if (state.text != null && !editing) {
                         IconButton(onClick = { editing = true; editText = state.text.orEmpty() }) {
-                            Icon(Icons.Default.Edit, contentDescription = "Edit")
+                            Icon(Icons.Default.Edit, contentDescription = tr("Edit"))
                         }
                     }
                     if (editing) {
@@ -114,18 +115,18 @@ fun FileViewerScreen(
                             viewModel.save(editText)
                             editing = false
                         }) {
-                            Icon(Icons.Default.Save, contentDescription = "Save")
+                            Icon(Icons.Default.Save, contentDescription = tr("Save"))
                         }
                     }
                     if (state.path.isNotBlank()) {
                         IconButton(onClick = { shareFile(context, viewModel.fileForShare(state.path), state.mime) }) {
-                            Icon(Icons.Default.Share, contentDescription = "Share")
+                            Icon(Icons.Default.Share, contentDescription = tr("Share"))
                         }
                         IconButton(onClick = {
                             val name = File(state.path).name.ifEmpty { "download" }
                             downloadLauncher.launch(name)
                         }) {
-                            Icon(Icons.Default.Download, contentDescription = "Download")
+                            Icon(Icons.Default.Download, contentDescription = tr("Download"))
                         }
                     }
                 }
@@ -168,7 +169,7 @@ fun FileViewerScreen(
             }
             if (state.saved) {
                 AppCard(modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)) {
-                    Text("Saved", modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+                    Text(tr("Saved"), modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
                 }
             }
         }
@@ -180,7 +181,7 @@ fun FileViewerScreen(
 private fun RunOutputPanel(running: Boolean, output: String?, onDismiss: () -> Unit) {
     AppCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Output", style = MaterialTheme.typography.titleSmall)
+            Text(tr("Output"), style = MaterialTheme.typography.titleSmall)
             if (running) {
                 CircularProgressIndicator()
             } else {
@@ -190,7 +191,7 @@ private fun RunOutputPanel(running: Boolean, output: String?, onDismiss: () -> U
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
                     )
                 }
-                TextButton(onClick = onDismiss) { Text("Close") }
+                TextButton(onClick = onDismiss) { Text(tr("Close")) }
             }
         }
     }
@@ -202,10 +203,10 @@ private fun BinaryFileInfo(mime: String, sizeBytes: Long) {
         modifier = Modifier.fillMaxSize().padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("Binary file", style = MaterialTheme.typography.titleMedium)
+        Text(tr("Binary file"), style = MaterialTheme.typography.titleMedium)
         Text(mime, style = MaterialTheme.typography.bodySmall)
-        Text("Size: ${formatBytes(sizeBytes)}", style = MaterialTheme.typography.bodySmall)
-        Text("Use Share or Download to open it in another app.", style = MaterialTheme.typography.bodySmall)
+        Text(tr("Size: {0}", formatBytes(sizeBytes)), style = MaterialTheme.typography.bodySmall)
+        Text(tr("Use Share or Download to open it in another app."), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -219,7 +220,7 @@ private fun shareFile(context: Context, file: File, mime: String) {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 clipData = ClipData.newRawUri(file.name, uri)
             },
-            "Share ${file.name}"
+            tr("Share {0}", file.name)
         )
     )
 }

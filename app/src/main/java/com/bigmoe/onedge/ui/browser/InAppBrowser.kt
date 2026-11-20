@@ -20,9 +20,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.bigmoe.onedge.i18n.tr
 
 /** True for the only kinds of links the in-app browser loads. */
 internal fun isWebUrl(url: String): Boolean {
@@ -118,9 +119,9 @@ private fun InAppBrowserScreen(startUrl: String, onClose: () -> Unit, onOpenExte
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             Surface(color = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 2.dp) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close browser") }
+                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = tr("Close browser")) }
                     IconButton(onClick = { webView?.goBack() }, enabled = canGoBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
                     }
                     Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
                         Text(
@@ -137,9 +138,9 @@ private fun InAppBrowserScreen(startUrl: String, onClose: () -> Unit, onOpenExte
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    IconButton(onClick = { error = null; webView?.reload() }) { Icon(Icons.Default.Refresh, contentDescription = "Reload") }
+                    IconButton(onClick = { error = null; webView?.reload() }) { Icon(Icons.Default.Refresh, contentDescription = tr("Reload")) }
                     IconButton(onClick = { onOpenExternal(currentUrl) }) {
-                        Icon(Icons.Default.OpenInNew, contentDescription = "Open in your browser app")
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = tr("Open in your browser app"))
                     }
                 }
             }
@@ -195,7 +196,7 @@ private fun InAppBrowserScreen(startUrl: String, onClose: () -> Unit, onOpenExte
 
                                 override fun onReceivedError(view: WebView?, request: WebResourceRequest?, err: WebResourceError?) {
                                     if (request?.isForMainFrame == true) {
-                                        error = err?.description?.toString().orEmpty().ifBlank { "The page could not be loaded." }
+                                        error = err?.description?.toString().orEmpty().ifBlank { tr("The page could not be loaded.") }
                                     }
                                 }
                             }
@@ -214,7 +215,7 @@ private fun InAppBrowserScreen(startUrl: String, onClose: () -> Unit, onOpenExte
                         shape = MaterialTheme.shapes.medium
                     ) {
                         Text(
-                            "Could not load this page: $message",
+                            tr("Could not load this page: {0}", message),
                             modifier = Modifier.padding(12.dp),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer

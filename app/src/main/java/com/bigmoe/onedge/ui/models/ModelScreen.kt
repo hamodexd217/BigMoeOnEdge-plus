@@ -64,6 +64,7 @@ import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
 import com.bigmoe.onedge.ui.theme.AppTheme
 import com.bigmoe.onedge.data.local.datastore.loadConfigDiffers
+import com.bigmoe.onedge.i18n.tr
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,7 +90,7 @@ fun ModelScreen(
         if (sharedPathAccessGranted) {
             viewModel.registerExistingPath()
         } else {
-            viewModel.showMessage("Storage access was not enabled. Try Add GGUF from storage again after granting access, or use Import GGUF file(s) (copy).")
+            viewModel.showMessage(tr("Storage access was not enabled. Try Add GGUF from storage again after granting access, or use Import GGUF file(s) (copy)."))
         }
     }
     val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
@@ -97,7 +98,7 @@ fun ModelScreen(
     ) { granted ->
         sharedPathAccessGranted = granted
         if (granted) viewModel.registerExistingPath()
-        else viewModel.showMessage("Storage permission was not granted. Use Import GGUF file(s) (copy), or grant access and try Add GGUF from storage again.")
+        else viewModel.showMessage(tr("Storage permission was not granted. Use Import GGUF file(s) (copy), or grant access and try Add GGUF from storage again."))
     }
 
     // Default path: select a GGUF in Android's picker and register its real shared-storage path.
@@ -107,11 +108,10 @@ fun ModelScreen(
             val path = resolveSharedStorageDocumentPath(context, uri)
             if (path == null) {
                 viewModel.showMessage(
-                    "This picker location does not expose a direct filesystem path. Browse to Internal storage in the picker, " +
-                        "select the .gguf there, or use Import & copy for cloud/provider files."
+                    tr("This picker location does not expose a direct filesystem path. Browse to Internal storage in the picker, select the .gguf there, or use Import & copy for cloud/provider files.")
                 )
             } else if (!path.endsWith(".gguf", ignoreCase = true)) {
-                viewModel.showMessage("Choose a .gguf file (model, MTP draft, or mmproj). No file was copied.")
+                viewModel.showMessage(tr("Choose a .gguf file (model, MTP draft, or mmproj). No file was copied."))
             } else {
                 viewModel.setExistingPathInput(path)
                 if (!isSharedAbsolutePath(path) || sharedPathAccessGranted) {
@@ -158,7 +158,7 @@ fun ModelScreen(
                     containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surface else Color.Transparent
                 ),
                 title = {
-                    Text("MODELS", style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold)
+                    Text(tr("MODELS"), style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold)
                 }
             )
         },
@@ -176,29 +176,27 @@ fun ModelScreen(
             item {
                 AppCard(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Add a model / mmproj", style = MaterialTheme.typography.titleMedium)
+                        Text(tr("Add a model / mmproj"), style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Choose a GGUF from Internal storage to add it in place. The model stays in its original folder, " +
-                                "so BigMoeOnEdge does not create another multi-GB copy. A storage-access permission may be " +
-                                "requested the first time. Cloud/provider files may need the copy option below.",
+                            tr("Choose a GGUF from Internal storage to add it in place. The model stays in its original folder, so BigMoeOnEdge does not create another multi-GB copy. A storage-access permission may be requested the first time. Cloud/provider files may need the copy option below."),
                             style = MaterialTheme.typography.bodySmall
                         )
                         Button(
                             onClick = { picker.launch(arrayOf("*/*")) },
                             enabled = ui.importProgress == null,
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("Import GGUF file(s) (copy)") }
+                        ) { Text(tr("Import GGUF file(s) (copy)")) }
                         OutlinedButton(
                             onClick = { noCopyPicker.launch(arrayOf("*/*")) },
                             enabled = ui.importProgress == null,
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("Add GGUF from storage (no copy) may be slower") }
+                        ) { Text(tr("Add GGUF from storage (no copy) may be slower")) }
                         TextButton(onClick = { showAdvancedPath = !showAdvancedPath }) {
-                            Text(if (showAdvancedPath) "Hide advanced path entry" else "Advanced: enter a path manually")
+                            Text(if (showAdvancedPath) tr("Hide advanced path entry") else tr("Advanced: enter a path manually"))
                         }
                         if (showAdvancedPath) {
                             Text(
-                                "Use this only if the picker cannot expose the original filesystem path. Split GGUFs must be registered from the first shard.",
+                                tr("Use this only if the picker cannot expose the original filesystem path. Split GGUFs must be registered from the first shard."),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.secondary
                             )
@@ -206,7 +204,7 @@ fun ModelScreen(
                                 value = ui.existingPathInput,
                                 onValueChange = viewModel::setExistingPathInput,
                                 modifier = Modifier.fillMaxWidth(),
-                                label = { Text("Existing GGUF path (no copy)") },
+                                label = { Text(tr("Existing GGUF path (no copy)")) },
                                 placeholder = { Text("/storage/emulated/0/Download/model-00001-of-00012.gguf") },
                                 singleLine = true
                             )
@@ -231,16 +229,16 @@ fun ModelScreen(
                                         viewModel.registerExistingPath()
                                     }
                                 }) {
-                                    Text(if (needsSharedStoragePermission) "Grant path access" else "Register path")
+                                    Text(if (needsSharedStoragePermission) tr("Grant path access") else tr("Register path"))
                                 }
-                                OutlinedButton(onClick = viewModel::refresh) { Text("Refresh") }
+                                OutlinedButton(onClick = viewModel::refresh) { Text(tr("Refresh")) }
                             }
                             if (needsSharedStoragePermission) {
                                 Text(
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                                        "Android requires Allow access to manage all files for direct paths. Registration retries when you return."
+                                        tr("Android requires Allow access to manage all files for direct paths. Registration retries when you return.")
                                     else
-                                        "Allow file read access when Android asks. The file is not copied.",
+                                        tr("Allow file read access when Android asks. The file is not copied."),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.secondary
                                 )
@@ -261,7 +259,7 @@ fun ModelScreen(
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                                 Text(ModelManager.formatBytes(progress.copiedBytes), style = MaterialTheme.typography.labelSmall)
                             }
-                            OutlinedButton(onClick = viewModel::cancelImport) { Text("Cancel import") }
+                            OutlinedButton(onClick = viewModel::cancelImport) { Text(tr("Cancel import")) }
                         }
                     }
                 }
@@ -272,7 +270,7 @@ fun ModelScreen(
                     AppCard(modifier = Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(msg, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = viewModel::dismissMessage) { Text("OK") }
+                            TextButton(onClick = viewModel::dismissMessage) { Text(tr("OK")) }
                         }
                     }
                 }
@@ -280,24 +278,24 @@ fun ModelScreen(
 
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Load the last model on app start", modifier = Modifier.weight(1f))
+                    Text(tr("Load the last model on app start"), modifier = Modifier.weight(1f))
                     Switch(checked = settings.autoLoadLastModel, onCheckedChange = viewModel::setAutoLoad)
                 }
             }
 
             if (ui.drafts.isNotEmpty()) {
                 item {
-                    Text("MTP draft sidecars", style = MaterialTheme.typography.titleMedium)
-                    Text("Attach one to each target above. Sidecars are hidden from the target-model list.", style = MaterialTheme.typography.bodySmall)
+                    Text(tr("MTP draft sidecars"), style = MaterialTheme.typography.titleMedium)
+                    Text(tr("Attach one to each target above. Sidecars are hidden from the target-model list."), style = MaterialTheme.typography.bodySmall)
                 }
                 items(ui.drafts, key = { "draft:${it.path}" }) { draft ->
                     AppCard(modifier = Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(draft.name, style = MaterialTheme.typography.titleSmall)
-                                Text("${ModelManager.formatBytes(draft.sizeBytes)} • " + if (draft.inAppStorage) "App storage" else "Registered path (no copy)", style = MaterialTheme.typography.labelSmall)
+                                Text("${ModelManager.formatBytes(draft.sizeBytes)} • " + if (draft.inAppStorage) tr("App storage") else tr("Registered path (no copy)"), style = MaterialTheme.typography.labelSmall)
                             }
-                            TextButton(onClick = { viewModel.delete(draft.path) }) { Text("Remove") }
+                            TextButton(onClick = { viewModel.delete(draft.path) }) { Text(tr("Remove")) }
                         }
                     }
                 }
@@ -305,17 +303,17 @@ fun ModelScreen(
             if (ui.incompleteImports.isNotEmpty()) {
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Incomplete split models", style = MaterialTheme.typography.titleMedium)
-                        Text("These imports are saved privately and survive app restarts. They cannot be loaded until every shard passes validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(tr("Incomplete split models"), style = MaterialTheme.typography.titleMedium)
+                        Text(tr("These imports are saved privately and survive app restarts. They cannot be loaded until every shard passes validation."), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 items(ui.incompleteImports, key = { "incomplete:${it.id}" }) { pending ->
                     AppCard(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(pending.displayName, style = MaterialTheme.typography.titleSmall)
-                            Text("${pending.presentShardIndices.size}/${pending.expectedShardCount} shards imported • ${ModelManager.formatBytes(pending.totalSizeBytes)}", style = MaterialTheme.typography.bodySmall)
-                            Text("Missing shard indices: " + pending.missingShardIndices.joinToString { it.toString().padStart(5, '0') }.ifBlank { "none" }, style = MaterialTheme.typography.bodySmall)
-                            Text("Status: ${pending.status}", style = MaterialTheme.typography.labelMedium, color = if (pending.validationMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
+                            Text(tr("{0}/{1} shards imported • {2}", pending.presentShardIndices.size, pending.expectedShardCount, ModelManager.formatBytes(pending.totalSizeBytes)), style = MaterialTheme.typography.bodySmall)
+                            Text(tr("Missing shard indices: {0}", pending.missingShardIndices.joinToString { it.toString().padStart(5, '0') }.ifBlank { tr("none") }), style = MaterialTheme.typography.bodySmall)
+                            Text(tr("Status: {0}", pending.status), style = MaterialTheme.typography.labelMedium, color = if (pending.validationMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
                             pending.validationMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
@@ -325,18 +323,18 @@ fun ModelScreen(
                                     },
                                     enabled = ui.importProgress == null && pending.missingShardIndices.isNotEmpty() && pending.status != "Validation failed",
                                     modifier = Modifier.weight(1f)
-                                ) { Text("Add missing files") }
+                                ) { Text(tr("Add missing files")) }
                                 OutlinedButton(
                                     onClick = { viewModel.removeIncompleteImport(pending.id) },
                                     enabled = ui.importProgress == null
-                                ) { Text("Remove") }
+                                ) { Text(tr("Remove")) }
                             }
                         }
                     }
                 }
             }
             if (ui.models.isEmpty() && ui.incompleteImports.isEmpty()) {
-                item { Text("No models yet.", color = MaterialTheme.colorScheme.secondary) }
+                item { Text(tr("No models yet."), color = MaterialTheme.colorScheme.secondary) }
             }
             items(ui.models.filterNot { ModelManager.isProjectorName(it.name) }, key = { it.path }) { model ->
                 ModelRow(
@@ -370,7 +368,7 @@ fun ModelScreen(
 internal fun PendingLoadDialog(viewModel: ModelViewModel, pending: PendingLoad) {
     AlertDialog(
         onDismissRequest = viewModel::dismissPendingLoad,
-        title = { Text(if (pending.advice.canLoad) "Load model?" else "Cannot load") },
+        title = { Text(if (pending.advice.canLoad) tr("Load model?") else tr("Cannot load")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 pending.advice.errors.forEach { Text("• $it", color = MaterialTheme.colorScheme.error) }
@@ -382,18 +380,18 @@ internal fun PendingLoadDialog(viewModel: ModelViewModel, pending: PendingLoad) 
                         onSelect = viewModel::selectProjector
                     )
                     Text(
-                        "Loading can take a minute or more and uses a lot of memory. Keep the app open.",
+                        tr("Loading can take a minute or more and uses a lot of memory. Keep the app open."),
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
         },
         confirmButton = {
-            if (pending.advice.canLoad) TextButton(onClick = viewModel::confirmLoad) { Text("Load") }
-            else TextButton(onClick = viewModel::dismissPendingLoad) { Text("OK") }
+            if (pending.advice.canLoad) TextButton(onClick = viewModel::confirmLoad) { Text(tr("Load")) }
+            else TextButton(onClick = viewModel::dismissPendingLoad) { Text(tr("OK")) }
         },
         dismissButton = {
-            if (pending.advice.canLoad) TextButton(onClick = viewModel::dismissPendingLoad) { Text("Cancel") }
+            if (pending.advice.canLoad) TextButton(onClick = viewModel::dismissPendingLoad) { Text(tr("Cancel")) }
         }
     )
 }
@@ -402,9 +400,9 @@ internal fun PendingLoadDialog(viewModel: ModelViewModel, pending: PendingLoad) 
 private fun SupportedModelsCard() {
     AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Any MoE model will work.", style = MaterialTheme.typography.titleMedium)
+            Text(tr("Any MoE model will work."), style = MaterialTheme.typography.titleMedium)
             Text(
-                "Even regular (dense) models can work: they are detected automatically and loaded the ordinary way.",
+                tr("Even regular (dense) models can work: they are detected automatically and loaded the ordinary way."),
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -419,11 +417,11 @@ private fun ProjectorPicker(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selectedName = when {
-        selected == null -> "None"
-        else -> projectors.firstOrNull { it.path == selected }?.name ?: "None"
+        selected == null -> tr("None")
+        else -> projectors.firstOrNull { it.path == selected }?.name ?: tr("None")
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Vision projector (mmproj)", style = MaterialTheme.typography.labelMedium)
+        Text(tr("Vision projector (mmproj)"), style = MaterialTheme.typography.labelMedium)
         androidx.compose.foundation.layout.Box {
             OutlinedButton(
                 onClick = { expanded = true },
@@ -432,7 +430,7 @@ private fun ProjectorPicker(
                 Text(selectedName, modifier = Modifier.weight(1f))
             }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                DropdownMenuItem(text = { Text("None") }, onClick = { expanded = false; onSelect(null) })
+                DropdownMenuItem(text = { Text(tr("None")) }, onClick = { expanded = false; onSelect(null) })
                 projectors.forEach { projector ->
                     DropdownMenuItem(
                         text = { Text(projector.name) },
@@ -442,7 +440,7 @@ private fun ProjectorPicker(
             }
         }
         if (projectors.isEmpty()) {
-            Text("Put an mmproj .gguf beside the model to enable images and video.", style = MaterialTheme.typography.labelSmall)
+            Text(tr("Put an mmproj .gguf beside the model to enable images and video."), style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -457,55 +455,53 @@ private fun StatusCard(
     AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when (engine) {
-                EngineState.Unloaded -> Text("No model loaded")
+                EngineState.Unloaded -> Text(tr("No model loaded"))
                 is EngineState.Loading -> {
-                    Text("Loading ${engine.path.substringAfterLast('/')}…")
+                    Text(tr("Loading {0}…", engine.path.substringAfterLast('/')))
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     Text(
-                        "The engine does not report progress; large models can take a few minutes.",
+                        tr("The engine does not report progress; large models can take a few minutes."),
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
                 is EngineState.Failed -> {
-                    Text("Load failed", color = MaterialTheme.colorScheme.error)
+                    Text(tr("Load failed"), color = MaterialTheme.colorScheme.error)
                     Text(engine.message, style = MaterialTheme.typography.bodySmall)
                 }
                 is EngineState.Ready -> {
                     val info = engine.info
-                    Text("Loaded: ${info.name}", style = MaterialTheme.typography.titleMedium)
-                    info.draftModelPath?.let { Text("Separate MTP draft: ${it.substringAfterLast('/')}", style = MaterialTheme.typography.bodySmall) }
+                    Text(tr("Loaded: {0}", info.name), style = MaterialTheme.typography.titleMedium)
+                    info.draftModelPath?.let { Text(tr("Separate MTP draft: {0}", it.substringAfterLast('/')), style = MaterialTheme.typography.bodySmall) }
                     info.loadWarning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                     Text(
-                        if (info.mmprojPath.isNullOrBlank()) "Vision: inactive (no mmproj)"
-                        else "Vision: active • ${info.mmprojPath.substringAfterLast('/')}"
+                        if (info.mmprojPath.isNullOrBlank()) tr("Vision: inactive (no mmproj)")
+                        else tr("Vision: active • {0}", info.mmprojPath.substringAfterLast('/'))
                     )
                     Text(
-                        "arch ${info.arch} • context ${info.nCtx} • ${info.nExpertUsed} experts/token • " +
-                            "loaded in ${"%.1f".format(java.util.Locale.US, info.loadSeconds)} s",
+                        tr("arch {0} • context {1} • {2} experts/token • loaded in {3} s", info.arch, info.nCtx, info.nExpertUsed, "%.1f".format(java.util.Locale.US, info.loadSeconds)),
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        if (info.config.mmapBaseline) "Regular (non-MoE) model: ordinary load, no expert streaming"
-                        else "Expert streaming ON • I/O–compute overlap: " + if (info.overlapActive) "active" else "not active",
+                        if (info.config.mmapBaseline) tr("Regular (non-MoE) model: ordinary load, no expert streaming")
+                        else tr("Expert streaming ON • I/O–compute overlap: {0}", if (info.overlapActive) tr("active") else tr("not active")),
                         style = MaterialTheme.typography.labelSmall
                     )
                     if (info.thinkControl == "none") {
                         Text(
-                            "This model has no switch to turn thinking off.",
+                            tr("This model has no switch to turn thinking off."),
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
                     if (loadConfigDiffers(info.config, settings)) {
                         Text(
-                            "Some settings changed since this model was loaded (context, sampling, cache, threads). " +
-                                "They apply after a reload.",
+                            tr("Some settings changed since this model was loaded (context, sampling, cache, threads). They apply after a reload."),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.tertiary
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (loadConfigDiffers(info.config, settings)) Button(onClick = onReload) { Text("Reload") }
-                        OutlinedButton(onClick = onUnload) { Text("Unload") }
+                        if (loadConfigDiffers(info.config, settings)) Button(onClick = onReload) { Text(tr("Reload")) }
+                        OutlinedButton(onClick = onUnload) { Text(tr("Unload")) }
                     }
                 }
             }
@@ -535,28 +531,28 @@ private fun ModelRow(
     var mtpExpanded by remember(model.path) { mutableStateOf(false) }
     val attachedName = drafts.firstOrNull { it.path == attachedDraftPath }?.name
     val mtpSummary = when (settings.spec) {
-        SpecSource.MTP -> "On \u2022 " + (attachedName ?: "model's own head")
-        SpecSource.NGRAM -> "Off (n-gram guess-ahead is on)"
-        SpecSource.OFF -> if (attachedName != null) "Off \u2022 sidecar: $attachedName" else "Off"
+        SpecSource.MTP -> tr("On \u2022 {0}", attachedName ?: tr("model's own head"))
+        SpecSource.NGRAM -> tr("Off (n-gram guess-ahead is on)")
+        SpecSource.OFF -> if (attachedName != null) tr("Off \u2022 sidecar: {0}", attachedName) else tr("Off")
     }
     AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(model.displayName, style = MaterialTheme.typography.titleSmall)
-                    Text("${ModelManager.formatBytes(model.sizeBytes)} • " + if (model.inAppStorage) "App storage" else "Registered path (no copy)", style = MaterialTheme.typography.labelSmall)
+                    Text("${ModelManager.formatBytes(model.sizeBytes)} • " + if (model.inAppStorage) tr("App storage") else tr("Registered path (no copy)"), style = MaterialTheme.typography.labelSmall)
                 }
                 if (isLoaded) {
-                    Text("Loaded", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    Text(tr("Loaded"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                 } else {
-                    TextButton(onClick = onLoad, enabled = !busy) { Text("Load") }
+                    TextButton(onClick = onLoad, enabled = !busy) { Text(tr("Load")) }
                 }
                 // Rename renames the model itself, so it lives here and not inside the (optional) MTP section.
                 IconButton(onClick = { renameDialog = true }) {
-                    Icon(Icons.Default.Edit, contentDescription = "Rename model")
+                    Icon(Icons.Default.Edit, contentDescription = tr("Rename model"))
                 }
                 IconButton(onClick = onDelete, enabled = !busy) {
-                    Icon(Icons.Default.Delete, contentDescription = "Remove model")
+                    Icon(Icons.Default.Delete, contentDescription = tr("Remove model"))
                 }
             }
             Row(
@@ -564,34 +560,34 @@ private fun ModelRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("MTP draft", style = MaterialTheme.typography.labelMedium)
+                    Text(tr("MTP draft"), style = MaterialTheme.typography.labelMedium)
                     Text(mtpSummary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Icon(
                     imageVector = if (mtpExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (mtpExpanded) "Collapse MTP draft" else "Expand MTP draft",
+                    contentDescription = if (mtpExpanded) tr("Collapse MTP draft") else tr("Expand MTP draft"),
                     tint = MaterialTheme.colorScheme.primary
                 )
             }
             if (mtpExpanded) {
                 Text(
-                    "Note: with an mmproj (vision projector), a message that contains an image is answered without guessing ahead (normal speed, greedy decoding). Text-only messages still use MTP.",
+                    tr("Note: with an mmproj (vision projector), a message that contains an image is answered without guessing ahead (normal speed, greedy decoding). Text-only messages still use MTP."),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column(Modifier.weight(1f)) {
-                        Text("Separate MTP sidecar", style = MaterialTheme.typography.labelMedium)
-                        Text(attachedName ?: "No sidecar attached", style = MaterialTheme.typography.bodySmall)
+                        Text(tr("Separate MTP sidecar"), style = MaterialTheme.typography.labelMedium)
+                        Text(attachedName ?: tr("No sidecar attached"), style = MaterialTheme.typography.bodySmall)
                     }
                     androidx.compose.foundation.layout.Box {
-                        OutlinedButton(onClick = { draftMenu = true }) { Text("Attach") }
+                        OutlinedButton(onClick = { draftMenu = true }) { Text(tr("Attach")) }
                         DropdownMenu(expanded = draftMenu, onDismissRequest = { draftMenu = false }) {
                             DropdownMenuItem(
-                                text = { Text("Choose separate MTP GGUF…") },
+                                text = { Text(tr("Choose separate MTP GGUF…")) },
                                 onClick = { draftMenu = false; onPickDraft() }
                             )
-                            DropdownMenuItem(text = { Text("Use model's built-in MTP / none") }, onClick = { draftMenu = false; onAttachDraft(null) })
+                            DropdownMenuItem(text = { Text(tr("Use model's built-in MTP / none")) }, onClick = { draftMenu = false; onAttachDraft(null) })
                             drafts.forEach { d ->
                                 DropdownMenuItem(text = { Text(d.name) }, onClick = { draftMenu = false; onAttachDraft(d.path) })
                             }
@@ -600,23 +596,23 @@ private fun ModelRow(
                 }
                 MtpSettingsPanel(settings = settings, viewModel = viewModel)
             }
-            if (!model.inAppStorage) Text("This file stays in its original folder; removing it here only unregisters it.", style = MaterialTheme.typography.labelSmall)
+            if (!model.inAppStorage) Text(tr("This file stays in its original folder; removing it here only unregisters it."), style = MaterialTheme.typography.labelSmall)
         }
     }
     if (renameDialog) {
         AlertDialog(
             onDismissRequest = { renameDialog = false },
-            title = { Text("Rename model") },
+            title = { Text(tr("Rename model")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true, label = { Text("New name") })
+                    OutlinedTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true, label = { Text(tr("New name")) })
                     if (model.name.contains(Regex("-\\d{5}-of-\\d{5}\\.gguf$", RegexOption.IGNORE_CASE))) {
-                        Text("This changes only the model display name. The original shard filenames stay unchanged so llama.cpp can discover every part.", style = MaterialTheme.typography.bodySmall)
+                        Text(tr("This changes only the model display name. The original shard filenames stay unchanged so llama.cpp can discover every part."), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { renameDialog = false; onRename(renameText) }) { Text("Rename") } },
-            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("Cancel") } }
+            confirmButton = { TextButton(onClick = { renameDialog = false; onRename(renameText) }) { Text(tr("Rename")) } },
+            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text(tr("Cancel")) } }
         )
     }
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.ui.theme.AppCard
 import org.json.JSONArray
 import org.json.JSONObject
+import com.bigmoe.onedge.i18n.tr
 
 /** Safe, declarative UI schema rendered with Compose. It never evaluates model-provided code. */
 data class NativeUiMetric(val label: String, val value: String, val detail: String)
@@ -217,8 +218,8 @@ object NativeUiParser {
             }
             NativeUiComparison(
                 clean(o, "title", 80),
-                alias(o, "leftTitle", "left_title", "a", "nameA", max = 48).ifBlank { "Option A" },
-                alias(o, "rightTitle", "right_title", "b", "nameB", max = 48).ifBlank { "Option B" },
+                alias(o, "leftTitle", "left_title", "a", "nameA", max = 48).ifBlank { tr("Option A") },
+                alias(o, "rightTitle", "right_title", "b", "nameB", max = 48).ifBlank { tr("Option B") },
                 rows
             ).takeIf { it.rows.isNotEmpty() }
         }
@@ -244,8 +245,8 @@ object NativeUiParser {
             .ifBlank { clean(root, "description", 100) }
             .ifBlank { slides.firstOrNull()?.title.orEmpty() }
             .ifBlank { lists.firstOrNull()?.title.orEmpty() }
-            .ifBlank { cards.firstOrNull()?.title?.let { "Overview" }.orEmpty() }
-            .ifBlank { if (comparison != null) "Comparison" else "Overview" }
+            .ifBlank { cards.firstOrNull()?.title?.let { tr("Overview") }.orEmpty() }
+            .ifBlank { if (comparison != null) tr("Comparison") else tr("Overview") }
 
         NativeUiSpec(
             title = title, description = clean(root, "description", 240),
@@ -271,7 +272,7 @@ fun NativeUiComponents(spec: NativeUiSpec, onAction: (String) -> Unit, modifier:
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(spec.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = CircleShape) {
-                        Text("NATIVE UI", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        Text(tr("NATIVE UI"), modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
                     }
                 }
                 if (spec.description.isNotBlank()) Text(spec.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -304,7 +305,7 @@ fun NativeUiComponents(spec: NativeUiSpec, onAction: (String) -> Unit, modifier:
             if (spec.lists.isNotEmpty()) spec.lists.forEach { NativeUiListView(it) }
             if (spec.cards.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text("Options", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(tr("Options"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     spec.cards.forEachIndexed { index, card ->
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
@@ -325,7 +326,7 @@ fun NativeUiComponents(spec: NativeUiSpec, onAction: (String) -> Unit, modifier:
                     val selected = spec.cards[selectedCard.coerceIn(spec.cards.indices)]
                     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("${selected.title} · Details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text(tr("{0} · Details", selected.title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                             if (selected.subtitle.isNotBlank()) Text(selected.subtitle, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             if (selected.body.isNotBlank()) Text(selected.body, style = MaterialTheme.typography.bodyMedium)
                         }
@@ -372,10 +373,10 @@ private fun NativeUiBadgePill(badge: NativeUiBadge) {
 @Composable
 private fun NativeUiComparisonView(comparison: NativeUiComparison) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(comparison.title.ifBlank { "Comparison" }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(comparison.title.ifBlank { tr("Comparison") }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         Column(Modifier.horizontalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                ComparisonCell("Feature", Modifier.width(104.dp), header = true)
+                ComparisonCell(tr("Feature"), Modifier.width(104.dp), header = true)
                 ComparisonCell(comparison.leftTitle, Modifier.width(132.dp), header = true)
                 ComparisonCell(comparison.rightTitle, Modifier.width(132.dp), header = true)
             }
@@ -412,13 +413,13 @@ private fun NativeUiSlides(slides: List<NativeUiSlide>) {
     val slide = slides[page.coerceIn(slides.indices)]
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Slides", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(tr("Slides"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             Text("${page + 1} / ${slides.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 if (slide.subtitle.isNotBlank()) Text(slide.subtitle.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                Text(slide.title.ifBlank { "Slide ${page + 1}" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(slide.title.ifBlank { tr("Slide {0}", page + 1) }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 if (slide.body.isNotBlank()) Text(slide.body, style = MaterialTheme.typography.bodyMedium)
                 if (slide.metricValue.isNotBlank()) {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -429,13 +430,13 @@ private fun NativeUiSlides(slides: List<NativeUiSlide>) {
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = { page = (page - 1).coerceAtLeast(0) }, enabled = page > 0) { Text("‹ Previous") }
+            TextButton(onClick = { page = (page - 1).coerceAtLeast(0) }, enabled = page > 0) { Text(tr("‹ Previous")) }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 slides.indices.forEach { index ->
                     Box(Modifier.size(if (index == page) 8.dp else 6.dp).clip(CircleShape).background(if (index == page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant))
                 }
             }
-            TextButton(onClick = { page = (page + 1).coerceAtMost(slides.lastIndex) }, enabled = page < slides.lastIndex) { Text("Next ›") }
+            TextButton(onClick = { page = (page + 1).coerceAtMost(slides.lastIndex) }, enabled = page < slides.lastIndex) { Text(tr("Next ›")) }
         }
     }
 }
@@ -464,7 +465,7 @@ private fun NativeUiListView(list: NativeUiList) {
 @Composable
 private fun NativeUiProgressView(bars: List<NativeUiBar>) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Progress", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(tr("Progress"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         bars.forEach { item ->
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -476,14 +477,14 @@ private fun NativeUiProgressView(bars: List<NativeUiBar>) {
                 }
             }
         }
-        Text("Values are supplied by the model; verify measurements before relying on them.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(tr("Values are supplied by the model; verify measurements before relying on them."), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
 private fun NativeUiTimelineView(items: List<NativeUiTimelineItem>) {
     Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        Text("Timeline", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(tr("Timeline"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         items.forEachIndexed { index, item ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.bigmoe.onedge.i18n.tr
 
  data class FileUiState(
     val path: String = "",
@@ -104,7 +105,7 @@ class FileViewModel(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                "Error: ${e.message ?: e.javaClass.simpleName}"
+                tr("Error: {0}", e.message ?: e.javaClass.simpleName)
             }
             _state.update { it.copy(running = false, runOutput = out) }
         }
@@ -118,7 +119,7 @@ class FileViewModel(
 
     /** Validates a workspace path and returns the actual file for FileProvider / media preview. */
     fun fileForShare(path: String): java.io.File = workspace.resolve(path).also {
-        if (!it.isFile) throw WorkspaceException("Not a file: ${workspace.normalize(path)}")
+        if (!it.isFile) throw WorkspaceException(tr("Not a file: {0}", workspace.normalize(path)))
     }
 
     fun downloadTo(resolver: ContentResolver, destination: Uri, path: String = _state.value.path) {
@@ -127,11 +128,11 @@ class FileViewModel(
                 withContext(Dispatchers.IO) {
                     resolver.openOutputStream(destination)?.use { out ->
                         workspace.resolve(path).inputStream().use { input -> input.copyTo(out) }
-                    } ?: throw WorkspaceException("Could not open the destination")
+                    } ?: throw WorkspaceException(tr("Could not open the destination"))
                 }
                 _state.update { it.copy(error = null) }
             } catch (e: Exception) {
-                _state.update { it.copy(error = "Could not download: ${e.message ?: e.javaClass.simpleName}") }
+                _state.update { it.copy(error = tr("Could not download: {0}", e.message ?: e.javaClass.simpleName)) }
             }
         }
     }

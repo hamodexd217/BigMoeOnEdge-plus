@@ -60,20 +60,21 @@ import com.bigmoe.onedge.core.DeviceProfile
 import com.bigmoe.onedge.core.ModelFacts
 import com.bigmoe.onedge.core.ModelKind
 import java.util.Locale
+import com.bigmoe.onedge.i18n.tr
 
 private fun speedText(s: AutoSave): String {
     val measured = s.measuredTps
-    return if (measured != null) String.format(Locale.US, "%.1f tok/s measured  ·  ≈%.1f estimated", measured, s.estTps)
-    else String.format(Locale.US, "≈ %.1f tok/s (estimate)", s.estTps)
+    return if (measured != null) String.format(Locale.US, tr("%.1f tok/s measured  ·  ≈%.1f estimated"), measured, s.estTps)
+    else String.format(Locale.US, tr("≈ %.1f tok/s (estimate)"), s.estTps)
 }
 
 private fun durationText(seconds: Int): String =
-    if (seconds < 90) "about $seconds seconds" else "about ${(seconds + 59) / 60} minutes"
+    if (seconds < 90) tr("about {0} seconds", seconds) else tr("about {0} minutes", (seconds + 59) / 60)
 
 private fun kindText(kind: ModelKind): String = when (kind) {
-    ModelKind.MOE -> "Mixture-of-Experts (MoE)"
-    ModelKind.DENSE -> "Dense"
-    ModelKind.UNKNOWN -> "Unknown type (treated as dense)"
+    ModelKind.MOE -> tr("Mixture-of-Experts (MoE)")
+    ModelKind.DENSE -> tr("Dense")
+    ModelKind.UNKNOWN -> tr("Unknown type (treated as dense)")
 }
 
 private fun gb(mb: Long) = String.format(Locale.US, "%.1f GB", mb / 1024.0)
@@ -133,10 +134,10 @@ fun AutoSettingsScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = if (AppTheme.visualStyle == AppVisualStyle.SOLID) MaterialTheme.colorScheme.surface else Color.Transparent
                 ),
-                title = { Text("AUTO SETTINGS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold) },
+                title = { Text(tr("AUTO SETTINGS"), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
                     }
                 }
             )
@@ -150,40 +151,39 @@ fun AutoSettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                "Choose your goal. The optimizer creates one profile for that goal; it does not generate three presets you did not ask for.",
+                tr("Choose your goal. The optimizer creates one profile for that goal; it does not generate three presets you did not ask for."),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Panel(MaterialTheme.colorScheme.secondaryContainer) {
-                Text("MODEL PROFILE", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                val modelLabel = currentModelPath?.substringAfterLast('/')?.ifBlank { "Loaded model" } ?: "No model loaded"
-                Text("Current model: $modelLabel", style = MaterialTheme.typography.bodyMedium)
+                Text(tr("MODEL PROFILE"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                val modelLabel = currentModelPath?.substringAfterLast('/')?.ifBlank { tr("Loaded model") } ?: tr("No model loaded")
+                Text(tr("Current model: {0}", modelLabel), style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    "Active profile: ${currentProfile?.name ?: "Global defaults"}",
+                    tr("Active profile: {0}", currentProfile?.name ?: "Global defaults"),
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    "When enabled, choosing Use while a model is loaded assigns that save only to that model. " +
-                        "Profiles apply before the model session starts; other models retain their own profile or global defaults.",
+                    tr("When enabled, choosing Use while a model is loaded assigns that save only to that model. Profiles apply before the model session starts; other models retain their own profile or global defaults."),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Automatically apply model profiles", modifier = Modifier.weight(1f))
+                    Text(tr("Automatically apply model profiles"), modifier = Modifier.weight(1f))
                     Switch(checked = autoApplyProfiles, onCheckedChange = viewModel::setAutoApplyModelProfilesEnabled)
                 }
                 OutlinedButton(
                     onClick = viewModel::resetCurrentModelProfile,
                     enabled = currentModelPath != null && currentProfileId != null
-                ) { Text("Reset this model to global defaults") }
+                ) { Text(tr("Reset this model to global defaults")) }
             }
 
             ui.busy?.let { text ->
                 Panel(MaterialTheme.colorScheme.primaryContainer) {
                     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    if (text.startsWith("Measuring")) {
-                        OutlinedButton(onClick = viewModel::cancelMeasure) { Text("Cancel") }
+                    if (ui.measuring) {
+                        OutlinedButton(onClick = viewModel::cancelMeasure) { Text(tr("Cancel")) }
                     }
                 }
             }
@@ -192,34 +192,34 @@ fun AutoSettingsScreen(
                 Panel(MaterialTheme.colorScheme.secondaryContainer) {
                     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (ui.reloadNeeded && !busy) Button(onClick = viewModel::reloadModel) { Text("Reload model now") }
-                        TextButton(onClick = viewModel::dismissMessage) { Text("OK") }
+                        if (ui.reloadNeeded && !busy) Button(onClick = viewModel::reloadModel) { Text(tr("Reload model now")) }
+                        TextButton(onClick = viewModel::dismissMessage) { Text(tr("OK")) }
                     }
                 }
             }
 
             // ------------------------------------------------------------ device
             Panel(MaterialTheme.colorScheme.surfaceContainerLow, border = true) {
-                Text("Your phone", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(tr("Your phone"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 val d = ui.device
                 if (d == null) {
-                    Hint("Scanning your phone…")
+                    Hint(tr("Scanning your phone…"))
                 } else {
                     DeviceLines(d)
                 }
                 OutlinedButton(onClick = viewModel::scan, enabled = !ui.scanning && !busy) {
-                    Text(if (ui.scanning) "Scanning…" else "Scan again")
+                    Text(if (ui.scanning) tr("Scanning…") else tr("Scan again"))
                 }
             }
 
             // ------------------------------------------------------------ model
             Panel(MaterialTheme.colorScheme.surfaceContainerLow, border = true) {
-                Text("Model", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(tr("Model"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (ui.models.isEmpty()) {
-                    Hint("No models found. Add or load one on the Models page, then come back.")
+                    Hint(tr("No models found. Add or load one on the Models page, then come back."))
                 } else {
                     ChoiceSetting(
-                        label = "Tune for",
+                        label = tr("Tune for"),
                         options = ui.models.map { it.path to it.displayName },
                         selected = ui.selectedPath ?: "",
                         enabled = !busy
@@ -228,74 +228,74 @@ fun AutoSettingsScreen(
                         Hint("${kindText(facts.kind)}  ·  ${gb(facts.sizeMb)}")
                     }
                 }
-                Text("Optimization goal", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(tr("Optimization goal"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     AutoTier.values().forEach { tier ->
                         if (!customSettingsSelected && selectedTier == tier) {
-                            Button(onClick = { selectedTier = tier }, enabled = !busy) { Text(tier.title) }
+                            Button(onClick = { selectedTier = tier }, enabled = !busy) { Text(tr(tier.title)) }
                         } else {
-                            OutlinedButton(onClick = { selectedTier = tier; customSettingsSelected = false }, enabled = !busy) { Text(tier.title) }
+                            OutlinedButton(onClick = { selectedTier = tier; customSettingsSelected = false }, enabled = !busy) { Text(tr(tier.title)) }
                         }
                     }
                     if (customSettingsSelected) {
-                        Button(onClick = { customSettingsSelected = true }, enabled = !busy) { Text("Custom settings") }
+                        Button(onClick = { customSettingsSelected = true }, enabled = !busy) { Text(tr("Custom settings")) }
                     } else {
-                        OutlinedButton(onClick = { customSettingsSelected = true }, enabled = !busy) { Text("Custom settings") }
+                        OutlinedButton(onClick = { customSettingsSelected = true }, enabled = !busy) { Text(tr("Custom settings")) }
                     }
                 }
                 if (customSettingsSelected) {
                     val current = ui.engineSettings
                     Panel(MaterialTheme.colorScheme.surfaceContainerLow, border = true) {
-                        Text("CUSTOM SETTINGS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Hint("These controls save to the app's manual engine settings. Sampling changes apply on the next message; context, threads, batch width, cache and I/O changes need a model reload when they differ from the loaded session.")
-                        ChoiceSetting("Context length", listOf(2048 to "2,048 tokens", 4096 to "4,096 tokens", 8192 to "8,192 tokens", 16384 to "16,384 tokens", 32768 to "32,768 tokens"), current.contextLength, enabled = !busy, onSelect = viewModel::updateCustomContext)
-                        ChoiceSetting("CPU decode threads", listOf(1 to "1", 2 to "2", 3 to "3", 4 to "4", 6 to "6", 8 to "8", 12 to "12"), current.threadCount, enabled = !busy, onSelect = viewModel::updateCustomThreads)
-                        ChoiceSetting("Prompt batch threads", listOf(1 to "1", 2 to "2", 4 to "4", 6 to "6", 8 to "8", 12 to "12"), current.batchThreadCount, enabled = !busy, onSelect = viewModel::updateCustomBatchThreads)
-                        ChoiceSetting("Batch width", listOf(128 to "128", 256 to "256", 512 to "512", 1024 to "1,024", 2048 to "2,048", 4096 to "4,096"), current.batchWidth, enabled = !busy, onSelect = viewModel::updateCustomBatchWidth)
-                        ChoiceSetting("Expert cache budget", listOf(-1 to "Auto", 512 to "512 MB", 1024 to "1 GB", 1500 to "1.5 GB", 2000 to "2 GB", 3000 to "3 GB", 4000 to "4 GB"), current.cacheMb, enabled = !busy, onSelect = viewModel::updateCustomCache)
-                        ChoiceSetting("I/O threads", (1..8).map { it to it.toString() }, current.ioThreads, enabled = !busy, onSelect = viewModel::updateCustomIoThreads)
-                        ChoiceSetting("Temperature", listOf(0f to "0 (greedy)", 0.2f to "0.2", 0.5f to "0.5", 0.7f to "0.7", 1f to "1.0", 1.2f to "1.2", 1.5f to "1.5", 2f to "2.0"), current.temperature, enabled = !busy, onSelect = viewModel::updateCustomTemperature)
-                        ChoiceSetting("Top-P", listOf(0.5f to "0.50", 0.7f to "0.70", 0.8f to "0.80", 0.9f to "0.90", 0.95f to "0.95", 1f to "1.00"), current.topP, enabled = !busy, onSelect = viewModel::updateCustomTopP)
-                        ChoiceSetting("Top-K", listOf(0 to "Model default (0)", 20 to "20", 40 to "40", 60 to "60", 80 to "80", 100 to "100", 200 to "200"), current.topK, enabled = !busy, onSelect = viewModel::updateCustomTopK)
-                        ChoiceSetting("Seed", listOf(-1 to "Random each run (-1)", 0 to "0", 1 to "1", 42 to "42", 123 to "123", 1234 to "1234"), current.seed, enabled = !busy, onSelect = viewModel::updateCustomSeed)
+                        Text(tr("CUSTOM SETTINGS"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Hint(tr("These controls save to the app's manual engine settings. Sampling changes apply on the next message; context, threads, batch width, cache and I/O changes need a model reload when they differ from the loaded session."))
+                        ChoiceSetting(tr("Context length"), listOf(2048 to tr("2,048 tokens"), 4096 to tr("4,096 tokens"), 8192 to tr("8,192 tokens"), 16384 to tr("16,384 tokens"), 32768 to tr("32,768 tokens")), current.contextLength, enabled = !busy, onSelect = viewModel::updateCustomContext)
+                        ChoiceSetting(tr("CPU decode threads"), listOf(1 to "1", 2 to "2", 3 to "3", 4 to "4", 6 to "6", 8 to "8", 12 to "12"), current.threadCount, enabled = !busy, onSelect = viewModel::updateCustomThreads)
+                        ChoiceSetting(tr("Prompt batch threads"), listOf(1 to "1", 2 to "2", 4 to "4", 6 to "6", 8 to "8", 12 to "12"), current.batchThreadCount, enabled = !busy, onSelect = viewModel::updateCustomBatchThreads)
+                        ChoiceSetting(tr("Batch width"), listOf(128 to "128", 256 to "256", 512 to "512", 1024 to "1,024", 2048 to "2,048", 4096 to "4,096"), current.batchWidth, enabled = !busy, onSelect = viewModel::updateCustomBatchWidth)
+                        ChoiceSetting(tr("Expert cache budget"), listOf(-1 to tr("Auto"), 512 to tr("512 MB"), 1024 to tr("1 GB"), 1500 to tr("1.5 GB"), 2000 to tr("2 GB"), 3000 to tr("3 GB"), 4000 to tr("4 GB")), current.cacheMb, enabled = !busy, onSelect = viewModel::updateCustomCache)
+                        ChoiceSetting(tr("I/O threads"), (1..8).map { it to it.toString() }, current.ioThreads, enabled = !busy, onSelect = viewModel::updateCustomIoThreads)
+                        ChoiceSetting(tr("Temperature"), listOf(0f to tr("0 (greedy)"), 0.2f to "0.2", 0.5f to "0.5", 0.7f to "0.7", 1f to "1.0", 1.2f to "1.2", 1.5f to "1.5", 2f to "2.0"), current.temperature, enabled = !busy, onSelect = viewModel::updateCustomTemperature)
+                        ChoiceSetting(tr("Top-P"), listOf(0.5f to "0.50", 0.7f to "0.70", 0.8f to "0.80", 0.9f to "0.90", 0.95f to "0.95", 1f to "1.00"), current.topP, enabled = !busy, onSelect = viewModel::updateCustomTopP)
+                        ChoiceSetting(tr("Top-K"), listOf(0 to tr("Model default (0)"), 20 to "20", 40 to "40", 60 to "60", 80 to "80", 100 to "100", 200 to "200"), current.topK, enabled = !busy, onSelect = viewModel::updateCustomTopK)
+                        ChoiceSetting(tr("Seed"), listOf(-1 to tr("Random each run (-1)"), 0 to "0", 1 to "1", 42 to "42", 123 to "123", 1234 to "1234"), current.seed, enabled = !busy, onSelect = viewModel::updateCustomSeed)
                         if (ui.reloadNeeded && !busy) {
-                            Text("The loaded model needs a reload for the changed engine settings.", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
-                            Button(onClick = viewModel::reloadModel, modifier = Modifier.fillMaxWidth()) { Text("Reload model now") }
+                            Text(tr("The loaded model needs a reload for the changed engine settings."), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+                            Button(onClick = viewModel::reloadModel, modifier = Modifier.fillMaxWidth()) { Text(tr("Reload model now")) }
                         } else if (currentModelPath != null) {
-                            Hint("The loaded model already matches the reload-sensitive settings, or only per-request sampling values changed.")
+                            Hint(tr("The loaded model already matches the reload-sensitive settings, or only per-request sampling values changed."))
                         }
                     }
                 } else {
-                    Hint(selectedTier.tagline)
+                    Hint(tr(selectedTier.tagline))
                     Button(
                         onClick = { viewModel.createSaves(selectedTier) },
                         enabled = ui.device != null && facts != null && !busy,
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Create ${selectedTier.title} Settings") }
-                    Hint("Creates one profile for the selected goal. The optimizer chooses supported settings; measured performance is the final judge.")
+                    ) { Text(tr("Create {0} Settings", selectedTier.title)) }
+                    Hint(tr("Creates one profile for the selected goal. The optimizer chooses supported settings; measured performance is the final judge."))
                 }
                 val forModel = facts?.let { f -> saves.filter { it.modelName == f.name } }.orEmpty()
                 OutlinedButton(
                     onClick = { measureIds = forModel.map { it.id } },
                     enabled = forModel.isNotEmpty() && !busy,
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Measure real speed of all ${forModel.size} saves") }
-                Hint("Measuring loads the model for each save, so it may take a while.")
+                ) { Text(tr("Measure real speed of all {0} saves", forModel.size)) }
+                Hint(tr("Measuring loads the model for each save, so it may take a while."))
             }
 
             // ------------------------------------------------------------ saves
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text(
-                    "Your saves", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                    tr("Your saves"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedButton(
                     onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
                     enabled = !busy
-                ) { Text("Import") }
+                ) { Text(tr("Import")) }
             }
             if (saves.isEmpty()) {
-                Hint("No saves yet. Create them above, or import a save file.")
+                Hint(tr("No saves yet. Create them above, or import a save file."))
             }
             saves.forEach { save ->
                 SaveCard(
@@ -321,7 +321,7 @@ fun AutoSettingsScreen(
         var text by remember(target.id) { mutableStateOf(target.name) }
         AlertDialog(
             onDismissRequest = { renameTarget = null },
-            title = { Text("Rename save") },
+            title = { Text(tr("Rename save")) },
             text = {
                 OutlinedTextField(
                     value = text, onValueChange = { text = it.take(AutoSaveCodec.MAX_NAME) },
@@ -332,21 +332,21 @@ fun AutoSettingsScreen(
                 TextButton(
                     enabled = AutoSaveCodec.cleanName(text).isNotEmpty(),
                     onClick = { viewModel.rename(target.id, text); renameTarget = null }
-                ) { Text("Rename") }
+                ) { Text(tr("Rename")) }
             },
-            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text(tr("Cancel")) } }
         )
     }
 
     deleteTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
-            title = { Text("Delete save?") },
-            text = { Text("“${target.name}” will be removed from this phone. Your current settings stay as they are.") },
+            title = { Text(tr("Delete save?")) },
+            text = { Text(tr("“{0}” will be removed from this phone. Your current settings stay as they are.", target.name)) },
             confirmButton = {
-                TextButton(onClick = { viewModel.delete(target.id); deleteTarget = null }) { Text("Delete") }
+                TextButton(onClick = { viewModel.delete(target.id); deleteTarget = null }) { Text(tr("Delete")) }
             },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text(tr("Cancel")) } }
         )
     }
 
@@ -354,19 +354,16 @@ fun AutoSettingsScreen(
         val seconds = viewModel.measureSecondsFor(ids.size)
         AlertDialog(
             onDismissRequest = { measureIds = null },
-            title = { Text("This may take a while") },
+            title = { Text(tr("This may take a while")) },
             text = {
                 Text(
-                    "Measuring loads the model once for each of the ${ids.size} save(s) and generates a short test, " +
-                        "${durationText(seconds)} in total. Chat is unavailable until it finishes, then your current " +
-                        "model is loaded again. Keep the app open (the screen stays on). Saves that need more RAM " +
-                        "than your phone can safely give are skipped instead of risking a crash. You can cancel at any time."
+                    tr("Measuring loads the model once for each of the {0} save(s) and generates a short test, {1} in total. Chat is unavailable until it finishes, then your current model is loaded again. Keep the app open (the screen stays on). Saves that need more RAM than your phone can safely give are skipped instead of risking a crash. You can cancel at any time.", ids.size, durationText(seconds))
                 )
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.measure(ids); measureIds = null }) { Text("Start") }
+                TextButton(onClick = { viewModel.measure(ids); measureIds = null }) { Text(tr("Start")) }
             },
-            dismissButton = { TextButton(onClick = { measureIds = null }) { Text("Not now") } }
+            dismissButton = { TextButton(onClick = { measureIds = null }) { Text(tr("Not now")) } }
         )
     }
 }
@@ -374,10 +371,10 @@ fun AutoSettingsScreen(
 @Composable
 private fun DeviceLines(d: DeviceProfile) {
     val lines = listOf(
-        "Memory: ${gb(d.totalRamMb)} total, ${gb(d.availRamMb)} free",
-        "CPU: ${d.cores} cores (${d.fastCores} fast)  ·  ${d.soc}",
-        String.format(Locale.US, "Memory speed: about %.0f GB/s (measured just now)", d.memBandwidthGBs),
-        if (d.npuRuntime) "NPU prefill: available" else "NPU prefill: not available in this build or on this phone"
+        tr("Memory: {0} total, {1} free", gb(d.totalRamMb), gb(d.availRamMb)),
+        tr("CPU: {0} cores ({1} fast)  ·  {2}", d.cores, d.fastCores, d.soc),
+        String.format(Locale.US, tr("Memory speed: about %.0f GB/s (measured just now)"), d.memBandwidthGBs),
+        if (d.npuRuntime) tr("NPU prefill: available") else tr("NPU prefill: not available in this build or on this phone")
     )
     lines.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
 }
@@ -407,23 +404,23 @@ private fun SaveCard(
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                if (active) "${save.name}  ·  IN USE" else save.name,
+                if (active) tr("{0}  ·  IN USE", save.name) else save.name,
                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold
             )
-            Text(save.tier.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(tr(save.tier.title), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             Text(speedText(save), style = MaterialTheme.typography.bodyMedium)
-            Hint(save.tier.tagline)
+            Hint(tr(save.tier.tagline))
             AutoTuner.describe(save.values, facts).forEach { Hint("• $it") }
-            if (save.modelName.isNotBlank()) Hint("Built for: ${save.modelName}")
+            if (save.modelName.isNotBlank()) Hint(tr("Built for: {0}", save.modelName))
             save.lastError?.let {
-                Text("Last measurement failed: $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                Text(tr("Last measurement failed: {0}", it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(onClick = onUse, enabled = enabled && !active) { Text(if (active) "In use" else "Use") }
-                OutlinedButton(onClick = onMeasure, enabled = enabled) { Text("Measure") }
-                OutlinedButton(onClick = onRename, enabled = enabled) { Text("Rename") }
-                OutlinedButton(onClick = onExport, enabled = enabled) { Text("Download") }
-                TextButton(onClick = onDelete, enabled = enabled) { Text("Delete") }
+                Button(onClick = onUse, enabled = enabled && !active) { Text(if (active) tr("In use") else tr("Use")) }
+                OutlinedButton(onClick = onMeasure, enabled = enabled) { Text(tr("Measure")) }
+                OutlinedButton(onClick = onRename, enabled = enabled) { Text(tr("Rename")) }
+                OutlinedButton(onClick = onExport, enabled = enabled) { Text(tr("Download")) }
+                TextButton(onClick = onDelete, enabled = enabled) { Text(tr("Delete")) }
             }
         }
     }

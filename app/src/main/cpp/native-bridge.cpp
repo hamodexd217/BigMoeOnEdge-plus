@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -116,11 +117,62 @@ enum IntIdx {
     I_DROP_RENORM, I_DROP_IN_PREFILL, I_PREDICTION_PROBE, I_LOAD_ALL_EXPERTS,
     I_DECIDE_PREFIX_CACHE, I_FORCE_CACHE,
     I_REPEAT_LAST_N,   // repetition-penalty window: 0 off, < 0 whole context
+    I_CACHE_TYPE_K,    // KvCacheType code (see kv_type_from_code), keys
+    I_CACHE_TYPE_V,    // values
+    I_CTX_CHECKPOINTS, // prompt checkpoints kept for hybrid/recurrent models, 0 = off
     I_COUNT
 };
 enum FloatIdx { F_TEMPERATURE = 0, F_TOP_P, F_MIN_P, F_REPEAT_PENALTY, F_FREQ_PENALTY, F_PRESENCE_PENALTY, F_COUNT };
 
 namespace {
+
+// KvCacheType wire codes, MUST match KvCacheType.code in EngineTypes.kt.
+bmoe::KvCacheType kv_type_from_code(int code) {
+    switch (code) {
+        case 0: return bmoe::KvCacheType::F16;
+        case 2: return bmoe::KvCacheType::Q5_0;
+        case 3: return bmoe::KvCacheType::Q4_0;
+        case 1:
+        default: return bmoe::KvCacheType::Q8_0;
+    }
+}
+
+// The engine (since 0.39) names the settings a message is about as {name}, the way a command line
+// spells them, and leaves it to the front-end to say them in its own words. This app has no command
+// line, so a name becomes plain words: {ctx-size} -> "context size". Anything else is left alone.
+std::string humanize_setting_names(const std::string & in) {
+    struct Alias { const char * name; const char * words; };
+    static const Alias k_alias[] = {
+        {"ctx-size", "context size"},          {"batch-size", "batch size"},
+        {"ubatch-size", "batch width"},        {"cache-type-k", "KV cache keys type"},
+        {"cache-type-v", "KV cache values type"}, {"moe-stream", "expert streaming"},
+        {"ctx-checkpoints", "prompt checkpoints"}, {"repeat-penalty", "repeat penalty"},
+        {"frequency-penalty", "frequency penalty"}, {"presence-penalty", "presence penalty"},
+        {"min-p", "min-p"},                    {"mtp-head", "MTP head"},
+    };
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size();) {
+        if (in[i] == '{') {
+            const size_t j = in.find('}', i + 1);
+            if (j != std::string::npos && j - i <= 40) {
+                const std::string name = in.substr(i + 1, j - i - 1);
+                bool plain = !name.empty();
+                for (char c : name) plain = plain && (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_');
+                if (plain) {
+                    const char * words = nullptr;
+                    for (const Alias & a : k_alias) if (name == a.name) { words = a.words; break; }
+                    if (words) out += words;
+                    else for (char c : name) out += (c == '-' || c == '_') ? ' ' : c;
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        out += in[i++];
+    }
+    return out;
+}
 
 // Guards g_session (the pointer), never held while generating.
 std::mutex g_session_mu;
@@ -315,10 +367,21 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
     cfg.n_threads = std::max<int>(1, iv[I_N_THREADS]);
     cfg.n_threads_batch = std::clamp<int>(iv[I_N_THREADS_BATCH], 1, 32);
     cfg.n_ubatch = std::clamp<int>(iv[I_BATCH_WIDTH], 32, cfg.n_ctx);
+    // KV cache element types and prompt checkpoints (engine 0.39). The NPU prefill path was tuned and
+    // validated against an f16 cache, so it keeps one whatever the setting says.
+    cfg.cache_type_k = kv_type_from_code(iv[I_CACHE_TYPE_K]);
+    cfg.cache_type_v = kv_type_from_code(iv[I_CACHE_TYPE_V]);
+    if (npu_requested && (cfg.cache_type_k != bmoe::KvCacheType::F16 || cfg.cache_type_v != bmoe::KvCacheType::F16)) {
+        LOGI("NPU prefill is on: the KV cache stays f16 (the setting is applied when NPU prefill is off)");
+        cfg.cache_type_k = bmoe::KvCacheType::F16;
+        cfg.cache_type_v = bmoe::KvCacheType::F16;
+    }
+    cfg.ctx_checkpoints = std::clamp<int>(iv[I_CTX_CHECKPOINTS], 0, 16);
+    cfg.checkpoint_min_step = 4096;
     cfg.chatml = true; // Session renders the model's own chat template over the whole conversation
     cfg.n_expert_used = std::max<int>(0, iv[I_N_EXPERT_USED]); // 0 = the model's own top-k
     cfg.mmproj_path = mmproj_path; // patch 0003; empty = text only
-    cfg.spec.draft_model_path = draft_path;
+    cfg.spec.mtp_head = draft_path; // a separate MTP-only GGUF; empty = the head inside the model file
 #ifdef BMOE_HAVE_HEXAGON
     if (npu_requested) {
         cfg.prefill.device = "HTP0";
@@ -460,7 +523,8 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
     }
     if (!opened) {
         LOGE("Session::open failed: %s", error.c_str());
-        return to_bytes(env, error.empty() ? std::string("Session::open failed (no message)") : error);
+        return to_bytes(env, error.empty() ? std::string("Session::open failed (no message)")
+                                           : humanize_setting_names(error));
     }
 
     std::string info;
@@ -471,6 +535,9 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
     info += std::string("think_control=") + bmoe::think_control_name(opened->think_control()) + "\n";
     info += std::string("overlap=") + (cfg.moe.overlap ? "1" : "0") + "\n";
     info += std::string("streaming=") + (streaming ? "1" : "0") + "\n";
+    info += std::string("cache_type_k=") + bmoe::kv_cache_type_name(cfg.cache_type_k) + "\n";
+    info += std::string("cache_type_v=") + bmoe::kv_cache_type_name(cfg.cache_type_v) + "\n";
+    info += "ctx_checkpoints=" + std::to_string(cfg.ctx_checkpoints) + "\n";
     info += std::string("vision=") + (opened->supports_vision() ? "1" : "0") + "\n";
     // Session::open fails if the HTP path was requested but could not initialise. `ready` therefore
     // means the loaded model has an initialised prefill path, not that every prompt op will offload.
@@ -478,7 +545,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeLoadModel(
 
     std::unique_ptr<bmoe::IMetricsSink> csv;
     if (!csv_path.empty()) {
-        csv.reset(bmoe::make_csv_metrics_sink(csv_path));
+        csv = bmoe::make_csv_metrics_sink(csv_path);
         if (!csv) LOGW("could not open metrics CSV at %s", csv_path.c_str());
     }
 
@@ -669,7 +736,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerate(
 
     if (!result.ok) {
         LOGE("Session::generate failed: %s", result.error.c_str());
-        finish(false, false, result.error.empty() ? std::string("generate failed (no message)") : result.error, "",
+        finish(false, false, result.error.empty() ? std::string("generate failed (no message)") : humanize_setting_names(result.error), "",
                "", 0, 0, 0, 0.0, 0.0, -1.0);
         return JNI_TRUE;
     }
@@ -816,7 +883,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeGenerateChat(
 
     if (!result.ok) {
         LOGE("Session::generate (chat) failed: %s", result.error.c_str());
-        finish(false, false, result.error.empty() ? std::string("generate failed (no message)") : result.error, "", "",
+        finish(false, false, result.error.empty() ? std::string("generate failed (no message)") : humanize_setting_names(result.error), "", "",
                {}, "", "", 0, 0, 0, 0, 0.0, 0.0, -1.0);
         return JNI_TRUE;
     }
@@ -885,7 +952,7 @@ Java_com_bigmoe_onedge_core_EngineNativeBridge_nativeDecide(
     out += result.cancelled ? "true" : "false";
     out += ",\"fatal\":";
     out += result.fatal ? "true" : "false";
-    out += ",\"error\":\"" + json_escape(result.error) + "\"";
+    out += ",\"error\":\"" + json_escape(humanize_setting_names(result.error)) + "\"";
     out += ",\"best\":" + std::to_string(result.best);
     out += ",\"choice_logp\":[";
     for (size_t i = 0; i < result.choice_logp.size(); ++i) {

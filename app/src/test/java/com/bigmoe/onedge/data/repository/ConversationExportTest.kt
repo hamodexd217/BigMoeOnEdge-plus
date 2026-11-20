@@ -10,8 +10,7 @@ import org.junit.Test
 class ConversationExportTest {
     private val session = ChatSessionDomainModel("conversation-123", "محادثة 📚", 1_700_000_000_000L, 1_700_000_100_000L)
     private val messages = listOf(
-        ChatMessageDomainModel("m1", session.id, MessageRole.USER, "مرحبا
-Second line 🙂", 1_700_000_001_000L),
+        ChatMessageDomainModel("m1", session.id, MessageRole.USER, "مرحبا\nSecond line 🙂", 1_700_000_001_000L),
         ChatMessageDomainModel("m2", session.id, MessageRole.ASSISTANT, "Answer with ``` a fence", 1_700_000_002_000L, reasoning = "private chain of thought")
     )
     private val attachments = listOf(
@@ -21,13 +20,11 @@ Second line 🙂", 1_700_000_001_000L),
     @Test fun markdownAndTextKeepUnicodeMultilineAndMessageOrder() {
         val markdown = ConversationExportFormatter.create(session, messages, attachments, ConversationExportFormat.MARKDOWN, false)
         val text = ConversationExportFormatter.create(session, messages, attachments, ConversationExportFormat.PLAIN_TEXT, false)
-        assertTrue(markdown.contents.contains("مرحبا
-Second line 🙂"))
-        assertTrue(text.contents.contains("مرحبا
-Second line 🙂"))
+        assertTrue(markdown.contents.contains("مرحبا\nSecond line 🙂"))
+        assertTrue(text.contents.contains("مرحبا\nSecond line 🙂"))
         assertTrue(markdown.contents.indexOf("مرحبا") < markdown.contents.indexOf("Answer with"))
         assertTrue(text.contents.indexOf("مرحبا") < text.contents.indexOf("Answer with"))
-        assertTrue(markdown.contents.contains("report \[final\].pdf"))
+        assertTrue(markdown.contents.contains("report \\[final\\].pdf"))
         assertFalse(markdown.contents.contains("/private/path"))
         assertFalse(markdown.contents.contains("internal-attachment-id"))
     }

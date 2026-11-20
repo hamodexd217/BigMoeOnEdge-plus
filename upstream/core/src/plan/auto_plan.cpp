@@ -1,0 +1,109 @@
+// The probe-and-plan sequence (bmoe/auto_plan.h): the adapters of bmoe/probe.h in the one order a
+// plan is measured in, then the rules. Composition only - every fact comes from an adapter and
+// every decision from plan_run().
+
+#include "bmoe/auto_plan.h"
+#include "bmoe/backend_choice.h"
+
+#include "bmoe/planner.h"
+#include "bmoe/probe.h"
+#include "bmoe/routing.h"
+#include "bmoe/measured_knobs.h"
+#include "bmoe/version.h"
+#include "../metrics/memory_snapshot.h"
+
+#include "../engine/llama_log.h"
+
+#include "llama.h"
+
+#include <algorithm>
+#include <filesystem>
+
+namespace bmoe {
+
+AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const AutoPlanOptions & opt) {
+    AutoPlan r;
+    const char * path = cfg.model_path.c_str();
+    int step = 0;
+    const auto starting = [&] {
+        if (opt.on_step && step < k_plan_step_count) opt.on_step(k_plan_steps[step], step, k_plan_step_count);
+        ++step;
+    };
+
+    detail::log_memory_snapshot("auto-probe-begin");
+    starting(); // devices
+    register_backends();
+    // The probes load the model too; asked for, their DEBUG lines are wanted as much as the run's.
+    detail::set_llama_log_debug(cfg.llama_debug_log);
+    r.hw = probe_hardware(path);
+    detail::log_memory_snapshot("auto-hardware");
+    // Every device beyond the host is asked in a process of its own first. A device is only as sound
+    // as its driver, and a driver that ends the process it is used from would otherwise end this plan
+    // - seen on a phone whose graphics driver lacks a function a backend calls without checking. What
+    // comes back is that device's facts, or the reason it has none; the probes below then leave it
+    // alone either way. Where a second process cannot be started the runner is empty and they run
+    // here.
+    if (opt.isolated_probe_args)
+        probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
+    starting(); // model
+    r.model = probe_model(path);
+    // The head of a file of its own is a file like the model: its size is what placing it costs.
+    if (!cfg.spec.mtp_head.empty()) {
+        std::error_code ec;
+        const auto head_size = std::filesystem::file_size(cfg.spec.mtp_head, ec);
+        if (!ec) r.model.mtp_head_bytes = (uint64_t) head_size;
+    }
+    // The model's own routing, from an earlier run the front-end kept: what its cache will hit.
+    if (opt.routing)
+        attach_routing(r.model, *opt.routing,
+                       cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used);
+    // What an earlier load measured about the lossless knobs, when it was this machine and engine.
+    if (opt.knobs)
+        if (const MeasuredKnobs * k = find_measured_knobs(*opt.knobs, hardware_fingerprint(r.hw), version()))
+            r.model.knobs = *k;
+    probe_device_support(r.hw, r.model);
+    detail::log_memory_snapshot("auto-device-support");
+    llama_backend_init();
+    starting(); // compute
+    probe_bandwidth(r.hw, r.model);
+    detail::log_memory_snapshot("auto-bandwidth");
+    // Only route-ahead reads this fact, and route-ahead arms only when the caller sets it, so a plan
+    // without it does not pay the timing or the working set.
+    if (cfg.moe.route_ahead > 0) probe_gate_gemv(r.hw, r.model);
+    probe_device_costs(r.hw, r.model);
+    detail::log_memory_snapshot("auto-device-costs");
+    starting(); // storage
+    // Where the expert reads land, which on a split model is not the file the caller named.
+    if (opt.probe_io)
+        probe_storage(r.hw, r.model.expert_file.empty() ? path : r.model.expert_file.c_str(),
+                      r.model.expert_slice_bytes);
+    detail::log_memory_snapshot("auto-storage");
+    // What the run must at least hold: the dense set and the cache FLOOR the engine will enforce,
+    // which is the larger of one token cycle and the generic guard - not one token cycle alone.
+    starting(); // memory
+    const uint64_t guard = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
+    probe_headroom(r.hw, opt.probe_mem, r.model.dense_bytes + (std::max)(r.model.token_cycle_bytes, guard));
+    detail::log_memory_snapshot("auto-headroom");
+    starting(); // placement
+    // The fitter places on the backends the plan will choose, one per card.
+    const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
+                                       ? BackendChoice{}
+                                       : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
+    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
+                                                cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
+    detail::log_memory_snapshot("auto-probe-end");
+    starting(); // rules
+    r.plan = plan_run(cfg, r.hw, r.model, placement, req);
+    return r;
+}
+
+bool probe_device_child(const char * model_path, const std::string & device, std::string & line) {
+    register_backends();
+    llama_backend_init();
+    std::string facts;
+    if (!probe_one_device(model_path, device, facts)) return false;
+    line = std::string(device_facts_marker) + " " + facts;
+    return true;
+}
+
+} // namespace bmoe

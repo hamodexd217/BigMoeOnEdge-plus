@@ -9,6 +9,7 @@
 #include "bmoe/predict_stats.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,11 @@ struct TokenMetrics {
     double mgmt_ms = 0.0;    // cache-management time (vm commit + evict + LRU bookkeeping) this token
     double compute_ms = 0.0; // residual: serial wall - io - mgmt; overlap wall - stall - mgmt
     double stall_ms = 0.0;   // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
+    // The flash term that is a share of wall_ms, already chosen for the run's mode: io_ms in serial
+    // (the blocking read), stall_ms under overlap (where io_ms is summed lane time and can exceed the
+    // wall). The term the compute residual subtracts, so a consumer never has to know the mode to
+    // pick it, and never recovers it by inverting the clamped residual. 0 when streaming is off.
+    double flash_wait_ms = 0.0;
     // Named eval-thread costs that otherwise hide inside a residual (all 0 when the feature that
     // pays them is off). drain_ms sits inside compute_ms: the async load waiting out the previous
     // layer's batch before reusing its flags. adopt_ms sits inside mgmt_ms: the route-ahead load
@@ -72,6 +78,11 @@ struct TokenMetrics {
     double mem_free_mib = 0.0;
     double swap_free_mib = 0.0;
 
+    // Kernel accounting for this process, distinct from resident bytes and system availability.
+    // -1 means unavailable; zero is a measured value. Sampled after decode, not a peak.
+    double process_footprint_mib = -1.0;
+    double process_headroom_mib = -1.0;
+
     // The cache budget in effect for this token. Fixed for the run now (an explicit --cache-mb, or
     // what --cache-mb auto sized to once at load) — the runtime governor that moved it is gone.
     double cache_budget_mib = 0.0;
@@ -112,8 +123,13 @@ struct RunSummary {
     // the run was capable of and not only what it did: a MoE arch that ran without streaming is the
     // baseline, not a measurement of this engine (see the CLI's mode line).
     std::string arch;
+    // The file's routed expert count, 0 for a dense model: with arch, what the run could have streamed.
+    int n_expert = 0;
 
     int n_generated = 0;
+    // The answer's budget this turn: the request's n_predict, or less when the context had less
+    // room left after the prompt. A run that generated this many tokens stopped on its budget.
+    int n_predict = 0;
     double gen_seconds = 0.0;
     double s_per_token = 0.0;
     double tokens_per_second = 0.0;
@@ -171,7 +187,14 @@ struct RunSummary {
     double moe_io_s_per_token = 0.0;
     double moe_mgmt_s_per_token = 0.0;  // cache-management time per token (commit + evict + LRU)
     double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
-    double cache_hit_pct = -1.0;        // -1 when no cache
+    // Per token, the wall-additive flash term (TokenMetrics::flash_wait_ms): io in serial, stall
+    // under overlap.
+    double moe_flash_wait_s_per_token = 0.0;
+    double cache_hit_pct = -1.0; // -1 when no cache
+    // The same, over this generation's decode alone: the figure a plan's credited hit rate prices
+    // (a decoded token), where cache_hit_pct also counts the prompt and every earlier turn. -1 when
+    // no cache or nothing was decoded.
+    double cache_hit_decode_pct = -1.0;
 
     // Compute decomposition, generation phase only (measured whether or not streaming is on, since
     // dense-weight faults appear in the mmap baseline too). majflt_per_token ≫ 0 flags a residency
@@ -319,8 +342,10 @@ struct RunInfo {
     int n_expert_used = 0; // effective top-k, after any override
     int n_threads = 0;
     int n_ctx = 0;
-    int n_ubatch = 0;    // widest graph computed at once; 0 = follow n_batch. Sets the compute-buffer
-                         // reservation, so it moves the very memory columns these rows record.
+    int n_ubatch = 0;                 // widest graph computed at once; 0 = follow n_batch. Sets the compute-buffer
+                                      // reservation, so it moves the very memory columns these rows record.
+    std::string cache_type_k = "f16"; // the K and V caches' element types: a quantized one is lossy
+    std::string cache_type_v = "f16";
     bool chatml = false; // a chat-templated prompt is not the prompt that was typed
     // Deliberately absent: `think`. It is a property of a REQUEST, not of the session, so a session
     // preamble stating one value would be wrong for every turn that asked for the other. The `turn`
@@ -351,7 +376,7 @@ struct RunInfo {
     bool predict_log = false;           // the accuracy probe: costs a barrier and two GEMVs per layer
     int predict_spec_max = 0;           // how many predicted misses a layer may speculate (0 = retention only)
     bool prefetch_sync = false;         // test path: speculative reads served inline, no latency hiding
-    std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon" | "ahwb"
+    std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon" | "pinned"
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
     bool drop_renorm = true;            // survivors rescaled to keep the routing's total mass
     bool drop_prefill = false;          // dropping armed during prefill too, where it discards far more
@@ -393,6 +418,6 @@ public:
 
 // A sink that appends one CSV row per token to `path` (header written on open).
 // Returns nullptr if the file cannot be opened.
-IMetricsSink * make_csv_metrics_sink(const std::string & path);
+std::unique_ptr<IMetricsSink> make_csv_metrics_sink(const std::string & path);
 
 } // namespace bmoe

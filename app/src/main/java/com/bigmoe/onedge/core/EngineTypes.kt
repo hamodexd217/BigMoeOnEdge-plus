@@ -33,6 +33,16 @@ enum class DecisionPrefixCache(val code: Int) {
 }
 
 /**
+ * Element type of the K or V attention cache (engine 0.39 `--cache-type-k/-v`). A quantized cache is
+ * smaller (q8_0 is about half of f16) for a loss below the noise floor; q4_0 saves more and costs more.
+ * [code] is the wire value read by native-bridge.cpp (kv_type_from_code).
+ */
+enum class KvCacheType(val code: Int, val label: String) {
+    F16(0, "f16 (full precision)"), Q8_0(1, "q8_0 (about half the memory)"),
+    Q5_0(2, "q5_0"), Q4_0(3, "q4_0 (about a quarter)")
+}
+
+/**
  * Everything the engine can only take when the model is (re)loaded. Field for field this is the original
  * BigMoeOnEdge Android app's AppSettings (see docs/settings-parity.md). [toIntArray]/[toFloatArray] define
  * the wire format shared with native-bridge.cpp (IntIdx / FloatIdx) and are pinned by a unit test.
@@ -96,7 +106,16 @@ data class LoadConfig(
     /** `--decide-prefix-cache`: affects scored-choice requests only. */
     val decisionPrefixCache: DecisionPrefixCache = DecisionPrefixCache.AUTO,
     /** Retains BigMoeOnEdge+ legacy support for small, potentially thrashing cache budgets. */
-    val forceCache: Boolean = true
+    val forceCache: Boolean = true,
+    /** K and V cache element types. The native side keeps f16 whenever NPU prefill is on (see bridge). */
+    val cacheTypeK: KvCacheType = KvCacheType.Q8_0,
+    val cacheTypeV: KvCacheType = KvCacheType.Q8_0,
+    /**
+     * Saved prompt states for models whose memory cannot be cut at an arbitrary token (hybrid/recurrent:
+     * Qwen3.5, Nemotron-H, LFM...). Each is a copy of that state; 0 turns the feature off. Models that can
+     * cut anywhere never keep one.
+     */
+    val ctxCheckpoints: Int = 3
 ) {
     /** One-batch prefill for any prompt that fits the context, like the engine's own session_config_from. */
     val nBatch: Int get() = nCtx
@@ -128,7 +147,8 @@ data class LoadConfig(
         if (dropRenorm) 1 else 0, if (dropInPrefill) 1 else 0,
         if (predictionProbe) 1 else 0, if (loadAllExpertsForBenchmark) 1 else 0,
         decisionPrefixCache.code, if (forceCache) 1 else 0,
-        repeatLastN.coerceIn(-1, 8192)
+        repeatLastN.coerceIn(-1, 8192),
+        cacheTypeK.code, cacheTypeV.code, ctxCheckpoints.coerceIn(0, 16)
     )
 
     fun toFloatArray(): FloatArray = floatArrayOf(
@@ -139,7 +159,7 @@ data class LoadConfig(
     companion object {
         const val UBATCH = 512
         /** Length of [toIntArray]; must equal I_COUNT in native-bridge.cpp. */
-        const val INT_COUNT = 45
+        const val INT_COUNT = 48
         const val FLOAT_COUNT = 6
     }
 }

@@ -59,9 +59,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.ui.theme.ColorMath
 import com.bigmoe.onedge.ui.theme.PaletteSpec
+import com.bigmoe.onedge.i18n.tr
 
 /** The nine colours of a palette, in editor order. */
-private enum class ColorSlot(val label: String) {
+private enum class ColorSlot(private val englishLabel: String) {
     PRIMARY("Primary"),
     SECONDARY("Secondary"),
     BACKGROUND("Background"),
@@ -70,7 +71,9 @@ private enum class ColorSlot(val label: String) {
     ACCENT("Accent"),
     USER("User message"),
     AI("AI message"),
-    CODE("Code blocks")
+    CODE("Code blocks");
+
+    val label: String get() = tr(englishLabel)
 }
 
 private fun PaletteSpec.get(slot: ColorSlot): Int = when (slot) {
@@ -143,9 +146,9 @@ private fun PalettePreview(p: PaletteSpec, style: AppVisualStyle) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     when (style) {
-                        AppVisualStyle.SOLID -> "Preview · Solid colors"
-                        AppVisualStyle.GRADIENT -> "Preview · Gradient"
-                        AppVisualStyle.LIQUID_GLASS -> "Preview · Glass"
+                        AppVisualStyle.SOLID -> tr("Preview · Solid colors")
+                        AppVisualStyle.GRADIENT -> tr("Preview · Gradient")
+                        AppVisualStyle.LIQUID_GLASS -> tr("Preview · Glass")
                     },
                     style = MaterialTheme.typography.labelSmall, color = Color(p.text).copy(alpha = 0.7f)
                 )
@@ -153,32 +156,32 @@ private fun PalettePreview(p: PaletteSpec, style: AppVisualStyle) {
                     Modifier.align(Alignment.End).clip(bubble)
                         .then(if (solid) Modifier.background(Color(p.userMessage)) else appSurfaceModifier(bubble, Color(p.userMessage), strong = true))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) { Text("Hello!", color = Color(ColorMath.onColor(p.userMessage))) }
+                ) { Text(tr("Hello!"), color = Color(ColorMath.onColor(p.userMessage))) }
                 Box(
                     Modifier.clip(bubble)
                         .then(if (solid) Modifier.background(Color(p.aiMessage)) else appSurfaceModifier(bubble, Color(p.aiMessage), strong = true))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) { Text("Hi, how can I help?", color = Color(ColorMath.onColor(p.aiMessage))) }
+                ) { Text(tr("Hi, how can I help?"), color = Color(ColorMath.onColor(p.aiMessage))) }
                 Box(Modifier.fillMaxWidth().clip(chip).background(Color(p.codeBlock)).padding(10.dp)) {
-                    Text("fun main() = println(\"hi\")", fontFamily = FontFamily.Monospace, color = Color(ColorMath.onColor(p.codeBlock)))
+                    Text(tr("fun main() = println(\"hi\")"), fontFamily = FontFamily.Monospace, color = Color(ColorMath.onColor(p.codeBlock)))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(Modifier.clip(chip).background(Color(p.primary)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                        Text("Primary", color = Color(ColorMath.onColor(p.primary)))
+                        Text(tr("Primary"), color = Color(ColorMath.onColor(p.primary)))
                     }
                     Box(Modifier.clip(chip).background(Color(p.secondary)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                        Text("Secondary", color = Color(ColorMath.onColor(p.secondary)))
+                        Text(tr("Secondary"), color = Color(ColorMath.onColor(p.secondary)))
                     }
                     Box(Modifier.clip(chip).background(Color(p.accent)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                        Text("Accent", color = Color(ColorMath.onColor(p.accent)))
+                        Text(tr("Accent"), color = Color(ColorMath.onColor(p.accent)))
                     }
                 }
-                Text("Body text on background", color = Color(p.text))
+                Text(tr("Body text on background"), color = Color(p.text))
                 Box(
                     Modifier.fillMaxWidth().clip(chip)
                         .then(appSurfaceModifier(chip, Color(p.surface)))
                         .padding(10.dp)
-                ) { Text("Text on surface", color = Color(p.text)) }
+                ) { Text(tr("Text on surface"), color = Color(p.text)) }
             }
         }
     }
@@ -201,19 +204,19 @@ fun PaletteEditorDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (onDelete == null) "New palette" else "Edit palette") },
+        title = { Text(if (onDelete == null) tr("New palette") else tr("Edit palette")) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PalettePreview(draft, AppTheme.visualStyle)
                 OutlinedTextField(
                     value = draft.name,
                     onValueChange = { draft = draft.copy(name = it.take(30)) },
-                    label = { Text("Name") },
+                    label = { Text(tr("Name")) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Dark palette (light status-bar icons)", modifier = Modifier.weight(1f))
+                    Text(tr("Dark palette (light status-bar icons)"), modifier = Modifier.weight(1f))
                     Switch(checked = draft.dark, onCheckedChange = { draft = draft.copy(dark = it) })
                 }
                 ColorSlot.values().forEach { slot ->
@@ -227,7 +230,7 @@ fun PaletteEditorDialog(
                 val low = ColorMath.contrast(draft.text, draft.background) < 4.5
                 if (low) {
                     Text(
-                        "Text on background has low contrast; it may be hard to read.",
+                        tr("Text on background has low contrast; it may be hard to read."),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -235,12 +238,12 @@ fun PaletteEditorDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(draft.copy(name = draft.name.trim().ifEmpty { "Custom" }, custom = true)) }) { Text("Save") }
+            TextButton(onClick = { onSave(draft.copy(name = draft.name.trim().ifEmpty { tr("Custom") }, custom = true)) }) { Text(tr("Save")) }
         },
         dismissButton = {
             Row {
-                if (onDelete != null) TextButton(onClick = onDelete) { Text("Delete") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+                if (onDelete != null) TextButton(onClick = onDelete) { Text(tr("Delete")) }
+                TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
             }
         }
     )
@@ -297,16 +300,16 @@ private fun ColorPickerDialog(title: String, initial: Int, onPick: (Int) -> Unit
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box(Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(12.dp)).background(current))
                 Text(ColorMath.toHex(current.toArgb()), fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                Text("Hue", style = MaterialTheme.typography.labelMedium)
+                Text(tr("Hue"), style = MaterialTheme.typography.labelMedium)
                 Slider(value = h, onValueChange = { h = it }, valueRange = 0f..360f)
-                Text("Saturation", style = MaterialTheme.typography.labelMedium)
+                Text(tr("Saturation"), style = MaterialTheme.typography.labelMedium)
                 Slider(value = s, onValueChange = { s = it }, valueRange = 0f..1f)
-                Text("Brightness", style = MaterialTheme.typography.labelMedium)
+                Text(tr("Brightness"), style = MaterialTheme.typography.labelMedium)
                 Slider(value = v, onValueChange = { v = it }, valueRange = 0f..1f)
             }
         },
-        confirmButton = { TextButton(onClick = { onPick(current.toArgb() or (0xFF shl 24)) }) { Text("Use") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        confirmButton = { TextButton(onClick = { onPick(current.toArgb() or (0xFF shl 24)) }) { Text(tr("Use")) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Cancel")) } }
     )
 }
 
@@ -333,7 +336,7 @@ fun PaletteDropdown(
                 Spacer(Modifier.width(10.dp))
             }
             Text(
-                text = current?.name ?: "System (follows the device)",
+                text = current?.name ?: tr("System (follows the device)"),
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -346,10 +349,10 @@ fun PaletteDropdown(
             modifier = Modifier.heightIn(max = 460.dp)
         ) {
             DropdownMenuItem(
-                text = { PaletteMenuRow(null, "System (follows the device)", selectedId == PalettePresets.SYSTEM_ID) },
+                text = { PaletteMenuRow(null, tr("System (follows the device)"), selectedId == PalettePresets.SYSTEM_ID) },
                 onClick = { open = false; onSelect(PalettePresets.SYSTEM_ID) }
             )
-            PaletteMenuHeader("Built-in")
+            PaletteMenuHeader(tr("Built-in"))
             presets.forEach { palette ->
                 DropdownMenuItem(
                     text = { PaletteMenuRow(palette, palette.name, palette.id == selectedId) },
@@ -357,7 +360,7 @@ fun PaletteDropdown(
                 )
             }
             if (custom.isNotEmpty()) {
-                PaletteMenuHeader("My palettes")
+                PaletteMenuHeader(tr("My palettes"))
                 custom.forEach { palette ->
                     DropdownMenuItem(
                         text = { PaletteMenuRow(palette, palette.name, palette.id == selectedId) },
@@ -367,13 +370,13 @@ fun PaletteDropdown(
             }
             HorizontalDivider()
             DropdownMenuItem(
-                text = { Text("New custom palette") },
+                text = { Text(tr("New custom palette")) },
                 leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
                 onClick = { open = false; onNewCustom() }
             )
             if (onEditSelected != null) {
                 DropdownMenuItem(
-                    text = { Text("Edit this palette") },
+                    text = { Text(tr("Edit this palette")) },
                     leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                     onClick = { open = false; onEditSelected() }
                 )
@@ -402,7 +405,7 @@ private fun PaletteMenuRow(palette: PaletteSpec?, name: String, selected: Boolea
         Text(name, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (selected) {
             Spacer(Modifier.width(10.dp))
-            Icon(Icons.Default.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Default.Check, contentDescription = tr("Selected"), tint = MaterialTheme.colorScheme.primary)
         }
     }
 }

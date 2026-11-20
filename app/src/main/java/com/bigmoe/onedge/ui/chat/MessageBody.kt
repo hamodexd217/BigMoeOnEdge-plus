@@ -23,8 +23,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -51,6 +51,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.i18n.tr
 
 @Composable
 fun MessageBody(
@@ -86,8 +87,8 @@ fun MessageBody(
                     } else null
                     when {
                         nativeUi != null -> NativeUiComponents(nativeUi, onNativeUiAction)
-                        isNativeUiBlock && isStreaming -> NativeUiStatus("Preparing interactive view…")
-                        isNativeUiBlock -> NativeUiStatus("This interactive view could not be rendered. Ask the model to try a simpler layout.")
+                        isNativeUiBlock && isStreaming -> NativeUiStatus(tr("Preparing interactive view…"))
+                        isNativeUiBlock -> NativeUiStatus(tr("This interactive view could not be rendered. Ask the model to try a simpler layout."))
                         else -> CodeBlock(block, onOpenAsArtifact)
                     }
                 }
@@ -391,34 +392,40 @@ private fun CodeBlock(block: MarkdownBlock.Code, onOpenAsArtifact: (language: St
                     clipboard.setText(AnnotatedString(block.code))
                     copied = true
                 }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy code")
+                    Icon(Icons.Default.ContentCopy, contentDescription = tr("Copy code"))
                     Spacer(Modifier.padding(start = 4.dp))
-                    Text(if (copied) "Copied" else "Copy")
+                    Text(if (copied) tr("Copied") else tr("Copy"))
                 }
                 if (block.closed && !language.equals("python", ignoreCase = true)) {
                     TextButton(onClick = { onOpenAsArtifact(language, block.code) }) {
-                        Icon(Icons.Default.OpenInNew, contentDescription = "Open as artifact")
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = tr("Open as artifact"))
                         Spacer(Modifier.padding(start = 4.dp))
-                        Text("Artifact")
+                        Text(tr("Artifact"))
                     }
                 }
             }
             if (language.equals("python", ignoreCase = true)) {
                 Text(
-                    "Python is shown as copyable source only; this app does not include a Python runtime.",
+                    tr("Python is shown as copyable source only; this app does not include a Python runtime."),
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.onCodeBlock.copy(alpha = 0.82f),
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
             }
             Spacer(Modifier.padding(top = 4.dp))
-            SelectionContainer {
-                Text(
-                    text = annotated,
-                    color = AppTheme.colors.onCodeBlock,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.horizontalScroll(rememberScrollState())
-                )
+            // Code reads left to right whatever the interface language: in a right-to-left layout the scroll area
+            // would otherwise open at the end of each line.
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr
+            ) {
+                SelectionContainer {
+                    Text(
+                        text = annotated,
+                        color = AppTheme.colors.onCodeBlock,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    )
+                }
             }
         }
     }
@@ -439,7 +446,7 @@ private fun PromptBlock(text: String, label: String = "Prompt") {
         Column(Modifier.fillMaxWidth().padding(10.dp)) {
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = label,
+                    text = tr(label),
                     style = MaterialTheme.typography.labelMedium,
                     color = AppTheme.colors.onCodeBlock,
                     modifier = Modifier.weight(1f)
@@ -448,9 +455,9 @@ private fun PromptBlock(text: String, label: String = "Prompt") {
                     clipboard.setText(AnnotatedString(text))
                     copied = true
                 }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy ${label.lowercase()}")
+                    Icon(Icons.Default.ContentCopy, contentDescription = tr("Copy {0}", tr(label).lowercase()))
                     Spacer(Modifier.padding(start = 4.dp))
-                    Text(if (copied) "Copied" else "Copy")
+                    Text(if (copied) tr("Copied") else tr("Copy"))
                 }
             }
             Spacer(Modifier.padding(top = 4.dp))

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project("onedge-engine" VERSION 0.28.1 LANGUAGES C CXX)
+project("onedge-engine" VERSION 0.39.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,7 +74,7 @@ endif()
 add_subdirectory(third_party/llama.cpp llama_build EXCLUDE_FROM_ALL)
 set(BMOE_HAVE_LLAMA ON)
 
-# ---- BigMoeOnEdge core (0.28.0 baseline + local patches and compatible fixes) ----------------
+# ---- BigMoeOnEdge core (upstream 0.39.0 streaming/IO stack + this app's session layer and patches) ----------------
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/core/CMakeLists.txt")
     message(FATAL_ERROR "core/ is missing. See README.md (Native build).")
 endif()

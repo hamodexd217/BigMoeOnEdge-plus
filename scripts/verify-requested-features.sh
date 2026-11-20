@@ -51,8 +51,8 @@ need app/src/main/java/com/bigmoe/onedge/data/local/datastore/EngineSettingsData
 need app/src/main/java/com/bigmoe/onedge/ui/settings/SettingsScreen.kt '"Allow image search"' 'Image search has an independent enable switch'
 need app/src/main/java/com/bigmoe/onedge/ui/settings/SettingsScreen.kt '"Search images after web search"' 'Automatic image follow-up has its own switch'
 need app/src/main/java/com/bigmoe/onedge/data/local/datastore/EngineSettingsDataStore.kt 'val autoImageSearchAfterWebSearch: Boolean = false' 'Automatic image follow-up is off by default'
-need app/build.gradle.kts 'versionCode = 19' 'Rebuilt APK is distinguishable by version code 19'
-need app/build.gradle.kts 'versionName = "0.6.5"' 'Rebuilt APK reports version 0.6.5'
+need app/build.gradle.kts 'versionCode = 20' 'Rebuilt APK is distinguishable by version code 20'
+need app/build.gradle.kts 'versionName = "0.7.0"' 'Rebuilt APK reports version 0.7.0'
 reject README.md '0.5.9' 'README does not carry old 0.5.9 release notes'
 
 printf '\nFeature source checks: %d passed, %d failed.\n' "$PASS" "$FAIL"

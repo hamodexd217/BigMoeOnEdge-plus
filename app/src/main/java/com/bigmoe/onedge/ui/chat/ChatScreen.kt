@@ -86,6 +86,7 @@ import com.bigmoe.onedge.data.local.entity.MessageRole
 import com.bigmoe.onedge.workspace.FileKinds
 import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
 import com.bigmoe.onedge.ui.theme.AppTheme
+import com.bigmoe.onedge.i18n.tr
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,7 +111,7 @@ fun ChatScreen(
     // Copies [text] verbatim and says so.
     val copyToClipboard: (String) -> Unit = { text ->
         clipboard.setText(AnnotatedString(text))
-        android.widget.Toast.makeText(context, "Copied", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(context, tr("Copied"), android.widget.Toast.LENGTH_SHORT).show()
     }
     DisposableEffect(Unit) {
         onDispose { viewModel.flushDraft() }
@@ -136,7 +137,7 @@ fun ChatScreen(
                 MessageRole.USER -> currentTurnSources = linkedSetOf()
                 MessageRole.TOOL -> currentTurnSources.addAll(extractWebSources(item.text).map { it.first })
                 MessageRole.ASSISTANT -> result[item.id] = currentTurnSources.toList()
-                MessageRole.SYSTEM, MessageRole.CONTEXT -> Unit
+                MessageRole.SYSTEM, MessageRole.CONTEXT, MessageRole.SUMMARY -> Unit
             }
         }
         result
@@ -218,11 +219,11 @@ fun ChatScreen(
                 ),
                 title = {
                     Column {
-                        Text(uiState.currentSession?.title ?: "New chat", maxLines = 1)
+                        Text(uiState.currentSession?.title ?: tr("New chat"), maxLines = 1)
                         val names = uiState.currentSession?.modelNames.orEmpty()
                         if (names.isNotEmpty()) {
                             Text(
-                                text = if (names.size == 1) names.first() else "Models: ${names.joinToString(", ")}",
+                                text = if (names.size == 1) names.first() else tr("Models: {0}", names.joinToString(", ")),
                                 maxLines = 1,
                                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.labelSmall,
@@ -234,13 +235,13 @@ fun ChatScreen(
                 navigationIcon = {
                     if (!wideMode) {
                         IconButton(onClick = { drawerScope.launch { chatsDrawerState.open() } }) {
-                            Icon(imageVector = Icons.Default.Menu, contentDescription = "Open chats")
+                            Icon(imageVector = Icons.Default.Menu, contentDescription = tr("Open chats"))
                         }
                     } else {
                         IconButton(onClick = onToggleHistoryPane) {
                             Icon(
                                 imageVector = Icons.Default.Menu,
-                                contentDescription = if (historyPaneVisible) "Hide chat history pane" else "Show chat history pane"
+                                contentDescription = if (historyPaneVisible) tr("Hide chat history pane") else tr("Show chat history pane")
                             )
                         }
                     }
@@ -249,10 +250,10 @@ fun ChatScreen(
                     // Always-visible escape hatch back to the main Chats/Home page.
                     // This is especially useful on tablets where the chat is a permanent split pane.
                     IconButton(onClick = onNavigateHome) {
-                        Icon(imageVector = Icons.Default.Home, contentDescription = "Home")
+                        Icon(imageVector = Icons.Default.Home, contentDescription = tr("Home"))
                     }
                     IconButton(onClick = { showFilesSheet = true }) {
-                        Icon(imageVector = Icons.Default.FolderOpen, contentDescription = "Chat files")
+                        Icon(imageVector = Icons.Default.FolderOpen, contentDescription = tr("Chat files"))
                     }
                     // Opens a small list of your models (load / unload) instead of jumping to the Models page.
                     ModelPickerButton(
@@ -280,7 +281,9 @@ fun ChatScreen(
                 } else {
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(stopFollowing)) {
                         items(items = uiState.messages, key = { it.id }) { message ->
-                            if (message.role == MessageRole.TOOL) {
+                            if (message.role == MessageRole.SUMMARY) {
+                                CompactionCard(summary = message.text)
+                            } else if (message.role == MessageRole.TOOL) {
                                 if (ImageSearchResultParser.parse(message.text) != null) {
                                     ImageSearchResultsCard(body = message.text)
                                 } else {
@@ -371,7 +374,7 @@ fun ChatScreen(
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 12.dp)
                     ) {
-                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Jump to the newest text")
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = tr("Jump to the newest text"))
                     }
                 }
             }
@@ -434,7 +437,7 @@ fun ChatScreen(
         var editedText by remember(message.id) { mutableStateOf(message.text) }
         AlertDialog(
             onDismissRequest = { editingMessage = null },
-            title = { Text("Edit message") },
+            title = { Text(tr("Edit message")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -445,7 +448,7 @@ fun ChatScreen(
                         maxLines = 10
                     )
                     Text(
-                        "The replies after this message are removed and a new answer is generated.",
+                        tr("The replies after this message are removed and a new answer is generated."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -459,10 +462,10 @@ fun ChatScreen(
                         viewModel.editUserMessage(message.id, editedText)
                         editingMessage = null
                     }
-                ) { Text("Save & regenerate") }
+                ) { Text(tr("Save & regenerate")) }
             },
             dismissButton = {
-                TextButton(onClick = { editingMessage = null }) { Text("Cancel") }
+                TextButton(onClick = { editingMessage = null }) { Text(tr("Cancel")) }
             }
         )
     }
@@ -486,8 +489,8 @@ fun ChatScreen(
                     request.diff?.let { DiffPreview(it) }
                 }
             },
-            confirmButton = { TextButton(onClick = { viewModel.resolveConfirmation(true) }) { Text(if (request.destructive) "Delete" else "Accept") } },
-            dismissButton = { TextButton(onClick = { viewModel.resolveConfirmation(false) }) { Text(if (request.destructive) "Cancel" else "Reject") } }
+            confirmButton = { TextButton(onClick = { viewModel.resolveConfirmation(true) }) { Text(if (request.destructive) tr("Delete") else tr("Accept")) } },
+            dismissButton = { TextButton(onClick = { viewModel.resolveConfirmation(false) }) { Text(if (request.destructive) tr("Cancel") else tr("Reject")) } }
         )
     }
 }
@@ -525,7 +528,7 @@ private fun ArtifactMessageChips(artifacts: List<com.bigmoe.onedge.data.reposito
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         artifacts.forEach { a ->
             Text(
-                "Artifact: ${a.title}",
+                tr("Artifact: {0}", a.title),
                 modifier = Modifier.padding(vertical = 3.dp).clickable(onClick = { onOpenFile(a.path) }),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
@@ -539,18 +542,18 @@ private fun EngineBanner(state: EngineState, onOpenModels: () -> Unit) {
     when (state) {
         is EngineState.Ready -> Unit
         is EngineState.Loading -> BannerRow(
-            text = "Loading model… this can take a minute.",
+            text = tr("Loading model… this can take a minute."),
             action = null,
             onAction = {},
             showSpinner = true
         )
         is EngineState.Failed -> BannerRow(
-            text = "Model failed to load: ${state.message.take(160)}",
-            action = "Models",
+            text = tr("Model failed to load: {0}", state.message.take(160)),
+            action = tr("Models"),
             onAction = onOpenModels
         )
         EngineState.Unloaded -> BannerRow(
-            text = "No model loaded • Tap the model icon in the top-right to load one.",
+            text = tr("No model loaded • Tap the model icon in the top-right to load one."),
             action = null,
             onAction = onOpenModels
         )
@@ -604,7 +607,7 @@ private fun NoticeBar(text: String, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = onDismiss) {
-                Icon(imageVector = Icons.Default.Close, contentDescription = "Dismiss")
+                Icon(imageVector = Icons.Default.Close, contentDescription = tr("Dismiss"))
             }
         }
     }

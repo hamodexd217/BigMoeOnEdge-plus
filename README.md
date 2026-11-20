@@ -20,20 +20,20 @@
 
 BigMoeOnEdge+ runs local `.gguf` models on Android. It handles dense and Mixture-of-Experts (MoE) models, keeps conversations on the device, streams answers with their reasoning, and can search the web, use tools, read images through compatible `mmproj` files, edit files, and serve the loaded model over an optional local API.
 
-**Version 0.6.5** (`versionCode` 19). The native engine is the project's customized BigMoeOnEdge 0.28.1-compatible source with a vendored llama.cpp. This repository is the source; build it to get an APK (see [Build from source](#build-from-source)).
+**Version 0.7.0** (`versionCode` 20). The native engine is upstream BigMoeOnEdge 0.39.0's streaming and I/O stack with this app's own session layer on top, built against a vendored llama.cpp. This repository is the source; build it to get an APK (see [Build from source](#build-from-source)). **0.7.0 was assembled without a build environment**: it compiles and its host tests pass, but it has not been run on a device ([merge report](docs/UPSTREAM_0.39_MERGE.md)).
 
-## What's new in 0.6.5
+## What's new in 0.7.0
 
-The full list is in the [changelog](CHANGELOG.md) and the [release notes](docs/RELEASE_NOTES_0.6.5.md). In short:
+The full list is in the [changelog](CHANGELOG.md) and the [release notes](docs/RELEASE_NOTES_0.7.0.md). In short:
 
 | Area | Highlights |
 |---|---|
-| Models | LFM3 text and LFM3-VL vision support, Flint and LFM2 / LFM2.5 supported, readable load errors, NPU memory failures no longer crash the app |
-| Sampling | Min P, repetition penalty and window, frequency and presence penalty |
-| Tools | No tool-round limit, external tools (HTTP tools and MCP servers), editor-style file tools with undo |
-| Chat | Live "what is the model doing" status line with timings, saved per message; in-app browser; chat-switch glitch fixed |
-| Native UI | The model decides when to use a card; wrench-menu switch |
-| Appearance | "Liquid glass" renamed **Glass** |
+| Memory | Quantized KV cache (f16 / q8_0 / q5_0 / q4_0, default q8_0, NPU prefill keeps f16) |
+| Chat speed | Prompt checkpoints: hybrid and recurrent models (Qwen3.5, Nemotron-H, LFM...) no longer re-read the whole prompt when a chat edits earlier text |
+| Long chats | Auto-compact: when a chat nears the context size the model summarizes its oldest messages and continues from the summary (Settings → Context), instead of silently forgetting them |
+| Languages | 16 interface languages (Settings → Language), Arabic and Persian right-to-left; English fallback per text; see docs/localization.md |
+| Engine | Upstream 0.39.0 streaming/IO stack and its fixes; expert tensors discovered from the file instead of a per-architecture table; cancel/teardown fixes |
+| Builds | New `build.yml`: APK, plus Linux / Windows / macOS desktop builds of the original project (bundled under `upstream/`) |
 
 ## Features
 
@@ -117,6 +117,10 @@ The default build targets `arm64-v8a`. The optional Hexagon/NPU path needs its o
 
 Quick static check (no Gradle needed): `bash scripts/verify-requested-features.sh`.
 
+### CI: `.github/workflows/build.yml`
+
+One workflow builds everything the repository can build: the CPU APK and its Kotlin unit tests; the **NPU APK** (Snapdragon Hexagon backend, built in Qualcomm's toolchain image; skip it on a manual run by unticking *npu*); the engine core's host tests (`ci/core-host`) on Linux x64/arm64, macOS and Windows; and the original project's `bmoe-cli`, `bmoe-server` and `bmoe-desktop` (from `upstream/`) on Linux x64/arm64, macOS arm64/x64 and Windows x64/arm64. A `v*` tag publishes everything as one GitHub release using `docs/RELEASE_NOTES_<version>.md`. Set the three signing secrets (`docs/SIGNING.md`) for a release-signed APK; without them the APK is signed with a throwaway debug key. The two APKs share the package name, signing key and version code, so either installs over the other. The desktop builds are separate from the Android app: they do not contain this app's session layer.
+
 ## Project layout
 
 ```text
@@ -129,8 +133,10 @@ app/src/main/java/com/bigmoe/onedge/
   ui/         Jetpack Compose screens, in-app browser and native UI renderer
   workspace/  generated-file workspace, search and diff support
 app/src/main/cpp/
-  core/       customized native inference engine and local patches
+  core/       native inference engine: upstream 0.39.0's streaming/IO stack + this app's session layer
   third_party/ vendored llama.cpp source
+upstream/     the original BigMoeOnEdge 0.39.0, unchanged: desktop builds in CI, and the base for the next merge
+ci/core-host/ host (Linux/Windows/macOS) build of the engine core's tests
 patches/      reproducible project-specific native patches
 docs/         architecture, model loading, API, tools, porting and validation notes
 scripts/      offline checks and diagnostics helpers

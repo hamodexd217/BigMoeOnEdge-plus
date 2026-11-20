@@ -60,6 +60,7 @@ import com.bigmoe.onedge.data.local.entity.AttachmentKind
 import com.bigmoe.onedge.ui.theme.AppTheme
 import com.bigmoe.onedge.ui.theme.appSurfaceModifier
 import com.bigmoe.onedge.data.local.datastore.AppVisualStyle
+import com.bigmoe.onedge.i18n.tr
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,7 +133,7 @@ fun ChatInputBar(
             ) {
                 if (textValue.isEmpty()) {
                     Text(
-                        text = "Ask anything",
+                        text = tr("Ask anything"),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f)
                     )
@@ -150,7 +151,7 @@ fun ChatInputBar(
             if (chooseFromOptions) {
                 Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
                     Text(
-                        "Options — one per line",
+                        tr("Options — one per line"),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -188,12 +189,12 @@ fun ChatInputBar(
                         ToggleIcon(
                             icon = Icons.Default.AttachFile,
                             on = pendingAttachments.isNotEmpty(),
-                            description = "Attach file, image or video",
+                            description = tr("Attach file, image or video"),
                             onClick = { attachMenu = true }
                         )
                         DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
                             DropdownMenuItem(
-                                text = { Text("File") },
+                                text = { Text(tr("File")) },
                                 leadingIcon = { Icon(Icons.Default.Description, null) },
                                 onClick = {
                                     attachMenu = false
@@ -202,9 +203,9 @@ fun ChatInputBar(
                             )
                             HorizontalDivider()
                             DropdownMenuItem(
-                                text = { Text("Image") },
+                                text = { Text(tr("Image")) },
                                 leadingIcon = { Icon(Icons.Default.Image, null) },
-                                trailingIcon = { if (!visionActive) Text("Vision required", style = MaterialTheme.typography.labelSmall) },
+                                trailingIcon = { if (!visionActive) Text(tr("Vision required"), style = MaterialTheme.typography.labelSmall) },
                                 enabled = visionActive,
                                 onClick = {
                                     attachMenu = false
@@ -216,9 +217,9 @@ fun ChatInputBar(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Video") },
+                                text = { Text(tr("Video")) },
                                 leadingIcon = { Icon(Icons.Default.VideoFile, null) },
-                                trailingIcon = { if (!visionActive) Text("Vision required", style = MaterialTheme.typography.labelSmall) },
+                                trailingIcon = { if (!visionActive) Text(tr("Vision required"), style = MaterialTheme.typography.labelSmall) },
                                 enabled = visionActive,
                                 onClick = {
                                     attachMenu = false
@@ -234,16 +235,16 @@ fun ChatInputBar(
                     ToggleIcon(
                         icon = Icons.Default.Language,
                         on = isWebSearchEnabled,
-                        description = if (isWebSearchEnabled) "Web & image search: ON" else "Web & image search: OFF",
+                        description = if (isWebSearchEnabled) tr("Web & image search: ON") else tr("Web & image search: OFF"),
                         onClick = onToggleWebSearch
                     )
                     ToggleIcon(
                         icon = Icons.Default.Lightbulb,
                         on = isThinkingEnabled || !thinkingSwitchable,
                         description = when {
-                            !thinkingSwitchable -> "Thinking: always on for this model"
-                            isThinkingEnabled -> "Thinking: ON"
-                            else -> "Thinking: OFF"
+                            !thinkingSwitchable -> tr("Thinking: always on for this model")
+                            isThinkingEnabled -> tr("Thinking: ON")
+                            else -> tr("Thinking: OFF")
                         },
                         enabled = thinkingSwitchable,
                         onClick = onToggleThinking
@@ -252,33 +253,33 @@ fun ChatInputBar(
                         ToggleIcon(
                             icon = Icons.Default.Build,
                             on = toolsFilesEnabled || toolsCodeEnabled || toolsUtilitiesEnabled || toolsExternalEnabled || nativeUiEnabled,
-                            description = "Tool access",
+                            description = tr("Tool access"),
                             onClick = { toolsMenu = true }
                         )
                         DropdownMenu(expanded = toolsMenu, onDismissRequest = { toolsMenu = false }) {
-                            Text("Tool access", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall)
+                            Text(tr("Tool access"), modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall)
                             ToolToggleRow(
-                                label = "Files",
+                                label = tr("Files"),
                                 checked = toolsFilesEnabled,
                                 onCheckedChange = onToggleToolFiles
                             )
                             ToolToggleRow(
-                                label = "Code",
+                                label = tr("Code"),
                                 checked = toolsCodeEnabled,
                                 onCheckedChange = onToggleToolCode
                             )
                             ToolToggleRow(
-                                label = "Utilities",
+                                label = tr("Utilities"),
                                 checked = toolsUtilitiesEnabled,
                                 onCheckedChange = onToggleToolUtilities
                             )
                             ToolToggleRow(
-                                label = "External",
+                                label = tr("External"),
                                 checked = toolsExternalEnabled,
                                 onCheckedChange = onToggleToolExternal
                             )
                             ToolToggleRow(
-                                label = "Native UI",
+                                label = tr("Native UI"),
                                 checked = nativeUiEnabled,
                                 onCheckedChange = onToggleNativeUi
                             )
@@ -298,7 +299,7 @@ fun ChatInputBar(
                 ) {
                     Icon(
                         imageVector = if (isGenerating) Icons.Default.Stop else Icons.Default.ArrowUpward,
-                        contentDescription = if (isGenerating) "Stop" else "Send",
+                        contentDescription = if (isGenerating) tr("Stop") else tr("Send"),
                         tint = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.secondary,
                         modifier = Modifier.size(18.dp)
                     )
@@ -356,7 +357,7 @@ private fun AttachmentChip(item: PendingAttachment, onRemove: () -> Unit) {
                 modifier = Modifier.weight(1f, fill = false)
             )
             IconButton(onClick = onRemove, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.Close, contentDescription = "Remove attachment", modifier = Modifier.size(15.dp))
+                Icon(Icons.Default.Close, contentDescription = tr("Remove attachment"), modifier = Modifier.size(15.dp))
             }
         }
     }

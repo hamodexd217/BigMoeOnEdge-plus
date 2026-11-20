@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.bigmoe.onedge.i18n.tr
 
 /** Home tab: the saved conversations. Creating a chat is the "+" button of the navigation bar. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -76,7 +77,7 @@ fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "CHATS",
+                text = tr("CHATS"),
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onBackground,
@@ -84,7 +85,7 @@ fun HomeScreen(
             )
             if (sessions.isNotEmpty()) {
                 IconButton(onClick = { confirmClearAll = true }) {
-                    Icon(Icons.Default.CleaningServices, contentDescription = "Delete all chats")
+                    Icon(Icons.Default.CleaningServices, contentDescription = tr("Delete all chats"))
                 }
             }
         }
@@ -100,9 +101,9 @@ fun HomeScreen(
                     tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(40.dp)
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("No conversations yet", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(tr("No conversations yet"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
-                    "Tap + to start your first chat",
+                    tr("Tap + to start your first chat"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.secondary
                 )
@@ -131,7 +132,7 @@ fun HomeScreen(
         var text by remember(target.id) { mutableStateOf(target.title) }
         AlertDialog(
             onDismissRequest = { renaming = null },
-            title = { Text("Rename chat") },
+            title = { Text(tr("Rename chat")) },
             text = {
                 OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             },
@@ -139,37 +140,37 @@ fun HomeScreen(
                 TextButton(onClick = {
                     viewModel.renameSession(target.id, text)
                     renaming = null
-                }) { Text("Save") }
+                }) { Text(tr("Save")) }
             },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text(tr("Cancel")) } }
         )
     }
     deleting?.let { target ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("Delete this chat?") },
-            text = { Text("\"${target.title}\" and its messages will be removed.") },
+            title = { Text(tr("Delete this chat?")) },
+            text = { Text(tr("\"{0}\" and its messages will be removed.", target.title)) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.deleteSession(target.id)
                     deleting = null
-                }) { Text("Delete") }
+                }) { Text(tr("Delete")) }
             },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text(tr("Cancel")) } }
         )
     }
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
-            title = { Text("Delete all chats?") },
-            text = { Text("This permanently removes every saved conversation.") },
+            title = { Text(tr("Delete all chats?")) },
+            text = { Text(tr("This permanently removes every saved conversation.")) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmClearAll = false
                     viewModel.clearAllHistory()
-                }) { Text("Delete all") }
+                }) { Text(tr("Delete all")) }
             },
-            dismissButton = { TextButton(onClick = { confirmClearAll = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { confirmClearAll = false }) { Text(tr("Cancel")) } }
         )
     }
 }
@@ -185,7 +186,7 @@ private fun SessionRow(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val date = remember(session.updatedAt) {
-        SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(session.updatedAt))
+        SimpleDateFormat(tr("MMM d, HH:mm"), Locale.getDefault()).format(Date(session.updatedAt))
     }
     val styled = AppTheme.visualStyle != AppVisualStyle.SOLID
     val sessionShape = RoundedCornerShape(16.dp)
@@ -216,17 +217,17 @@ private fun SessionRow(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (isGenerating) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Chat options")
+                        Icon(Icons.Default.MoreVert, contentDescription = tr("Chat options"))
                     }
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("Rename") },
+                        text = { Text(tr("Rename")) },
                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                         onClick = { menuOpen = false; onRename() }
                     )
                     DropdownMenuItem(
-                        text = { Text("Delete") },
+                        text = { Text(tr("Delete")) },
                         leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                         onClick = { menuOpen = false; onDelete() }
                     )

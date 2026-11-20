@@ -152,13 +152,14 @@ fun BigMoeTheme(
             }
         }
     }
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
     CompositionLocalProvider(
         LocalAppColors provides appColorsFrom(palette),
         LocalAppVisualStyle provides visualStyle
     ) {
         MaterialTheme(
             colorScheme = colorSchemeFrom(palette),
-            typography = Typography,
+            typography = androidx.compose.runtime.remember(layoutDirection) { val base = Typography; base.forDirection(layoutDirection) },
             content = content
         )
     }

@@ -1,6 +1,8 @@
 #include "bmoe/session.h"
 #include "cache_brake.h"
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
+#include "kv_cache_type.h"
+#include "context_checkpoints.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
@@ -15,6 +17,7 @@
 #include "../moe/router_hook.h"
 #include "../moe/decide_probe.h"
 #include "../moe/expert_stream_source.h"
+#include "../moe/gate_gemv.h"
 #include "../moe/gguf_offsets.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
@@ -345,7 +348,7 @@ std::unordered_set<std::string> expert_tensor_names(const std::vector<LayerExper
     std::unordered_set<std::string> names;
     for (const LayerExperts & L : layers) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
             if (L.proj[p].tensor) names.insert(L.proj[p].tensor->name);
     }
     return names;
@@ -394,6 +397,8 @@ struct Session::Impl {
     mtmd::context_ptr mtmd;
 #endif
     bool kv_has_media = false;
+    KvCacheType cache_type_k_eff = KvCacheType::F16; // what the context was really allocated with (after any V fallback)
+    KvCacheType cache_type_v_eff = KvCacheType::F16;
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
     // The compute reference is per session and survives across turns.
@@ -483,6 +488,30 @@ struct Session::Impl {
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
+    // What a refused cut of the KV rolls back to (context_checkpoints.h, from upstream 0.36). They
+    // describe a prefix of kv_tokens, so they go wherever it goes. Only models whose memory cannot be
+    // cut anywhere (hybrid/recurrent: Qwen3.5, Nemotron-H, LFM, ...) ever keep one; for every other model
+    // the state they would copy is empty and none is taken, so this costs nothing there.
+    detail::ContextCheckpoints checkpoints;
+    bool checkpoint_size_logged = false;
+    detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), mtp.get()}; }
+    void forget_kv_tokens() {
+        kv_tokens.clear();
+        checkpoints.clear();
+    }
+    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, the newest
+    // checkpoint at or before n stands in for it; returns how many tokens are still held, 0 with the
+    // context cleared when no checkpoint helps.
+    size_t keep_kv_prefix(size_t n) {
+        size_t kept = n;
+        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, (llama_pos) n, -1)) {
+            kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
+            if (kept == 0) clear_memory(ctx.get());
+        }
+        kv_tokens.resize(std::min(kept, kv_tokens.size()));
+        checkpoints.drop_after((int64_t) kept);
+        return kept;
+    }
 
     // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
     // answer on prefill cost), null when the policy keeps none.
@@ -519,7 +548,9 @@ struct Session::Impl {
     ~Impl() {
         // Deterministic teardown order: stop the I/O pool (it holds fds into the mmap and its
         // buffers back the rebound expert tensors), then the context (its eval callback points
-        // at the hook), then the hook, then unmap the model, then release the backend.
+        // at the hook), then the hook, then unmap the model, then release the backend. The hook's
+        // prediction worker goes first of all: it reads gate weights the source frees.
+        if (hook) hook->predict_worker_stop();
         source.shutdown();
         // Hands every weight back to its mapping, then frees the device copy: before the model goes.
         prefill.reset();
@@ -594,7 +625,7 @@ PplResult Session::perplexity(const PplRequest & req) {
     r.n_tokens = n;
 
     im.clear_memory(ctx);
-    im.kv_tokens.clear();
+    im.forget_kv_tokens();
 
     // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
     // weight chain, and which node that is gets LEARNED from the first graph of a run — so on a
@@ -740,7 +771,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     // A decision is not a conversation turn: whatever generate() was continuing is gone once the
     // context is overwritten, so forget it rather than let a later turn diff against stale tokens.
     im.chat_history.clear();
-    im.kv_tokens.clear();
+    im.forget_kv_tokens();
 
     detail::LlamaDecideDeps deps;
     deps.ctx = im.ctx.get();
@@ -844,7 +875,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
     // the gguf metadata either way, so the "this model has no trained head" check below is
     // unaffected by this flag.
-    mparams.load_mtp = cfg.spec.is_mtp() && cfg.spec.draft_model_path.empty();
+    mparams.load_mtp = cfg.spec.is_mtp() && cfg.spec.mtp_head.empty();
 
     // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
@@ -909,17 +940,20 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     char arch[128] = {0};
     llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
     im.arch = arch;
-    if (cfg.spec.is_mtp() && cfg.spec.draft_model_path.empty() && im.n_layer_nextn <= 0)
+    if (cfg.spec.is_mtp() && cfg.spec.mtp_head.empty() && im.n_layer_nextn <= 0)
         return fail("MTP requested, but this GGUF has no embedded nextn/MTP block. Attach a separate MTP-only GGUF in Models, or use n-gram speculation.");
-    if (cfg.spec.is_mtp() && !cfg.spec.draft_model_path.empty() && std::strcmp(arch, "qwen4exp") != 0)
+    if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty() && std::strcmp(arch, "qwen4exp") != 0)
         return fail("A separate MTP draft is currently supported only for Qwen4Exp targets (general.architecture=qwen4exp).");
 
-    const MoeRecipe * recipe = nullptr;
-    if (cfg.moe.enabled) {
-        recipe = find_moe_recipe(arch);
-        if (!recipe)
-            return fail(std::string("no MoE recipe for architecture '") + arch +
-                        "' — add one in core/src/moe/arch_registry.cpp (see docs/adding-a-model.md)");
+    // Which tensors are the routed experts, read off the file's shapes (bmoe/expert_layout.h) rather
+    // than looked up by architecture name: a MoE this engine has not proved byte-identical is refused
+    // here with the reason, and a new architecture needs no code. (Replaces the per-arch recipe table.)
+    ExpertLayout layout{};
+    if (cfg.moe.enabled || !cfg.moe.expert_host_buffer.empty()) {
+        layout = discover_expert_layout(meta().offsets.extents, gguf().n_expert);
+        if (cfg.moe.enabled && !layout.ok)
+            return fail("not a MoE this engine streams: " + layout.error +
+                        ". Turn {moe-stream} off to run it from the mapped file.");
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
@@ -940,13 +974,32 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // on the hook and the streamer must span the trunk PLUS the head. The index space is contiguous
     // and the tensor naming identical, so this bound is the only thing standing between the streamer
     // and the MTP experts — left at n_layer they are silently skipped and stay mmap-resident.
-    const int n_layer_streamed = im.n_layer + ((cfg.spec.is_mtp() && cfg.spec.draft_model_path.empty()) ? im.n_layer_nextn : 0);
-    im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, n_layer_streamed);
+    const int n_layer_streamed = im.n_layer + ((cfg.spec.is_mtp() && cfg.spec.mtp_head.empty()) ? im.n_layer_nextn : 0);
+    im.hook = std::make_unique<RouterHook>(layout, n_layer_streamed);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
     im.hook->set_expert_substitute(cfg.moe.substitute_lambda);
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
+    // Route-ahead's gate format (upstream 0.35). The adopted RouterHook scores against the gates' own float
+    // weights unless told otherwise, where the engine this app carried before always used the int8 mirror.
+    // Left at auto, the two are timed here on this model's gate shape and the faster wins; a tie goes to
+    // the mirror (a quarter of the bytes, which on a phone is the cost).
+    if (cfg.moe.route_ahead > 0) {
+        bool mirror = cfg.moe.gate_mirror == GateMirror::On;
+        if (cfg.moe.gate_mirror == GateMirror::Auto) {
+            const uint32_t gated = layout.layers.empty() ? (uint32_t) im.n_layer : (uint32_t) layout.layers.size();
+            const gate_gemv::Timing t =
+                gate_gemv::measure((uint32_t) llama_model_n_embd(model), (uint32_t) gguf().n_expert, gated);
+            mirror = t.measured() && t.int8_us <= t.f32_us;
+            if (t.measured())
+                std::fprintf(stderr, "bmoe: gate-mirror: auto -> %s (int8 %.1f us vs float %.1f us per layer, %u layers timed)\n",
+                             mirror ? "on" : "off", t.int8_us, t.f32_us, t.layers);
+            else
+                std::fprintf(stderr, "bmoe: gate-mirror: auto -> off (the gate shape is unknown, nothing was timed)\n");
+        }
+        im.hook->set_gate_mirror(mirror);
+    }
     im.hook->set_route_ahead(cfg.moe.route_ahead);
     if (cfg.decide.enabled && !cfg.decide.probe_path.empty()) {
         im.decide_probe = std::make_unique<DecideProbe>(cfg.model_path, im.n_layer, gguf().n_expert,
@@ -962,6 +1015,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
+    // The K/V cache element types (BigMoeOnEdge+ 0.7.0, from upstream 0.36). Quantizing the cache is the
+    // cheapest memory a phone can buy back: q8_0 halves it for a loss below the noise floor.
+    im.cache_type_k_eff = cfg.cache_type_k;
+    im.cache_type_v_eff = cfg.cache_type_v;
+    cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
+    cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
@@ -982,6 +1041,17 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
+    im.checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model));
+    // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
+    // llama.cpp for the context. A backend without it must not lose the run: V goes back to F16
+    // (K stays quantized, it needs nothing).
+    if (!ctx && ggml_is_quantized(cparams.type_v)) {
+        std::fprintf(stderr, "bmoe: a %s V cache needs flash attention, which this backend refused; V falls back to f16\n",
+                     kv_cache_type_name(cfg.cache_type_v));
+        cparams.type_v = GGML_TYPE_F16;
+        ctx = llama_init_from_model(model, cparams);
+        if (ctx) im.cache_type_v_eff = KvCacheType::F16;
+    }
     if (!ctx) return fail("failed to create context");
     im.ctx.reset(ctx);
     llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads_batch);
@@ -1008,7 +1078,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // MTP-only GGUF. The detached Qwen4Exp head borrows token embeddings/output through ctx_other.
     if (cfg.spec.is_mtp()) {
         llama_model * draft_model = model;
-        if (!cfg.spec.draft_model_path.empty()) {
+        if (!cfg.spec.mtp_head.empty()) {
             llama_model_params draft_mparams = llama_model_default_params();
             draft_mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
             draft_mparams.use_extra_bufts = false;
@@ -1019,8 +1089,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             // llama.cpp's default, which would open the same HTP device a second time.
             static ggml_backend_dev_t cpu_only_devices[1] = {nullptr};
             if (im.prefill) draft_mparams.devices = cpu_only_devices;
-            draft_model = llama_model_load_from_file(cfg.spec.draft_model_path.c_str(), draft_mparams);
-            if (!draft_model) return fail("failed to load separate MTP draft GGUF: " + cfg.spec.draft_model_path);
+            draft_model = llama_model_load_from_file(cfg.spec.mtp_head.c_str(), draft_mparams);
+            if (!draft_model) return fail("failed to load separate MTP draft GGUF: " + cfg.spec.mtp_head);
             im.model_dft.reset(draft_model);
             char draft_arch[128] = {0};
             llama_model_meta_val_str(draft_model, "general.architecture", draft_arch, sizeof(draft_arch));
@@ -1113,7 +1183,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             // so capture its experts in the same file-offset space. A separate sidecar has its own
             // GGUF and deliberately has no target RouterHook callback; process it during capture
             // only for the embedded case. The target model's experts remain streamed either way.
-            if (cfg.spec.draft_model_path.empty() &&
+            if (cfg.spec.mtp_head.empty() &&
                 !common_speculative_process(im.mtp.get(), im.mtp_batch))
                 return fail("MTP capture warm-up failed: the draft context could not process the batch");
         } else {
@@ -1131,12 +1201,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         for (LayerExperts & L : layers) {
             if (!L.bound) continue;
             ++n_bound;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-                if (!recipe->exps_suffix[p]) continue; // slot unused by this architecture
+            for (int p = 0; p < layout.n_slots; ++p) {
                 ggml_tensor * t = L.proj[p].tensor;
                 if (!t)
-                    return fail(std::string("captured MoE layer is missing expert tensor '") + recipe->exps_suffix[p] +
-                                "'");
+                    return fail("captured MoE layer is missing expert tensor '" + layout.suffix[p] + "'");
                 auto it = offs.off_by_name.find(t->name);
                 if (it == offs.off_by_name.end()) return fail(std::string("no gguf offset for tensor ") + t->name);
                 L.proj[p].file_off = it->second;
@@ -1227,10 +1295,33 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (im.prefill) im.prefill->keep_stream_layout(layers, offs.shard_paths);
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
+        // The least cache the run can live with: one token's worst-case expert cycle. The source reads it
+        // when the platform refuses a pin (lock limits, upstream 0.33) so the cache is never trimmed under it.
+        {
+            // The effective top-k, as im.n_expert_used will be resolved below: the override, else the model's own.
+            int k = cfg.n_expert_used;
+            if (k <= 0) {
+                const GgufModelInfo & gi = gguf();
+                k = gi.ok ? gi.n_expert_used : 0;
+            }
+            if (k > 0) im.source.set_pin_floor(im.source.worst_cycle_bytes(k));
+        }
         im.hook->set_source(&im.source);
         // The row policy exists only once dense_.init has taken the tables over; null means nothing
         // qualified or the takeover declined, and the hook then costs exactly nothing per node.
         im.hook->set_row_source(im.source.row_source());
+        // llama.cpp asks for the whole mapping to be read ahead at load, so the model files fill the
+        // system's page cache with bytes this run reads otherwise (experts through the streamer's direct
+        // reads, the dense set from its own copy). On a phone that is memory the kernel then takes back
+        // from the expert cache under pressure. Hand it back where the dense set is held apart from the
+        // mapping (upstream 0.38); under `mmap` the page cache IS the dense set. A no-op where
+        // posix_fadvise does not exist.
+        if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
+            for (const std::string & path : offs.shard_paths)
+                pio::drop_file_cache(path.c_str());
+            std::fprintf(stderr, "bmoe: page cache: the model files' read-ahead handed back (%zu file(s))\n",
+                         offs.shard_paths.size());
+        }
 
         // Drop the model file's mapping once nothing reads through it (core/src/io/mapping_release.h).
         // Safety is decided here, not in the module, and it is decided by looking rather than by
@@ -1365,6 +1456,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.n_ubatch = cfg.n_ubatch;
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = cfg.compute_trace_layers;
+        ri.cache_type_k = kv_cache_type_name(im.cache_type_k_eff); // what was allocated, after any V fallback
+        ri.cache_type_v = kv_cache_type_name(im.cache_type_v_eff);
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
         ri.spec_draft_max = cfg.spec.enabled() ? cfg.spec.draft_max : 0;
         ri.mtp_p_min = cfg.spec.is_mtp() ? cfg.spec.draft_p_min : 0.0f;
@@ -1395,7 +1488,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
-                           : cfg.moe.dense_weights == DenseWeightsMode::Pinned    ? "ahwb"
+                           : cfg.moe.dense_weights == DenseWeightsMode::Pinned    ? "pinned"
                                                                                   : "warm";
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
@@ -1533,7 +1626,7 @@ RunResult Session::generate(const GenerateRequest & req,
     if (im.kv_has_media || image_turn) {
         im.clear_memory(ctx);
         if (im.ctx_dft) im.clear_memory(im.ctx_dft.get());
-        im.kv_tokens.clear();
+        im.forget_kv_tokens();
         im.kv_has_media = false;
     }
 
@@ -1549,7 +1642,7 @@ RunResult Session::generate(const GenerateRequest & req,
         // draft of the new conversation is conditioned on the previous one.
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         im.chat_history.clear();
-        im.kv_tokens.clear();
+        im.forget_kv_tokens();
         // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
         // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
         // KV it decodes against.
@@ -1774,16 +1867,12 @@ RunResult Session::generate(const GenerateRequest & req,
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
             ++n_common;
         if (n_common < im.kv_tokens.size()) {
-            // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
-            // re-prefill in that case rather than continuing from an inconsistent cache.
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                im.clear_memory(ctx);
-                n_common = 0;
-                kv_reuse = KV_REUSE_REFUSED;
-            } else {
-                kv_reuse = KV_REUSE_PARTIAL;
-            }
-            im.kv_tokens.resize(n_common);
+            // A memory that cannot be cut here (SWA like Gemma, recurrent/hybrid like Qwen3.5) goes back to
+            // the newest checkpoint before the divergence, and only a context with none re-prefills in full
+            // rather than continuing from an inconsistent cache.
+            const size_t wanted_common = n_common;
+            n_common = im.keep_kv_prefix(wanted_common);
+            kv_reuse = (n_common == 0 && wanted_common > 0) ? KV_REUSE_REFUSED : KV_REUSE_PARTIAL;
         } else {
             kv_reuse = KV_REUSE_FULL;
         }
@@ -1792,8 +1881,17 @@ RunResult Session::generate(const GenerateRequest & req,
         // everything it generated. Miss this and the first prefill batch of the turn starts at a
         // position the draft context already has, which llama.cpp rejects outright: the second
         // message of a conversation fails while the first always works.
-        if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1))
+        // (Upstream 0.39: a draft context that cannot rewind is cleared WITH the target, never alone —
+        // clearing only it leaves the two at different positions and the next turn fails.)
+        if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1)) {
             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+            if (n_common > 0) {
+                im.clear_memory(ctx);
+                im.forget_kv_tokens();
+                n_common = 0;
+                kv_reuse = KV_REUSE_REFUSED;
+            }
+        }
     }
 
     // Where a rollback leaves the KV. Normally the state before this turn (n_common). A stateless chat
@@ -1805,12 +1903,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
     auto rollback_turn = [&]() {
         if (chat_on) {
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) rollback_keep, -1)) {
-                im.clear_memory(ctx);
-                im.kv_tokens.clear();
-            } else {
-                im.kv_tokens.resize(std::min(rollback_keep, im.kv_tokens.size()));
-            }
+            // A cleared context cannot leave a reusable prefix in the bookkeeping: rollback_keep follows it.
+            rollback_keep = im.keep_kv_prefix(rollback_keep);
             if (history_pushed) {
                 im.chat_history.pop_back();
                 history_pushed = false;
@@ -1822,8 +1916,15 @@ RunResult Session::generate(const GenerateRequest & req,
         // the two at different positions would fail the NEXT turn, not this one.
         if (im.ctx_dft) {
             const llama_pos keep = chat_on ? (llama_pos) rollback_keep : 0;
-            if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1))
+            if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1)) {
+                // Both contexts are cleared together (upstream 0.39): the draft alone would start the
+                // next turn at a different position from the target.
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+                if (keep > 0) {
+                    im.clear_memory(ctx);
+                    im.forget_kv_tokens();
+                }
+            }
         }
     };
 
@@ -1923,6 +2024,9 @@ RunResult Session::generate(const GenerateRequest & req,
     const long long device_nodes0 = im.hook->device_nodes();
     for (int i = (int) n_common; i < n_prompt_text_end; i += pf_step) {
         const int chunk = std::min(pf_step, n_prompt - i);
+        // A long prompt prefilled in pieces leaves checkpoints inside it too, min_step apart.
+        if (chat_on && !image_turn && i > (int) n_common && im.checkpoints.wanted(i, /*prompt_end*/ false))
+            im.checkpoints.create(im.checkpoint_contexts(), i);
         if (im.prefill) {
             const bool on_dev = chunk >= im.cfg.prefill.min_tokens;
             im.place_prefill(on_dev);
@@ -1968,6 +2072,15 @@ RunResult Session::generate(const GenerateRequest & req,
     if (chat_on && !image_turn)
         for (int i = (int) n_common; i < n_prompt; ++i)
             im.kv_tokens.push_back(tokens[i]);
+    // The end of this prompt is where the next request most often diverges: a client sends the answer
+    // back as text, and the template's tokens for it need not be the ones sampled.
+    if (chat_on && !image_turn && im.checkpoints.create(im.checkpoint_contexts(), n_prompt) &&
+        !im.checkpoint_size_logged) {
+        im.checkpoint_size_logged = true;
+        std::fprintf(stderr, "bmoe: context checkpoints: %.1f MiB each, up to %d kept\n",
+                     (double) im.checkpoints.bytes() / im.checkpoints.count() / (1024.0 * 1024.0),
+                     im.cfg.ctx_checkpoints);
+    }
     // Prefill is done: a cancel from here on keeps the prompt. Not with an MTP draft context: its own KV is not
     // guaranteed to cover the whole prompt at this point, so a cancelled turn rolls back to the old state instead.
     if (stateless && !im.ctx_dft) rollback_keep = (size_t) n_prompt;
@@ -2402,18 +2515,21 @@ RunResult Session::generate(const GenerateRequest & req,
                 for (llama_token t : group_surplus) im.kv_tokens.push_back(t);
                 kept_surplus = true;
             } else {
-                // Nothing survives that we can still describe, so say so rather than leave kv_tokens
-                // asserting a prefix the context no longer holds. The next turn re-prefills in full.
-                im.clear_memory(ctx);
-                im.kv_tokens.clear();
+                // Fall back to the newest checkpoint at or before the cut; with none, nothing survives that
+                // we can still describe, and the next turn re-prefills in full.
+                im.keep_kv_prefix((size_t) emitted_end);
             }
         }
         // The draft context mirrors the target's positions (process() decodes the same batches into
         // it), so it is trimmed to the same point — not cleared, or a continued chat turn would
         // feed it only the new suffix and draft from a state that never saw the conversation. When the surplus was
         // kept the target was not trimmed, so the draft context stays where it is (it holds the same tokens).
-        if (mtp_on && !kept_surplus && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, emitted_end, -1))
+        if (mtp_on && !kept_surplus && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, emitted_end, -1)) {
+            // Cleared together with the target (upstream 0.39), so the next turn starts both at 0.
             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+            im.clear_memory(ctx);
+            im.forget_kv_tokens();
+        }
     }
 
     ++im.turn; // this turn is written; label the next one apart

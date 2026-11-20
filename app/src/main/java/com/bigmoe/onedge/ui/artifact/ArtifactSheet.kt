@@ -53,6 +53,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.bigmoe.onedge.parser.ArtifactModel
 import com.bigmoe.onedge.parser.ArtifactType
 import java.io.ByteArrayInputStream
+import com.bigmoe.onedge.i18n.tr
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -94,7 +95,7 @@ fun ArtifactSheet(
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = "Close Artifact")
+                    Icon(imageVector = Icons.Default.Close, contentDescription = tr("Close Artifact"))
                 }
             }
 
@@ -128,7 +129,7 @@ private fun loadWhenSized(webView: WebView) {
     if (state.loaded == state.desired && state.loadedHeight == cssHeight) return
     state.loaded = state.desired
     state.loadedHeight = cssHeight
-    webView.loadDataWithBaseURL("https://localhost", ArtifactHtml.fitViewport(state.desired, cssHeight), "text/html", "UTF-8", null)
+    webView.loadDataWithBaseURL("https://localhost", ArtifactHtml.fitViewport(state.desired, cssHeight), "text/html", tr("UTF-8"), null)
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -177,7 +178,7 @@ fun ArtifactPreview(
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         // Pages that measure themselves in script lay out again with the final size.
-                        if (js) view?.evaluateJavascript("window.dispatchEvent(new Event('resize'))", null)
+                        if (js) view?.evaluateJavascript(tr("window.dispatchEvent(new Event('resize'))"), null)
                     }
 
                     // The page may never navigate away (links, location.href, form posts).
@@ -208,7 +209,7 @@ fun ArtifactPreview(
                         }
                         if (url.startsWith("http://") || url.startsWith("https://")) {
                             return WebResourceResponse(
-                                "text/plain", "UTF-8", 403, "Forbidden", emptyMap(),
+                                "text/plain", tr("UTF-8"), 403, tr("Forbidden"), emptyMap(),
                                 ByteArrayInputStream(ByteArray(0))
                             )
                         }
@@ -258,14 +259,14 @@ private fun ArtifactCodePreview(artifact: ArtifactModel, modifier: Modifier = Mo
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(artifact.fileName ?: artifact.language.uppercase(), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f), color = AppTheme.colors.onCodeBlock)
                 TextButton(onClick = { clipboard.setText(AnnotatedString(artifact.content)); copied = true }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy artifact")
+                    Icon(Icons.Default.ContentCopy, contentDescription = tr("Copy artifact"))
                     Spacer(Modifier.padding(start = 4.dp))
-                    Text(if (copied) "Copied" else "Copy")
+                    Text(if (copied) tr("Copied") else tr("Copy"))
                 }
             }
             if (artifact.language.equals("python", ignoreCase = true)) {
                 Text(
-                    "Python source preview only — a Python runtime is not bundled, so this code is not executed in the app. Use Copy to run it in a Python environment.",
+                    tr("Python source preview only — a Python runtime is not bundled, so this code is not executed in the app. Use Copy to run it in a Python environment."),
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.onCodeBlock.copy(alpha = 0.82f),
                     modifier = Modifier.padding(bottom = 6.dp)

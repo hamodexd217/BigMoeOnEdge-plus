@@ -1,5 +1,127 @@
 # BigMoeOnEdge+ Changelog
 
+## 0.7.0 — 2026-11-04 (engine synced to upstream BigMoeOnEdge 0.39.0)
+
+Version 0.7.0, `versionCode` 20. The native engine moves from the 0.28.1-compatible tree (plus the partial
+0.35 tranche) to **upstream 0.39.0's streaming and I/O stack**, with this app's session layer (chat history,
+tools, multimodal, structured output, sampling extras, MTP/NPU fixes) kept on top. Nothing was run on a device
+for this release; see "How this was checked" and docs/UPSTREAM_0.39_MERGE.md before trusting it.
+
+### Engine
+- **Streaming and I/O stack replaced by upstream 0.39.0's** (`core/src/io/*`, `core/src/moe/*`, the trace and
+  metrics sinks). That carries every engine fix upstream made from 0.29 to 0.39 in those files. Among them:
+  direct reads aligned to the file's filesystem; a read that runs past the end of a model file is an error
+  instead of weights; every tensor buffer keeps a readable guard page; the page two experts share is released
+  with the last of the two; the int8 gate mirror's data race on aarch64 is fixed; a pin the platform refuses is
+  handled without trimming the cache under one token's cycle.
+- **Expert tensors are discovered from the file's shapes** (`bmoe/expert_layout.h`) instead of looked up by
+  architecture name. `arch_registry.cpp` and `bmoe/recipe.h` are gone. A MoE that streams the standard split or
+  fused expert tensors needs no code (Flint, Qwen3.5/4, Nemotron, LFM2-MoE ...); one that does not is refused at
+  load with the reason. Leading dense blocks and shared experts are not routed experts and never bind.
+- **Quantized KV cache** (upstream 0.36). K and V types are separate settings: f16, q8_0, q5_0, q4_0. Default
+  q8_0, about half the cache memory. A quantized V needs flash attention; if the backend refuses it V falls back
+  to f16 by itself and the effective types are recorded in the metrics CSV. **NPU prefill keeps an f16 cache**
+  whatever the setting says: that path was only validated with f16.
+- **Context checkpoints** (upstream 0.36). Hybrid and recurrent models (Qwen3.5, Nemotron-H, LFM ...) cannot
+  drop the tail of their memory, so a chat turn that diverged from the cached text re-read the whole prompt.
+  The engine now saves the prompt's state at the end of each prompt (and every 4096 tokens inside a long one)
+  and rolls back to the newest checkpoint instead. Default 3 kept, 0 turns it off. Models that can cut anywhere
+  never take one: the state they would copy is empty.
+- **Lifecycle fixes ported from upstream:** a cancelled or rolled-back turn clears the target and the draft
+  context together (they could start the next turn at different positions); session teardown stops the
+  router's prediction worker before the gate weights it reads are freed; the model files' read-ahead is handed
+  back to the kernel after load when the dense set lives outside the mapping.
+- **Route-ahead picks its gate format by timing** (upstream 0.35) instead of always using the int8 mirror; ties
+  go to the mirror. The pin floor is set after the stream source starts.
+- Config validation (upstream's, plus this app's sampler checks). Messages that name a setting as `{ctx-size}`
+  are turned into plain words by the JNI bridge ("context size").
+- `SpecConfig::draft_model_path` is now upstream's `mtp_head`; same meaning (a separate MTP-only GGUF).
+- Metrics CSV: a `# cache_type_k=... cache_type_v=...` preamble line and two trailing columns,
+  `process_footprint_mib` and `process_headroom_mib`. The app only shares the files, it never parses them.
+  `dense_weights` is reported as `pinned` where it used to say `ahwb`.
+
+### App
+- Settings → Context: **KV cache: keys**, **KV cache: values**, **Prompt checkpoints**. Applied on the next
+  model load. `LoadConfig` grows to 48 ints (indices 45–47); `LoadConfigTest` pins them.
+- **Automatic compaction of long chats.** When the next round would use more than a set share of the context
+  (Settings → Context → *Auto-compact long chats* / *Compact at* 40–70%, default on at 60%), the loaded model
+  summarizes the oldest messages in one short hidden generation and the chat continues from that summary plus the
+  newest messages (about a quarter of the context, kept word for word), instead of the engine silently dropping the
+  oldest turns. The check runs before every round, so a long tool loop is covered too. Nothing is deleted: the summary
+  is saved as one extra message (new `MessageRole.SUMMARY`, shown as a tap-to-read card where it happened; no
+  database migration, the covered message is named in the message text) and the old messages stay on screen and in
+  exports. Later compactions fold the earlier summary into the new one. Editing an earlier message removes the
+  summaries made after it, as it removes everything else after it. A failed or unusable summary never stops the turn:
+  the old behavior (the engine trims on overflow) applies. Contexts under 1,536 tokens are never compacted. The
+  decision uses the chat's last measured context size when known, and a text-length estimate otherwise. Design and
+  limits: docs/auto-compaction.md. New: `core/Compaction.kt`, `ui/chat/CompactionCard.kt`, `CompactionTest`,
+  `AgentCompactionTest`. No version bump: still 0.7.0, `versionCode` 20.
+- **Interface languages** (Settings → Language): English, Arabic, Persian (both right-to-left), German, Spanish, French,
+  Hindi, Indonesian, Italian, Japanese, Korean, Portuguese (Brazil), Russian, Turkish, Simplified and Traditional Chinese.
+  ~880 texts in `ui/` now go through `tr("…")`; languages are JSON files in `assets/i18n/` (Arabic complete, Spanish
+  and French 78%, the other 12 languages 68% (everything except the 110 long engine-tuning explanations), English
+  fallback per text). Right-to-left layout, mirrored
+  back/open-in-new icons, code blocks kept left-to-right, Android 13+ per-app language list. Written by Claude, **not
+  reviewed by native speakers**. Details, limits and how to add a language: docs/localization.md. New: `i18n/I18n.kt`,
+  `I18nTest`, `LocalizationTablesTest`. Text direction now follows each text's first strong character (so English
+  explanations in an Arabic screen no longer render with the full stop at the wrong end) and Latin values inside Arabic/Persian
+  sentences keep their order ("2000 MiB" was shown as "MiB 2000"). The bottom-bar "Settings" label, "off"/"show"/"hide",
+  KV-cache and auto-tune names were never wrapped and now are. Also: the auto-tune "Cancel" button no longer reads the English word "Measuring"
+  from the status text (a `measuring` flag).
+- **CI fixes** (from the Android job log): `ConversationExportTest` used an invalid `\[` escape; `ExternalToolsTest` and
+  `WebSearchToolTest` used `com.sun.net.httpserver`, which the Android unit-test classpath does not have; they now use
+  `TestHttpServer` (a small socket-based server with the same calls, checked against `HttpURLConnection`).
+
+### Repository and CI
+- **New `.github/workflows/build.yml`** (one self-contained file: it needs nothing else under `.github/`, and finds the project either at the repository root or inside a single source `.zip` there): Android APKs (CPU and NPU) + Kotlin unit tests, the engine core's host tests on
+  Linux x64/arm64, macOS and Windows, and upstream's `bmoe-cli` / `bmoe-server` / `bmoe-desktop` on Linux
+  x64/arm64, macOS arm64/x64 and Windows x64/arm64; a `v*` tag publishes one GitHub release. The old
+  `build-1.yml` was a Rust/cargo workflow from another project and could not build this repository: removed.
+  The Hexagon/NPU APK build moved into it as the `android-npu` job and `build-npu-fixed-3.yml` is removed (leaving both would build the NPU APK twice per push); `generate-signing-key.yml` is unchanged. The NPU job's output is `BigMoeOnEdge-plus-<version>-android-arm64-v8a-npu.apk`.
+- **`upstream/`**: the original project's 0.39.0 source, unchanged, for the desktop builds and so the next merge
+  can be diffed against it (see `upstream/FORK_NOTE.md`).
+- `ci/core-host/`: a standalone CMake project for the host tests. Nine tests are new under `core/tests/`
+  (copied from upstream 0.39.0).
+- Engine version reported in logs and CSVs is now 0.39.0.
+- Fixed two test files that were already broken in 0.6.5 and stopped the unit-test source set compiling:
+  `ConversationExportTest.kt` and the androidTest `ConversationExportJsonTest.kt` had raw line breaks inside
+  string literals (now `\n`). The CI unit-test step reports failures without blocking the APK until the suite
+  has been seen green once.
+
+### Not merged from upstream, and why
+- **`--auto` planner, hardware/model profiles, knob trials, the parameter registry** (`plan/`, `params.*`):
+  desktop/CLI machinery. The app has its own settings and does not call them. Their pure-policy headers
+  `routing.h`, `measured_knobs.h`, `model_profile.h`, `hardware_profile.h` came along only because the adopted
+  router hook includes them.
+- **Upstream's restructured `session.cpp`**: it needs a newer llama.cpp than the app vendors (`common_batch`,
+  `llama_context_params::moe_cache_size`). This app's session stays its own, with the upstream changes above
+  ported into it by hand. **llama.cpp itself is not updated**; that is a separate, larger job.
+- **Speculation beside a prefill device (upstream 0.37)**: this app already has its own fix for the same
+  failure (docs/NPU_MTP_FIX.md); it is kept as it was.
+- **Server, web UI, agent, desktop app, iOS app, catalog, skills**: built from `upstream/` on the desktop
+  runners; the Android app has its own equivalents (Compose UI, local API, tools).
+- `RunConfig::think` now defaults to false as upstream; only the one-shot CLI path reads it, the app sets it
+  per request.
+
+### How this was checked
+- All 35 engine sources compile (`g++ -fsyntax-only` against the app's vendored llama.cpp) and link-close: every
+  referenced `bmoe::` symbol is defined in the set (158 checked).
+- Nine host tests pass (expert layout, tensor names, n-gram draft, cache brake, stall union, file reader,
+  mapping release, CSV memory, CSV summary). The bridge's two new helpers were compiled and run on their own.
+- **First CI run (2026-11-05, GitHub Actions):** the nine engine host tests pass on Linux x64, Linux arm64, macOS
+  arm64 and Windows x64 (gcc, clang, MSVC); `bmoe-cli` and `bmoe-server` built, ran `--version` (0.39.0) and
+  packaged on all six desktop targets (Linux x64/arm64, macOS arm64/x64, Windows x64/arm64). The Android job's
+  unit-test compile failed on the two broken test files above, before the APK step was reached: fixed, not yet
+  re-run.
+- The JNI bridge and the engine core also compile with the Android build's macros on (`BMOE_HAVE_EXPERT_READY_HOOK`,
+  `BMOE_HAVE_HEXAGON`, `BMOE_PIN_FAST_CORES`), against a stub `jni.h`.
+- **Not done:** no APK build yet, no Kotlin compile of the main sources, no model loaded, no device.
+- **Auto compaction (added to 0.7.0):** `core/Compaction.kt` was compiled with kotlinc 2.0.21 and its logic run in a
+  stand-alone harness (storage format, which summary applies, cut points, thresholds, cleaning); the same cases are in
+  `CompactionTest`. The `AgentController`, settings, view-model and Compose changes and `AgentCompactionTest` were
+  written against the existing code; the CI run that followed compiled the main sources (the unit-test compile then
+  failed on three older test files, fixed above).
+
 ## 0.6.5 — 2026-11-02 (source update; covers everything since 0.6.0)
 
 Version 0.6.5, `versionCode` 19. Everything below is new since 0.6.0.
@@ -103,3 +225,8 @@ This is a settings/UI/native-wiring update on the existing local engine baseline
 - Documented the current upstream boundary and verification limits in `docs/UPSTREAM_UPGRADE_0.5.6.md`.
 
 This is a compatibility fix on the existing 0.28.0 engine baseline, revisioned locally as 0.28.1. It is not a wholesale merge of upstream 0.33.x.
+- **Localization (added to 0.7.0):** `I18n.kt` was compiled against minimal Android stubs and its logic run (placeholder
+  filling, language matching, JSON parsing). The 5,106 translation entries were validated by script (placeholders,
+  specifiers, spaces, script, every key present in the source). The `tr(...)` rewrite of `ui/` was done by a script and
+  checked for syntax only; types, the settings picker, `MainActivity.attachBaseContext` and the new tests were **not
+  compiled or run**, and nothing was seen on a device (no RTL screenshot yet).

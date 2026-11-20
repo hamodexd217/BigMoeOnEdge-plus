@@ -1,0 +1,204 @@
+package io.bigmoeonedge.app.data
+
+import android.content.Context
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+
+/**
+ * Starts and tracks model downloads. The transfer itself runs in [DownloadWorker] (an in-app
+ * HTTP download into the O_DIRECT-capable internal storage — see that class for why the system
+ * DownloadManager can't be used here); this object is the thin facade the UI drives.
+ *
+ * A download is identified by its filename, which is also its unique-work name: enqueuing the
+ * same model twice is a no-op, and an in-flight transfer is re-discoverable after process death
+ * because WorkManager persists it.
+ */
+object ModelDownloader {
+    private const val NAME_TAG_PREFIX = "name:"
+
+    enum class State { PENDING, RUNNING, PAUSED, SUCCESS, FAILED }
+
+    data class Progress(
+        val id: String, // the unique-work name == the filename
+        val name: String,
+        val downloadedBytes: Long,
+        val totalBytes: Long, // -1 when the server didn't send a length
+        val state: State,
+        val reason: String? = null,
+    )
+
+    /** What [events] reports. A download ends in exactly one of [Completed] or [Failed]. */
+    sealed interface Event {
+        /** Every transfer still in flight, by filename. Re-emitted on each WorkManager update. */
+        data class InFlight(val downloads: Map<String, Progress>) : Event
+
+        /** [name] landed and is finalized on disk — the caller should re-scan. */
+        data class Completed(val name: String) : Event
+
+        data class Failed(val name: String, val reason: String) : Event
+    }
+
+    /**
+     * Start a catalog entry's download: one [DownloadWorker] per missing file, CHAINED so they
+     * transfer sequentially — the phone's line is the bottleneck, and one file at a time keeps the
+     * resume story per file. The chain's unique-work name is the entry's first file, so enqueuing
+     * twice is a no-op and cancel kills the whole set; each link still tags its own file name, so
+     * [events] reports per-file progress under that name.
+     *
+     * Free space is checked ONCE against the whole remaining set (missing files minus their
+     * partial bytes), not per file — three separate late failures for one decision is the thing
+     * this avoids. Files already whole on disk are skipped, so a torn set resumes cleanly.
+     */
+    fun enqueueEntry(ctx: Context, entry: CatalogEntry): Result<String> = runCatching {
+        val dir = ModelManager.internalModelsDir(ctx)
+        val missing = entry.files.filter { !File(dir, it.name).isFile }
+        if (missing.isEmpty()) return@runCatching entry.fileName // all landed — caller re-scans
+        val needed = missing.sumOf { s -> bytesStillNeeded(s.bytes, File(dir, s.name + DownloadWorker.PART_SUFFIX).length()) }
+        freeSpaceRefusal(needed, dir.usableSpace)?.let { error(it) }
+
+        val requests = missing.map { s ->
+            OneTimeWorkRequestBuilder<DownloadWorker>()
+                .setInputData(
+                    workDataOf(
+                        DownloadWorker.KEY_URL to s.url,
+                        DownloadWorker.KEY_NAME to s.name,
+                        DownloadWorker.KEY_EXPECTED to s.bytes,
+                        DownloadWorker.KEY_SHA256 to s.sha256,
+                    )
+                )
+                .addTag(DownloadWorker.TAG)
+                .addTag(NAME_TAG_PREFIX + s.name)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
+        }
+        var chain = WorkManager.getInstance(ctx).beginUniqueWork(entry.fileName, ExistingWorkPolicy.KEEP, requests.first())
+        for (req in requests.drop(1)) chain = chain.then(req)
+        // Block until the chain is persisted, same reason as enqueue above.
+        chain.enqueue().result.get()
+        entry.fileName
+    }
+
+    /**
+     * A catalog entry's aggregate progress, or null when nothing of it is in flight. The fraction
+     * is over the WHOLE set — files already on disk count as done, the in-flight file contributes
+     * its partial bytes — because the row shows one model, not three files.
+     */
+    fun entryProgress(ctx: Context, e: CatalogEntry, live: Map<String, Progress>): Progress? {
+        val active = e.files.firstNotNullOfOrNull { s -> live[s.name]?.let { s to it } } ?: return null
+        val dir = ModelManager.internalModelsDir(ctx)
+        val landed = e.files.sumOf { s -> if (File(dir, s.name).isFile) s.bytes else 0L }
+        // A file that is queued rather than running reports 0 bytes (events() has no progress row
+        // for it yet), which on a resumed 50 GB transfer would read as lost ground. Fall back to
+        // what is already in its .part.
+        val inFlight = if (active.second.downloadedBytes > 0) active.second.downloadedBytes
+        else File(dir, active.first.name + DownloadWorker.PART_SUFFIX).length()
+        return Progress(
+            id = e.fileName,
+            name = e.fileName,
+            downloadedBytes = landed + inFlight,
+            totalBytes = e.bytes,
+            state = active.second.state,
+            reason = active.second.reason,
+        )
+    }
+
+    /**
+     * Stop a catalog entry's download — the whole chain. The .part files stay, as on the desktop:
+     * Cancel means "stop for now", the row then offers Resume, and deleting the partial file is its
+     * own explicit action ([Engine.deletePartial], through the server, which confines it to the
+     * models directory).
+     */
+    fun cancelEntry(ctx: Context, e: CatalogEntry) {
+        WorkManager.getInstance(ctx).cancelUniqueWork(e.fileName).result.get()
+    }
+
+    /**
+     * Every download's progress and outcome, as a stream. WorkManager's own flow drives it, so the
+     * UI observes instead of polling, and a transfer started before the app was killed reappears on
+     * the first emission rather than running unseen.
+     *
+     * Finalization lives here, not in the observer: a landed download is renamed .part -> .gguf
+     * before [Event.Completed] is emitted, so by the time anyone re-scans the model is on disk under
+     * its final name.
+     *
+     * Work that was ALREADY terminal when collection started is finalized but reported silently: on
+     * a fresh launch WorkManager still holds the last run's succeeded rows, and replaying them would
+     * fire a spurious re-scan for a model the startup scan has already found.
+     */
+    fun events(ctx: Context): Flow<Event> = flow {
+        // Terminal work already accounted for, keyed by work id rather than filename: WorkManager
+        // re-emits a finished row on every update, but re-downloading the same model (deleted, then
+        // fetched again) is NEW work with a new id and must still report its own completion.
+        val settled = mutableSetOf<UUID>()
+        var primed = false // has the first (catch-up) emission been processed?
+        WorkManager.getInstance(ctx).getWorkInfosByTagFlow(DownloadWorker.TAG).collect { infos ->
+            val live = mutableMapOf<String, Progress>()
+            val outcomes = mutableListOf<Event>()
+            for (info in infos) {
+                val name = info.tags.firstOrNull { it.startsWith(NAME_TAG_PREFIX) }
+                    ?.removePrefix(NAME_TAG_PREFIX) ?: continue
+                when (info.state) {
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+                        live[name] = Progress(name, name, 0, -1, State.PENDING)
+                    WorkInfo.State.RUNNING -> live[name] = Progress(
+                        name, name,
+                        info.progress.getLong(DownloadWorker.KEY_DONE, 0),
+                        info.progress.getLong(DownloadWorker.KEY_TOTAL, -1),
+                        State.RUNNING,
+                    )
+                    WorkInfo.State.SUCCEEDED -> if (settled.add(info.id)) {
+                        withContext(Dispatchers.IO) { finalizeDownload(ctx, name) }
+                        if (primed) outcomes += Event.Completed(name)
+                    }
+                    WorkInfo.State.FAILED -> if (settled.add(info.id) && primed) {
+                        outcomes += Event.Failed(
+                            name,
+                            info.outputData.getString(DownloadWorker.KEY_ERROR) ?: "download failed",
+                        )
+                    }
+                    WorkInfo.State.CANCELLED -> settled.add(info.id) // user cancelled: no error to surface
+                }
+            }
+            primed = true
+            outcomes.forEach { emit(it) }
+            emit(Event.InFlight(live))
+        }
+    }
+
+    /**
+     * The landed file of a successful download, or null. The worker renames `<name>.gguf.part` to
+     * `<name>.gguf` itself, after the size and digest checks, and succeeds only once it has; a
+     * `.part` found here is never renamed, since it is unchecked (or a later download's, still in
+     * flight, under a succeeded row WorkManager replays).
+     */
+    fun finalizeDownload(ctx: Context, name: String): File? {
+        val finalFile = File(ModelManager.internalModelsDir(ctx), name)
+        return if (finalFile.isFile) finalFile else null
+    }
+
+    /**
+     * Cancel a pasted-link download and delete its leftover .part file. Unlike a catalog entry, a
+     * pasted link has no row that would show the partial file and offer to resume or delete it, so
+     * keeping it would leave gigabytes on the phone that nothing lists.
+     */
+    fun cancel(ctx: Context, name: String) {
+        // Block until the cancellation is persisted, so the next events() emission reports the work
+        // as finished instead of racing it back in as still-active.
+        WorkManager.getInstance(ctx).cancelUniqueWork(name).result.get()
+        File(ModelManager.internalModelsDir(ctx), name + DownloadWorker.PART_SUFFIX).delete()
+    }
+}

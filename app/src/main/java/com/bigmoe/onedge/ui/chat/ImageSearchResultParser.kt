@@ -2,6 +2,7 @@ package com.bigmoe.onedge.ui.chat
 
 import com.bigmoe.onedge.tools.ImageSearchTool
 import org.json.JSONObject
+import com.bigmoe.onedge.i18n.tr
 
 /** Parser for the explicit marker block emitted by [ImageSearchTool]. */
 object ImageSearchResultParser {
@@ -21,7 +22,7 @@ object ImageSearchResultParser {
                 val page = item.optString("url").takeIf { it.startsWith("https://", true) } ?: image
                 val thumb = item.optString("thumbnail").takeIf { it.startsWith("https://", true) } ?: image
                 parsed.add(ImageSearchResult(
-                    title = item.optString("title").ifBlank { "Image result ${i + 1}" }.take(180),
+                    title = item.optString("title").ifBlank { tr("Image result {0}", i + 1) }.take(180),
                     imageUrl = image, thumbnailUrl = thumb, pageUrl = page, source = item.optString("source").take(80)
                 ))
             }

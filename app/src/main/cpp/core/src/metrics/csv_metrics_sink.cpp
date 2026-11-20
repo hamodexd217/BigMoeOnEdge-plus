@@ -30,6 +30,7 @@ public:
         // "# model=", so prefixing that line with anything would have cost every already-installed
         // build its run titles. A new key on a new line is invisible to a parser that ignores it.
         std::fprintf(f_, "# engine=%s\n", r.engine_version.c_str());
+        std::fprintf(f_, "# cache_type_k=%s cache_type_v=%s\n", r.cache_type_k.c_str(), r.cache_type_v.c_str());
         std::fprintf(f_,
                      "# model=%s arch=%s n_layer=%d n_expert=%d n_expert_used=%d threads=%d "
                      "n_ctx=%d n_ubatch=%d chatml=%d\n",
@@ -59,13 +60,13 @@ public:
         write_header(); // a caller that never sent RunInfo still gets a readable file
         std::fprintf(f_,
                      "%d,%d,%.3f,%.3f,%.3f,%llu,%.2f,%.3f,%.3f,%llu,%.3f,%.3f,%d,%.2f,%.1f,%.1f,%.1f,"
-                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                      m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, (unsigned long long) m.read_bytes,
                      m.cache_hit_pct, m.stall_ms, m.mgmt_ms, (unsigned long long) m.majflt, m.cpu_ms,
                      m.dense_resident_frac, m.turn, m.majflt_mib, m.cache_budget_mib, m.rss_mib, m.rss_anon_mib,
                      m.rss_file_mib, m.swap_mib, m.mem_available_mib, m.mem_free_mib, m.swap_free_mib,
                      m.loop_overhead_ms, m.mtp_batch, m.mtp_draft_ms, m.drain_ms, m.adopt_ms, m.ra_issue_ms,
-                     m.ra_wd_ms);
+                     m.ra_wd_ms, m.process_footprint_mib, m.process_headroom_mib);
         // Per-token fflush makes diagnostics part of the decode loop's inter-token cost.
         // Keep the file reasonably current without forcing a syscall for every row.
         if (++pending_rows_ >= flush_interval) flush();
@@ -139,7 +140,8 @@ private:
         std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
                          "dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,"
                          "rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,"
-                         "mtp_batch,mtp_draft_ms,drain_ms,adopt_ms,ra_issue_ms,ra_wd_ms\n");
+                         "mtp_batch,mtp_draft_ms,drain_ms,adopt_ms,ra_issue_ms,ra_wd_ms,"
+                         "process_footprint_mib,process_headroom_mib\n");
     }
 
     std::FILE * f_ = nullptr;
@@ -148,9 +150,9 @@ private:
 
 } // namespace
 
-IMetricsSink * make_csv_metrics_sink(const std::string & path) {
+std::unique_ptr<IMetricsSink> make_csv_metrics_sink(const std::string & path) {
     std::FILE * f = std::fopen(path.c_str(), "w");
-    return f ? new CsvMetricsSink(f) : nullptr;
+    return f ? std::make_unique<CsvMetricsSink>(f) : nullptr;
 }
 
 } // namespace bmoe

@@ -15,5 +15,11 @@ enum class MessageRole {
      * Hidden context that belongs to the user's message before it (attached file contents, ...). Never
      * shown as a bubble; replayed to the engine as part of the user turn.
      */
-    CONTEXT
+    CONTEXT,
+
+    /**
+     * Automatic compaction: the model's summary of the messages before it (see core/Compaction.kt). Shown as a
+     * small card, never as a bubble; not replayed as a turn. The content is `bmoe-summary upto=<id>\n<text>`.
+     */
+    SUMMARY
 }

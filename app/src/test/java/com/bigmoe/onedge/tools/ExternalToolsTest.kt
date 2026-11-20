@@ -2,7 +2,6 @@ package com.bigmoe.onedge.tools
 
 import com.bigmoe.onedge.core.AgentController
 import com.bigmoe.onedge.data.local.datastore.EngineSettings
-import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,7 +16,7 @@ import org.junit.Before
 import org.junit.Test
 import java.net.InetSocketAddress
 
-/** Real local HTTP server (JDK's built-in), like WebSearchToolTest. */
+/** Real local HTTP server (see TestHttpServer.kt), like WebSearchToolTest. */
 class ExternalToolsTest {
     private lateinit var server: HttpServer
     private val base get() = "http://127.0.0.1:${server.address.port}"

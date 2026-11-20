@@ -29,6 +29,11 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    // The interface language picked in Settings (and with it the layout direction) applies to this activity.
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.bigmoe.onedge.i18n.I18n.wrap(newBase))
+    }
+
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

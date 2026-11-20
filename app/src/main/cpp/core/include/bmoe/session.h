@@ -38,13 +38,19 @@ struct SessionConfig {
     // Multimodal projector path (.gguf); empty = text-only session.
     std::string mmproj_path;
     int n_threads = 4;
-    int n_threads_batch = 4;
+    int n_threads_batch = 0; // 0 = same as n_threads. See RunConfig::n_threads_batch.
     int n_ctx = 2048;
     int n_batch = 512; // prefill chunk capacity; longer prompts are prefilled in n_batch slices
     // Widest graph actually computed at once. 0 = follow n_batch. Sizing this down trades prefill
     // throughput for resident compute buffers, which on this engine compete with the expert cache.
     // See RunConfig::n_ubatch.
     int n_ubatch = 0;
+    // Prompt-state checkpoints (hybrid/recurrent models can't drop a KV tail, so a chat turn re-reads
+    // the whole prompt without one) and the KV element types. See the RunConfig fields of the same name.
+    int ctx_checkpoints = 8;
+    int checkpoint_min_step = 8192;
+    KvCacheType cache_type_k = k_default_kv_cache_type;
+    KvCacheType cache_type_v = k_default_kv_cache_type;
     bool chatml = false;
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.

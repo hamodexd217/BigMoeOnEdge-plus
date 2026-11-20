@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.bigmoe.onedge.i18n.tr
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -36,10 +37,10 @@ fun EmptyChatView(
     modifier: Modifier = Modifier
 ) {
     val suggestions = listOf(
-        "Tell me a creative bedtime story about a curious star.",
-        "Tell me about the solar system and how planets were formed.",
-        "Write a clean binary search function in Python.",
-        "Explain quantum physics in simple terms like I am 5..."
+        tr("Tell me a creative bedtime story about a curious star."),
+        tr("Tell me about the solar system and how planets were formed."),
+        tr("Write a clean binary search function in Python."),
+        tr("Explain quantum physics in simple terms like I am 5...")
     )
 
     Column(
@@ -57,7 +58,7 @@ fun EmptyChatView(
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = "What can I help with?",
+            text = tr("What can I help with?"),
             style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface

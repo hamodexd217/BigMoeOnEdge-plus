@@ -2,6 +2,7 @@ package com.bigmoe.onedge.ui.theme
 
 import org.json.JSONArray
 import org.json.JSONObject
+import com.bigmoe.onedge.i18n.tr
 
 /**
  * A colour palette as plain ARGB ints (no Compose types, so it is unit-testable on the JVM and trivially
@@ -150,7 +151,7 @@ object PaletteStore {
             out.add(
                 PaletteSpec(
                     id = id,
-                    name = o.optString("name", "Custom").ifBlank { "Custom" },
+                    name = o.optString("name", tr("Custom")).ifBlank { tr("Custom") },
                     dark = o.optBoolean("dark", false),
                     primary = c("primary") ?: continue,
                     secondary = c("secondary") ?: continue,

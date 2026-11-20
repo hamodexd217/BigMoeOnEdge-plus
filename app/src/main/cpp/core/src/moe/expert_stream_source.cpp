@@ -1,11 +1,10 @@
 #include "expert_stream_source.h"
+#include "bmoe/log.h"
 
 #include "row_stream.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-#include "ggml-cpu.h" // ggml_cpu_set_expert_ready_hook (fork-only)
-#endif
 
 #include <algorithm>
 #include <chrono>
@@ -14,13 +13,19 @@
 #include <thread>
 #include <utility>
 
-#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-#include <intrin.h> // _mm_pause for the readiness spin-wait
-#endif
-
 namespace bmoe {
 
 using clock_t_ = std::chrono::steady_clock;
+
+namespace {
+// The pages a resident slice is committed over: its own, rounded out, and through the slack after
+// it, because a kernel may read past its last block, and where the platform faults on a reserved
+// page that was never committed (Windows) that read must land on one that was.
+void slice_pages(const char * dst, uint64_t slice, size_t page, uintptr_t & a0, uintptr_t & a1) {
+    a0 = (uintptr_t) dst & ~(uintptr_t) (page - 1);
+    a1 = ((uintptr_t) dst + slice + pio::tensor_tail_slack() + page - 1) & ~(uintptr_t) (page - 1);
+}
+} // namespace
 
 ExpertStreamSource::~ExpertStreamSource() {
     shutdown();
@@ -33,11 +38,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                               const MoeStreamConfig & cfg) {
     if (active_) return false;
     if (n_expert <= 0) {
-        std::fprintf(stderr, "bmoe: expert streaming needs a MoE model (n_expert=%d)\n", n_expert);
+        log_printf(LogLevel::Error, "expert streaming needs a MoE model (n_expert=%d)", n_expert);
         return false;
     }
     if (shard_paths.empty()) {
-        std::fprintf(stderr, "bmoe: expert streaming got no model file\n");
+        log_printf(LogLevel::Error, "expert streaming got no model file");
         return false;
     }
 
@@ -45,6 +50,8 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     layers_ = std::move(layers);
     n_layer_ = (int) layers_.size();
     load_all_ = cfg.load_all;
+    pin_ = cfg.cache_pin;
+    pin_fit_ = cfg.cache_pin_fit;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
@@ -60,21 +67,35 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // Largest full-tensor byte size per projection, over all bound layers → shared-slot
     // and bounce sizing. Absent projection slots (a fused layout uses fewer than max_exps
     // expert tensors) keep nb2 == 0, so their max_full stays 0 and they are skipped below.
-    size_t max_full[MoeRecipe::max_exps] = {0, 0, 0};
+    size_t max_full[ExpertLayout::max_slots] = {0, 0, 0};
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
             max_full[p] = std::max(max_full[p], full);
             total_expert_bytes_ += full; // every expert of every bound layer resident = the full set
         }
     }
     size_t max_full_any = 0;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < ExpertLayout::max_slots; ++p)
         max_full_any = std::max(max_full_any, max_full[p]);
     if (max_full_any == 0) {
-        std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
+        log_printf(LogLevel::Error, "no MoE layers were bound");
         return false;
+    }
+
+    // Read pool: one reader per shard file, each owning a private fd + bounce per lane so concurrent
+    // preads never contend, and the O_DIRECT request + its verify/fallback (per file — a shard set
+    // could in principle straddle storage with different O_DIRECT behaviour). The dense-weights
+    // loader opens its own readers, so its cache-bypass choice is independent of this one. Opened
+    // before any expert buffer is allocated, because the buffers are aligned to what the readers
+    // learn about the files: the coarsest granule over the shards, and never less than a page.
+    const size_t max_slice = max_full_any / (size_t) n_expert_;
+    buf_align_ = page_;
+    for (const std::string & sp : shard_paths) {
+        readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
+        if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, max_slice)) return false;
+        buf_align_ = std::max(buf_align_, readers_.back()->buffer_align());
     }
 
     // Auto budget: size the cache to the device once, now that the full expert-set size is known.
@@ -89,7 +110,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         const size_t min_budget =
             std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, hard_cap);
         uint64_t avail = pio::mem_available_bytes();
-        // Under anon/ahwb the dense weights are ABOUT to move from reclaimable page cache into
+        // Under anon/pinned the dense weights are ABOUT to move from reclaimable page cache into
         // buffers the kernel cannot take back (dense_.init runs below). At this moment the kernel
         // still counts those pages as available, so a budget sized from the raw number plans the
         // dense set twice and overcommits by its whole size — enough to take the device down on a
@@ -103,6 +124,10 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             // cache to nothing.
             for (const DenseTensorRef & d : dense_tensors_) {
                 if (!d.tensor || d.size > avail) continue;
+                // Nor is a table the plan left mapped (dense_mapped): it is never converted.
+                if (std::find(cfg.dense_mapped.begin(), cfg.dense_mapped.end(), d.tensor->name) !=
+                    cfg.dense_mapped.end())
+                    continue;
                 // Nor is a row-gathered table converted: it costs its window, not its size, and
                 // reserving the difference would hand the cache back exactly what this policy freed.
                 bool row = false;
@@ -117,24 +142,24 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             const uint64_t deduct = std::min(avail, dense_pending);
             if (deduct > 0) {
                 avail -= deduct;
-                std::fprintf(stderr, "bmoe: cache auto — reserving %llu MiB for the dense-weight conversion\n",
-                             (unsigned long long) (deduct / (1024 * 1024)));
+                log_printf(LogLevel::Info, "cache auto — reserving %llu MiB for the dense-weight conversion",
+                           (unsigned long long) (deduct / (1024 * 1024)));
             }
         }
         if (avail == 0) {
             cache_max_ = min_budget;
-            std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %zu MiB floor\n",
-                         min_budget / (1024 * 1024));
+            log_printf(LogLevel::Warn, "cache auto — available memory unknown, using the %zu MiB floor",
+                       min_budget / (1024 * 1024));
         } else {
             size_t budget = avail > floor ? (size_t) (avail - floor) : 0;
             budget = std::max(budget, min_budget);
             budget = std::min(budget, hard_cap);
             cache_max_ = budget;
-            std::fprintf(stderr,
-                         "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
-                         " (cap %zu MiB)\n",
-                         (unsigned long long) (avail / (1024 * 1024)), floor / (1024 * 1024),
-                         cache_max_ / (1024 * 1024), hard_cap / (1024 * 1024));
+            log_printf(LogLevel::Info,
+                       "cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
+                       " (cap %zu MiB)",
+                       (unsigned long long) (avail / (1024 * 1024)), floor / (1024 * 1024), cache_max_ / (1024 * 1024),
+                       hard_cap / (1024 * 1024));
         }
     }
 
@@ -142,17 +167,17 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // One shared slot per present projection, reused across layers (one layer computes
         // at a time). Rebind every bound layer's expert tensors onto them; only routed
         // slices are ever valid. Absent slots (max_full[p] == 0) get no buffer.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             if (max_full[p] == 0) continue;
-            slot_[p] = pio::alloc_aligned(align_, max_full[p]);
+            slot_[p] = pio::alloc_aligned(buf_align_, max_full[p] + pio::tensor_tail_slack());
             if (!slot_[p]) {
-                std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
+                log_printf(LogLevel::Error, "slot alloc %zu failed", max_full[p]);
                 return false;
             }
         }
         for (LayerExperts & L : layers_) {
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 if (L.proj[p].tensor) L.proj[p].tensor->data = slot_[p];
         }
     } else {
@@ -161,19 +186,20 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // each expert at its canonical offset e*nb2 inside tensor->data, so the buffers
         // live at fixed per-layer addresses; lazy commit keeps that affordable. (page_ is already
         // set above: the dense-residency probe needs it in every cache mode, not just this one.)
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             lbuf_[p].assign(n_layer_, nullptr);
             lbuf_sz_[p].assign(n_layer_, 0);
         }
         for (int il = 0; il < n_layer_; ++il) {
             LayerExperts & L = layers_[il];
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 if (!L.proj[p].tensor) continue; // absent slot in a fused layout
-                const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
+                // The last expert's slice is followed by the slack a kernel may read past it.
+                const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_ + pio::tensor_tail_slack();
                 lbuf_[p][il] = pio::vm_reserve(full);
                 if (!lbuf_[p][il]) {
-                    std::fprintf(stderr, "bmoe: vm_reserve %zu failed (layer %d)\n", full, il);
+                    log_printf(LogLevel::Error, "vm_reserve %zu failed (layer %d)", full, il);
                     return false;
                 }
                 lbuf_sz_[p][il] = full;
@@ -195,16 +221,6 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         clookups_ = 0;
     }
 
-    // Read pool: one reader per shard file, each owning a private fd + bounce per lane so concurrent
-    // preads never contend, and the O_DIRECT request + its verify/fallback (per file — a shard set
-    // could in principle straddle storage with different O_DIRECT behaviour). The dense-weights
-    // loader opens its own readers, so its cache-bypass choice is independent of this one.
-    const size_t max_slice = max_full_any / (size_t) n_expert_;
-    const size_t bounce_cap = max_slice + 2 * align_;
-    for (const std::string & sp : shard_paths) {
-        readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-        if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
-    }
     // Each shard resolved direct for itself at open — the platform's answer plus the open-time
     // verify — so the run-level fact is the weakest shard: a mixed run must not be advertised as
     // fully direct, and a metadata-only first shard that never carried an expert read must not
@@ -215,44 +231,23 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         effective_direct_ = effective_direct_ && r->direct();
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
             if (L.proj[p].nb2 && (L.proj[p].file_idx < 0 || L.proj[p].file_idx >= (int) readers_.size())) {
-                std::fprintf(stderr, "bmoe: expert tensor points at shard %d of %zu\n", L.proj[p].file_idx,
-                             readers_.size());
+                log_printf(LogLevel::Error, "expert tensor points at shard %d of %zu", L.proj[p].file_idx,
+                           readers_.size());
                 return false;
             }
     }
 
     seen_.assign(n_expert_, 0);
-    jobs_.reserve((size_t) n_expert_ * MoeRecipe::max_exps);
+    jobs_.reserve((size_t) n_expert_ * ExpertLayout::max_slots);
     batch_gen_ = 0;
     next_idx_ = 0;
     done_cnt_ = 0;
     io_stop_ = false;
     io_err_.store(false);
 
-    if (overlap_) {
-        // One readiness cell per (projection, expert), and a map from each bound expert tensor
-        // (the persistent model weight, stable across decodes) back to its (layer, projection)
-        // so the hook can find the cell to wait on. Built after the rebind above.
-        ready_ = std::vector<ReadyFlag>((size_t) MoeRecipe::max_exps * (size_t) n_expert_);
-        async_gen_.store(0);
-        cur_il_.store(-1);
-        fatal_.store(false);
-        stall_union_.reset();
-        batch_flag_gen_ = 0;
-        staged_.reserve(n_expert_);
-        texp_.clear();
-        texp_.reserve((size_t) n_layer_ * MoeRecipe::max_exps);
-        for (int il = 0; il < n_layer_; ++il) {
-            const LayerExperts & L = layers_[il];
-            if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
-                if (L.proj[p].tensor)
-                    texp_.emplace_back((const void *) L.proj[p].tensor, ((uint32_t) il << 8) | (uint32_t) p);
-        }
-        std::sort(texp_.begin(), texp_.end());
-    }
+    if (overlap_) build_ready_map();
 
     // Hand the dense (non-expert) weights to their policy module: it warms them into the page cache,
     // or reads them into anon buffers and rebinds, and owns the residency sensor — all on the caller's
@@ -263,7 +258,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         std::vector<std::vector<std::pair<uint64_t, uint64_t>>> exp(readers_.size());
         for (const LayerExperts & L : layers_) {
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 const uint64_t sz = (uint64_t) L.proj[p].nb2 * (uint64_t) n_expert_;
                 if (sz) exp[L.proj[p].file_idx].push_back({L.proj[p].file_off, L.proj[p].file_off + sz});
             }
@@ -272,8 +267,9 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         for (size_t s = 0; s < readers_.size(); ++s)
             ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
         dense_.set_row_gathered(std::move(row_tensors_), row_budget_);
-        if (!dense_.init(cfg.dense_weights, shard_paths, align_, std::move(ranges), std::move(dense_tensors_))) {
-            std::fprintf(stderr, "bmoe: dense-weights init failed\n");
+        dense_.set_mapped(cfg.dense_mapped);
+        if (!dense_.init(cfg.dense_weights, shard_paths, std::move(ranges), std::move(dense_tensors_))) {
+            log_printf(LogLevel::Error, "dense-weights init failed");
             return false;
         }
     }
@@ -282,20 +278,83 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // Serial: lane 0 is the calling thread (it drains inline), workers own lanes 1..N-1.
     // Overlap: the caller never drains — every lane 0..N-1 gets a worker so reads proceed
     // while the compute threads run the FFN and block per expert on the readiness flags.
-    const int first_worker_lane = overlap_ ? 0 : 1;
-    for (int lane = first_worker_lane; lane < io_threads_; ++lane)
+    // Lane 0's worker is kept apart from the others, since a switch of mode starts or stops it alone.
+    for (int lane = 1; lane < io_threads_; ++lane)
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
+    if (overlap_) lane0_worker_ = std::thread(&ExpertStreamSource::io_worker, this, 0);
 
     // effective_direct_ (set where the readers opened) is the run's o_direct fact — see above.
-    std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
-                 n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
+    log_printf(LogLevel::Info, "expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu",
+               n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
+    return true;
+}
+
+// One readiness cell per (projection, expert), and a map from each bound expert tensor (the
+// persistent model weight, stable across decodes) back to its (layer, projection) so the hook can
+// find the cell to wait on. Built after the rebind, at init under overlap or at the first switch to
+// it (set_overlap), and never again: the tensors it maps do not move.
+void ExpertStreamSource::build_ready_map() {
+    ready_ = std::vector<ReadyFlag>((size_t) ExpertLayout::max_slots * (size_t) n_expert_);
+    async_gen_.store(0);
+    cur_il_.store(-1);
+    fatal_.store(false);
+    stall_union_.reset();
+    batch_flag_gen_ = 0;
+    staged_.reserve(n_expert_);
+    texp_.clear();
+    texp_.reserve((size_t) n_layer_ * ExpertLayout::max_slots);
+    for (int il = 0; il < n_layer_; ++il) {
+        const LayerExperts & L = layers_[il];
+        if (!L.bound) continue;
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
+            if (L.proj[p].tensor)
+                texp_.emplace_back((const void *) L.proj[p].tensor, ((uint32_t) il << 8) | (uint32_t) p);
+    }
+    std::sort(texp_.begin(), texp_.end());
+}
+
+// Serial and overlap differ in one thread. Serially the eval thread is lane 0 and reads its share
+// of a batch itself; under overlap it never reads, so lane 0 gets a worker of its own like the
+// others. Everything else - the readers, the cache, the jobs - is the same in both, so switching is
+// giving lane 0 its worker or taking it back, plus the hook the overlapped matmul waits through.
+// Between two decodes only: no layer is in flight, so the last batch is the only thing to wait for.
+bool ExpertStreamSource::set_overlap(bool on) {
+    if (!active_) return false;
+    if (on == overlap_) return true;
+    if (on) {
+        if (!hook_registered_ && !enable_overlap_hook()) return false;
+        if (ready_.empty()) build_ready_map();
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            lane0_stop_ = false;
+        }
+        overlap_ = true;
+        prefetch_sync_ = false;
+        lane0_worker_ = std::thread(&ExpertStreamSource::io_worker, this, 0);
+        return true;
+    }
+    {
+        // The last overlapped batch: its reads may outlast the token whose last layer issued them
+        // only for load_all, whose surplus no matmul waits on. They are waited for, as the next
+        // overlapped load would have.
+        std::unique_lock<std::mutex> lk(io_mtx_);
+        io_cv_done_.wait(lk, [&] { return done_cnt_ == batch_njobs_ || io_stop_; });
+        lane0_stop_ = true;
+    }
+    io_cv_.notify_all();
+    if (lane0_worker_.joinable()) lane0_worker_.join();
+    if (hook_registered_ && set_hook_) {
+        set_hook_(nullptr, nullptr);
+        hook_registered_ = false;
+    }
+    overlap_ = false;
     return true;
 }
 
 bool ExpertStreamSource::reopen_readers() {
     std::lock_guard<std::mutex> lk(io_mtx_);
     if (!jobs_.empty() || !spec_jobs_.empty()) {
-        std::fprintf(stderr, "bmoe: reopen_readers refused: reads are queued\n");
+        log_printf(LogLevel::Error, "reopen_readers refused: reads are queued");
         return false;
     }
     bool ok = true;
@@ -389,9 +448,10 @@ void ExpertStreamSource::io_worker(int lane) {
             // two-wave publish): a worker that drained wave one and left has seen == batch_gen_,
             // so the gen comparison alone would never bring it back for wave two.
             io_cv_.wait(lk, [&] {
-                return io_stop_ || batch_gen_ > seen || next_idx_ < batch_njobs_ || spec_next_ < spec_jobs_.size();
+                return io_stop_ || (lane == 0 && lane0_stop_) || batch_gen_ > seen || next_idx_ < batch_njobs_ ||
+                       spec_next_ < spec_jobs_.size();
             });
-            if (io_stop_) return;
+            if (io_stop_ || (lane == 0 && lane0_stop_)) return;
         }
         uint64_t g;
         {
@@ -456,16 +516,17 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
         const size_t mark = staged.size();
         int njobs = 0;
         bool ok = true;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue;
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-            uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-            uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            uintptr_t a0 = 0, a1 = 0;
+            slice_pages(dst, slice, page_, a0, a1);
             if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) { // low on memory — stop quietly
                 ok = false;
                 break;
             }
+            pin_pages((void *) a0, (size_t) (a1 - a0));
             staged.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, (int16_t) L.proj[p].file_idx,
                               e, (int16_t) il, (int8_t) p, 1});
             ++njobs;
@@ -525,7 +586,8 @@ void ExpertStreamSource::drain_spec(int lane, uint64_t worker_seen) {
         uint64_t g;
         {
             std::lock_guard<std::mutex> lk(io_mtx_);
-            if (io_stop_ || batch_gen_ > worker_seen) return; // shutting down, or real work waiting
+            // Shutting down, real work waiting, or lane 0 handed back to the eval thread.
+            if (io_stop_ || batch_gen_ > worker_seen || (lane == 0 && lane0_stop_)) return;
             if (spec_next_ >= spec_jobs_.size()) return;
             g = spec_gen_;
             j = spec_jobs_[spec_next_++];
@@ -707,27 +769,25 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
 }
 
 double ExpertStreamSource::cache_lost_frac(int n) {
-    if (cache_max_ == 0 || chead_ == -1 || n <= 0 || n_expert_ <= 0) return -1.0;
-    // Sample across the entire LRU so reclaim of cold entries is detected early too.
+    if (cache_max_ == 0 || chead_ == -1 || n <= 0) return -1.0;
+    // Spread over the whole list, hot to cold: what a system takes first is the cold end, and a
+    // sample of only the hot end would answer "nothing yet" until the damage reached the head.
     size_t entries = 0;
-    for (int32_t id = chead_; id != -1; id = cnext_[id]) ++entries;
-    if (entries == 0) return -1.0;
+    for (int32_t id = chead_; id != -1; id = cnext_[id])
+        ++entries;
     const size_t stride = std::max<size_t>(1, entries / (size_t) n);
     size_t sampled = 0, resident = 0, i = 0;
     for (int32_t id = chead_; id != -1; id = cnext_[id], ++i) {
         if (i % stride != 0 || !cvalid_[id]) continue;
         const int il = id / n_expert_, e = id % n_expert_;
-        if (il < 0 || il >= (int) layers_.size() || e < 0 || e >= n_expert_) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = layers_[il].proj[p].nb2;
-            if (!layers_[il].proj[p].tensor || slice < 2 * page_ || !lbuf_[p][il]) continue;
-            // Choose a page wholly inside the slice so neighboring experts never share a sample.
-            const uintptr_t start = (uintptr_t) lbuf_[p][il] + (uint64_t) e * slice;
-            const uintptr_t pg = (start + page_ - 1) & ~(uintptr_t) (page_ - 1);
-            // vm_resident_sample counts only pages the OS successfully inspected. A failed query
-            // therefore yields a partial sample when some pages were available, or -1 below.
-            (void) pio::vm_resident_sample((void *) pg, page_, &sampled, &resident);
-            break;
+            if (slice < 2 * page_) continue; // no page of its own to ask about
+            // A page wholly inside the slice: the boundary pages are shared with the neighbours.
+            const uintptr_t s = (uintptr_t) lbuf_[p][il] + (uint64_t) e * slice;
+            const uintptr_t pg = (s + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            pio::vm_resident_sample((void *) pg, page_, &sampled, &resident);
+            break; // one page per entry: the entry was written whole, so it is lost whole or not at all
         }
     }
     if (sampled == 0) return -1.0;
@@ -781,20 +841,47 @@ void ExpertStreamSource::lru_push_back(int32_t id) {
 size_t ExpertStreamSource::entry_bytes(int il) const {
     const LayerExperts & L = layers_[il];
     size_t bytes = 0;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < ExpertLayout::max_slots; ++p)
         bytes += (size_t) L.proj[p].nb2; // absent slots contribute 0
     return bytes;
 }
-// Release the physical pages fully contained in an entry's slices (never a partial page shared
-// with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
+// Release the physical pages of an entry's slices that no other entry still needs. A slice is
+// committed over its own pages and through the slack after it (slice_pages), so the pages at a
+// slice boundary belong to two entries: the one that ends there, whose kernels may read past the
+// end into them, and the one that starts there. They are released with the last of the two to go.
+// Releasing only the pages between the two boundaries, as this once did, left the head page of
+// every slice whose left neighbour had ever been resident committed until the buffer was freed:
+// one page per expert and projection, outside the ledger `cresident_` keeps. Shared by eviction
+// and by discarding an incomplete spec entry; eval thread only, like every LRU mutation.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    // A neighbour's pages must stay while it is resident or while a speculative read of it is in
+    // flight; the workers that finish those reads write the counters under io_mtx_, and only this
+    // thread ever raises one, so a value read here can only fall afterwards, which is safe.
+    bool left = false, right = false;
+    {
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        const auto live = [&](int x) {
+            if (x < 0 || x >= n_expert_) return false;
+            const int32_t xid = il * n_expert_ + x;
+            return cvalid_[xid] != 0 || spec_remaining_[xid] != 0;
+        };
+        left = live(e - 1);
+        right = live(e + 1);
+    }
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a fused layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
-        uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        // head: the pages the left neighbour's slack reaches into; body: ours alone; tail: the
+        // pages our slack reaches into, which are the right neighbour's head.
+        const uintptr_t head0 = (uintptr_t) s & ~(uintptr_t) (page_ - 1);
+        const uintptr_t body0 = ((uintptr_t) s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t body1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t tail1 =
+            ((uintptr_t) s + slice + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t a0 = left ? body0 : head0;
+        const uintptr_t a1 = right ? body1 : tail1;
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
@@ -945,13 +1032,92 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     const uint64_t slice = L.proj[p].nb2;
     if (slice == 0) return true; // absent slot in a fused layout
     char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-    uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-    uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+    uintptr_t a0 = 0, a1 = 0;
+    slice_pages(dst, slice, page_, a0, a1);
     if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
-        std::fprintf(stderr, "bmoe: commit failed\n");
+        log_printf(LogLevel::Error, "commit failed");
         return false;
     }
+    pin_pages((void *) a0, (size_t) (a1 - a0));
     return true;
+}
+
+// Whether a platform grants this is only learnt by asking, and there are two different refusals.
+// One refused from the very first slice grants no lock at all: the attempts end and the cache is
+// ordinary memory, as all of it was before pinning existed.
+//
+// One refused part way, with at least a token cycle already granted, has a total worth having, and
+// it has run out. Giving up there is what was measured to
+// collapse a run: every slice committed afterwards is ordinary memory, the cache keeps turning
+// over, and within a few hundred tokens the locked slices have all been replaced by ones the
+// machine is free to compress - 0.27 tok/s where the same cache, never over-asked, runs at 3.0. So
+// the BUDGET comes down to what was granted and the pinning goes on: evictions release locked
+// pages, and the next commit finds room again. Never under one token cycle, where a cache returns
+// no hits; a refusal that arrives with the budget already at that floor ends the attempts like the
+// first kind. Only the budget moves here - the eviction is the per-layer one that skips what the current
+// token staged. Eval-thread only, like the commits it follows.
+void ExpertStreamSource::pin_pages(void * p, size_t sz) {
+    if (!pin_ || cache_max_ == 0) return; // no cache: a slice lives one token
+    if (pio::vm_pin(p, sz)) {
+        if (!pin_said_) log_printf(LogLevel::Info, "expert cache pinned in RAM");
+        pin_said_ = true;
+        return;
+    }
+    if (!pin_said_) {
+        pin_ = false;
+        log_printf(LogLevel::Warn, "cache pinning refused by the platform; the cache is ordinary memory");
+        return;
+    }
+    const bool first = pin_refused_at_ == 0;
+    // A total too small to hold one token cycle is the first kind of refusal arriving late: a
+    // per-process limit of a few MiB grants the first slices and then nothing. Shrinking to it
+    // would trade a working cache for a locked one that returns no hits, so the cache keeps its
+    // budget and is ordinary memory, as it is where nothing is granted at all.
+    if (first && (pin_floor_ == 0 || cresident_ < pin_floor_)) {
+        pin_ = false;
+        log_printf(LogLevel::Warn,
+                   "cache pinning refused after %zu MiB, less than one token cycle; the cache is ordinary "
+                   "memory",
+                   cresident_ >> 20);
+        return;
+    }
+    // Stepping the budget down is a trade the engine cannot price: it is right where what is not
+    // locked gets compressed, and a plain loss where it would only have been left alone. So it is
+    // done when asked (MoeStreamConfig::cache_pin_fit) and otherwise the budget is the caller's.
+    if (!pin_fit_) {
+        pin_ = false;
+        pin_refused_at_ = std::max<size_t>(1, cresident_);
+        log_printf(LogLevel::Warn,
+                   "cache pinning refused after %zu MiB; the rest of the cache is ordinary memory "
+                   "(--cache-pin-fit shrinks it to what was pinned instead)",
+                   cresident_ >> 20);
+        return;
+    }
+    if (first) pin_refused_at_ = std::max<size_t>(1, cresident_);
+    // One step per load: the eviction that makes room runs after the reads, so several commits of
+    // the same load can be refused before any of it is released, and they are one event.
+    if (pin_shrunk_gen_ == cgen_ && !first) return;
+    pin_shrunk_gen_ = cgen_;
+    // Below what is resident, by the room a load needs: a layer's slices are committed before the
+    // previous ones are evicted, so a budget equal to what was granted is over it by that much on
+    // every load, and the refusal would simply repeat.
+    const size_t slack = std::max({layer_demand_, sz, cache_max_ / 64});
+    // From the smaller of the budget and what is resident: a load can run past the budget before
+    // its eviction, and a refusal there says the budget is still too high, not that it was reached.
+    const size_t from = std::min(cresident_, cache_max_);
+    const size_t keep = std::max(from > slack ? from - slack : 0, std::max<size_t>(1, pin_floor_));
+    if (keep < cache_max_) {
+        if (first)
+            log_printf(LogLevel::Warn,
+                       "cache pinning refused after %zu MiB; the cache budget shrinks from %zu to %zu MiB",
+                       cresident_ >> 20, cache_max_ >> 20, keep >> 20);
+        cache_max_ = keep;
+        ++cache_resizes_;
+        return;
+    }
+    pin_ = false;
+    log_printf(LogLevel::Warn, "cache pinning refused with the cache at %zu MiB; the rest of it is ordinary memory",
+               cresident_ >> 20);
 }
 
 bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {
@@ -977,7 +1143,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     // (With commit_only_proj, the caller also contracts to commit the other projections before it
     // emits their jobs; the residency accounting below still covers the whole entry, because the
     // entry lives and is evicted as a unit either way.)
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         if (commit_only_proj >= 0 && p != commit_only_proj) continue;
         if (!commit_proj_pages(il, e, p)) return false;
     }
@@ -1009,7 +1175,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
                 if (slice == 0) continue; // absent slot in a fused layout
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
@@ -1023,7 +1189,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         // A miss: emit this expert's reads, expert-major. The drain below waits on them all, so the
         // order only has to be complete, not clever — unlike the overlap path, where it feeds a
         // kernel that is already blocking.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
             jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
@@ -1173,7 +1339,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     if (cache_max_ == 0) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
         // at its canonical offset e*slice. Emit projection-major.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
             for (int e : staged_) {
@@ -1194,7 +1360,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         // already read. io_drain copies jobs under the lock and the worker wait predicate admits
         // a grown batch, so appending mid-generation is safe.
         const int p0 = [&] {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 if (L.proj[p].nb2) return p;
             return -1;
         }();
@@ -1210,7 +1376,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 return false;
             }
             if (hit) { // resolved without a read — release every projection's waiter now
-                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                for (int p = 0; p < ExpertLayout::max_slots; ++p)
                     if (L.proj[p].nb2) mark_ready(p, e);
                 continue;
             }
@@ -1228,7 +1394,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
         };
         if (!two_wave) {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 emit_proj(p);
         } else {
             // Wave one: the first projection's jobs, published before anything else is committed.
@@ -1249,7 +1415,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             // flags this batch will now never flip — go fatal and wake them to observe it.
             for (int e : staged_) {
                 if (!seen_[e]) continue;
-                for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                     if (p == p0) continue;
                     if (!commit_proj_pages(il, e, p)) {
                         fatal_.store(true, std::memory_order_release);
@@ -1263,7 +1429,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
             {
                 std::lock_guard<std::mutex> lk(io_mtx_);
-                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                for (int p = 0; p < ExpertLayout::max_slots; ++p)
                     if (p != p0) emit_proj(p);
                 batch_njobs_ = jobs_.size();
             }
@@ -1327,22 +1493,6 @@ void ExpertStreamSource::c_expert_ready(const ggml_tensor * src0, int expert, vo
     static_cast<ExpertStreamSource *>(user_data)->on_expert_ready(src0, expert);
 }
 
-// One idle beat of the spin-wait below: keep the core out of the sibling threads' way without
-// entering the scheduler. yield() is a syscall; these are single instructions.
-static inline void cpu_relax() {
-#if defined(__aarch64__)
-    __asm__ __volatile__("isb" ::: "memory");
-#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(_MSC_VER)
-    _mm_pause();
-#else
-    __builtin_ia32_pause();
-#endif
-#else
-    std::this_thread::yield();
-#endif
-}
-
 // Called from EVERY compute thread, for each routed expert, before it reads that expert's rows.
 // Blocks until the expert's slice for the layer in flight is resident (or the run goes fatal).
 void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
@@ -1380,7 +1530,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
             stall_union_.exit();
             return;
         }
-        cpu_relax();
+        pio::cpu_relax(); // a pause instruction, not the scheduler: see the loop's comment
     }
     // Register as a waiter BEFORE the last look at the flag. The publisher sets the flag before it
     // reads this count, and both sides are seq_cst, so one of the two must observe the other: either
@@ -1398,11 +1548,33 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     stall_union_.exit();
 }
 
-void ExpertStreamSource::enable_overlap_hook() {
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    ggml_cpu_set_expert_ready_hook(&ExpertStreamSource::c_expert_ready, this);
+// The fork's `ggml_cpu_set_expert_ready_hook`, asked of the CPU backend's registry the way ggml
+// exposes every other backend-specific function (threads, NUMA, the abort callback). Linking the
+// symbol would bind the engine to a CPU backend linked in; through the registry it is reached in
+// a build where that backend is a module loaded at start-up, and a build on stock upstream, whose
+// CPU backend has no such entry, answers null here instead of failing to link.
+namespace {
+using set_expert_ready_hook_t = void (*)(void (*)(const ggml_tensor *, int, void *), void *);
+
+set_expert_ready_hook_t resolve_expert_ready_hook() {
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!cpu) return nullptr;
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(cpu);
+    if (!reg) return nullptr;
+    return (set_expert_ready_hook_t) ggml_backend_reg_get_proc_address(reg, "ggml_cpu_set_expert_ready_hook");
+}
+} // namespace
+
+bool expert_ready_hook_available() {
+    return resolve_expert_ready_hook() != nullptr;
+}
+
+bool ExpertStreamSource::enable_overlap_hook() {
+    set_hook_ = resolve_expert_ready_hook();
+    if (!set_hook_) return false;
+    set_hook_(&ExpertStreamSource::c_expert_ready, this);
     hook_registered_ = true;
-#endif
+    return true;
 }
 
 IExpertSource::Stats ExpertStreamSource::stats() const {
@@ -1427,6 +1599,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
+    s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;
@@ -1440,14 +1614,12 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
 
 void ExpertStreamSource::shutdown() {
     if (!active_) return;
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // Unregister the process-global hook FIRST: after this no compute thread can enter
     // on_expert_ready and touch members we are about to tear down.
-    if (hook_registered_) {
-        ggml_cpu_set_expert_ready_hook(nullptr, nullptr);
+    if (hook_registered_ && set_hook_) {
+        set_hook_(nullptr, nullptr);
         hook_registered_ = false;
     }
-#endif
     // Wake any straggler blocked on a readiness flag so it observes fatal_ and unwinds.
     fatal_.store(true, std::memory_order_release);
     {
@@ -1466,16 +1638,17 @@ void ExpertStreamSource::shutdown() {
     for (auto & t : io_pool_)
         if (t.joinable()) t.join();
     io_pool_.clear();
+    if (lane0_worker_.joinable()) lane0_worker_.join();
     spec_done_.clear();
     spec_done_pending_.store(0, std::memory_order_relaxed);
     spec_touched_.clear();
 
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < ExpertLayout::max_slots; ++p)
         if (slot_[p]) {
             pio::aligned_free(slot_[p]);
             slot_[p] = nullptr;
         }
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         for (int il = 0; il < (int) lbuf_[p].size(); ++il)
             if (lbuf_[p][il]) pio::vm_release(lbuf_[p][il], lbuf_sz_[p][il]);
         lbuf_[p].clear();

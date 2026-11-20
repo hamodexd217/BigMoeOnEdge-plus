@@ -10,6 +10,8 @@
 // (shard index, offset in that shard) instead of an offset in one file.
 #pragma once
 
+#include "bmoe/expert_layout.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -24,6 +26,18 @@ struct GgufOffsets {
     // is strided by nb2, read from the graph's tensor), but the route trace does: it is the
     // only way to say how many bytes of a layer are dense, i.e. left mmap-resident.
     std::unordered_map<std::string, uint64_t> size_by_name;
+    // tensor name -> its ggml type id. Carried as an int so consumers that only need to hand it
+    // back to a backend (asking whether that backend can execute this layout) need no ggml header.
+    std::unordered_map<std::string, int> type_by_name;
+    // tensor name -> its row count (ne[1]), 0 for a 1-D tensor. The only SHAPE this map carries,
+    // and it exists for one question: how many bytes of a table a single token gathers, which is
+    // what turns an embedding table from a residency cost into a per-token demand. Filled from the
+    // same parse as everything else rather than from a second one.
+    std::unordered_map<std::string, uint64_t> rows_by_name;
+    // Every tensor's name with the third extent of a 3-D one (0 for any other rank): the two facts
+    // that tell a routed expert weight from everything else in the file (bmoe/expert_layout.h),
+    // read off the same parse.
+    std::vector<TensorExtent> extents;
     // tensor name -> index into shard_paths. Always filled; 0 for every tensor of a
     // single-file model, so consumers index shard_paths unconditionally.
     std::unordered_map<std::string, int> file_by_name;
@@ -48,6 +62,16 @@ struct GgufModelInfo {
     std::string arch;
     int n_expert = 0;
     int n_expert_used = 0;
+    int n_embd = 0; // hidden state width: what a tensor crossing a backend boundary carries
+    // What kind of file this is, by the format's own keys rather than its name: `general.type`
+    // ("model", "mmproj", "adapter"; "" when absent), the transformer blocks it declares
+    // (`<arch>.block_count`), how many of them are next-token prediction heads
+    // (`<arch>.nextn_predict_layers`), and whether it names layers of another model it reads
+    // hidden states from (`<arch>.target_layers`), which only a draft for that model does.
+    std::string type;
+    int n_block = 0;
+    int n_nextn = 0;
+    bool reads_target = false;
     bool ok = false;
 };
 

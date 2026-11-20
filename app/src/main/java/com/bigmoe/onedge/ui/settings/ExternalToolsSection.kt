@@ -36,6 +36,7 @@ import com.bigmoe.onedge.tools.MAX_TOOLS_PER_SERVER
 import com.bigmoe.onedge.tools.McpClient
 import com.bigmoe.onedge.tools.McpToolDef
 import kotlinx.coroutines.launch
+import com.bigmoe.onedge.i18n.tr
 
 /** The list of external tools (hand-made HTTP tools and MCP servers) with add / edit / delete. */
 @Composable
@@ -49,7 +50,7 @@ internal fun ExternalToolsSection(json: String, onSave: (String) -> Unit) {
 
     Column(Modifier.fillMaxWidth().padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (entries.isEmpty()) {
-            Hint("No external tools yet. Add an HTTP tool (one web address the AI may call) or an MCP server (it announces its own tools).")
+            Hint(tr("No external tools yet. Add an HTTP tool (one web address the AI may call) or an MCP server (it announces its own tools)."))
         }
         entries.forEach { e ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -57,27 +58,27 @@ internal fun ExternalToolsSection(json: String, onSave: (String) -> Unit) {
                     Text(e.name, style = MaterialTheme.typography.bodyLarge)
                     Hint(
                         when (e.kind) {
-                            ExternalKind.HTTP -> "HTTP · ${e.method} · ${ExternalText.hostOf(e.url)}"
-                            ExternalKind.MCP -> "MCP · ${ExternalText.hostOf(e.url)} · ${e.mcpTools.count { it.selected }} of ${e.mcpTools.size} tools"
-                        } + if (e.askFirst) " · asks first" else " · runs without asking"
+                            ExternalKind.HTTP -> tr("HTTP · {0} · {1}", e.method, ExternalText.hostOf(e.url))
+                            ExternalKind.MCP -> tr("MCP · {0} · {1} of {2} tools", ExternalText.hostOf(e.url), e.mcpTools.count { it.selected }, e.mcpTools.size)
+                        } + if (e.askFirst) tr(" · asks first") else tr(" · runs without asking")
                     )
                 }
                 Switch(checked = e.enabled, onCheckedChange = { on -> commit(entries.map { if (it.id == e.id) it.copy(enabled = on) else it }) })
-                TextButton(onClick = { editingIsNew = false; editing = e }) { Text("Edit") }
-                TextButton(onClick = { deleting = e }) { Text("Delete") }
+                TextButton(onClick = { editingIsNew = false; editing = e }) { Text(tr("Edit")) }
+                TextButton(onClick = { deleting = e }) { Text(tr("Delete")) }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = {
                 editingIsNew = true
                 editing = ExternalEntry(kind = ExternalKind.HTTP, name = "", url = "")
-            }) { Text("Add HTTP tool") }
+            }) { Text(tr("Add HTTP tool")) }
             OutlinedButton(onClick = {
                 editingIsNew = true
                 editing = ExternalEntry(kind = ExternalKind.MCP, name = "", url = "")
-            }) { Text("Add MCP server") }
+            }) { Text(tr("Add MCP server")) }
         }
-        Hint("Everything an external tool sends leaves this phone. Keep \"asks first\" on unless you trust the address. Headers (API keys) are stored on the phone like the search key.")
+        Hint(tr("Everything an external tool sends leaves this phone. Keep \"asks first\" on unless you trust the address. Headers (API keys) are stored on the phone like the search key."))
     }
 
     editing?.let { current ->
@@ -94,10 +95,10 @@ internal fun ExternalToolsSection(json: String, onSave: (String) -> Unit) {
     deleting?.let { victim ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("Delete \"${victim.name}\"?") },
-            text = { Text("The AI will no longer be able to use it.") },
-            confirmButton = { TextButton(onClick = { commit(entries.filter { it.id != victim.id }); deleting = null }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
+            title = { Text(tr("Delete \"{0}\"?", victim.name)) },
+            text = { Text(tr("The AI will no longer be able to use it.")) },
+            confirmButton = { TextButton(onClick = { commit(entries.filter { it.id != victim.id }); deleting = null }) { Text(tr("Delete")) } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text(tr("Cancel")) } }
         )
     }
 }
@@ -123,17 +124,17 @@ private fun ExternalEntryEditor(initial: ExternalEntry, onDismiss: () -> Unit, o
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (isMcp) "MCP server" else "HTTP tool") },
+        title = { Text(if (isMcp) tr("MCP server") else tr("HTTP tool")) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = name, onValueChange = { name = it.take(40) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (isMcp) "Server name (prefix of its tools)" else "Tool name, e.g. get_weather") }
+                    label = { Text(if (isMcp) tr("Server name (prefix of its tools)") else tr("Tool name, e.g. get_weather")) }
                 )
                 if (!isMcp) {
                     OutlinedTextField(
                         value = description, onValueChange = { description = it.take(240) }, modifier = Modifier.fillMaxWidth(),
-                        label = { Text("What it does (the AI reads this)") }
+                        label = { Text(tr("What it does (the AI reads this)")) }
                     )
                 }
                 OutlinedTextField(
@@ -142,34 +143,34 @@ private fun ExternalEntryEditor(initial: ExternalEntry, onDismiss: () -> Unit, o
                     label = { Text(if (isMcp) "Server address (https://…/mcp)" else "Address, e.g. https://api.example.com/weather?city={city}") }
                 )
                 if (!isMcp) {
-                    Text("Method", style = MaterialTheme.typography.labelMedium)
+                    Text(tr("Method"), style = MaterialTheme.typography.labelMedium)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        listOf("GET", "POST", "PUT", "DELETE").forEach { m ->
+                        listOf(tr("GET"), tr("POST"), tr("PUT"), tr("DELETE")).forEach { m ->
                             RadioButton(selected = method == m, onClick = { method = m })
                             Text(m, modifier = Modifier.padding(end = 8.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     OutlinedTextField(
                         value = paramsText, onValueChange = { paramsText = it }, modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Arguments, one per line") }
+                        label = { Text(tr("Arguments, one per line")) }
                     )
-                    Hint("Format: name: what it is. Add ? after the name for an optional one. {name} in the address is replaced by the value; the rest go in the query (GET / DELETE) or as a JSON body (POST / PUT).")
+                    Hint(tr("Format: name: what it is. Add ? after the name for an optional one. {name} in the address is replaced by the value; the rest go in the query (GET / DELETE) or as a JSON body (POST / PUT)."))
                 }
                 OutlinedTextField(
                     value = headers, onValueChange = { headers = it }, modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Headers, one per line (optional)") }
+                    label = { Text(tr("Headers, one per line (optional)")) }
                 )
-                Hint("Example: Authorization: Bearer YOUR_KEY")
+                Hint(tr("Example: Authorization: Bearer YOUR_KEY"))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = askFirst, onCheckedChange = { askFirst = it })
-                    Text("  Ask me before every call", style = MaterialTheme.typography.bodyMedium)
+                    Text(tr("  Ask me before every call"), style = MaterialTheme.typography.bodyMedium)
                 }
                 if (isMcp) {
                     OutlinedButton(
                         enabled = urlOk && !loading,
                         onClick = {
                             loading = true
-                            status = "Connecting…"
+                            status = tr("Connecting…")
                             scope.launch {
                                 try {
                                     val found = McpClient(cleanUrl, ExternalText.parseHeaders(headers)).listTools()
@@ -178,17 +179,17 @@ private fun ExternalEntryEditor(initial: ExternalEntry, onDismiss: () -> Unit, o
                                     found.forEachIndexed { i, t ->
                                         tools.add(t.copy(selected = previous[t.name]?.selected ?: (i < MAX_TOOLS_PER_SERVER)))
                                     }
-                                    status = if (found.isEmpty()) "Connected, but the server lists no tools." else "Found ${found.size} tools."
+                                    status = if (found.isEmpty()) tr("Connected, but the server lists no tools.") else tr("Found {0} tools.", found.size)
                                 } catch (e: kotlinx.coroutines.CancellationException) {
                                     throw e
                                 } catch (e: Exception) {
-                                    status = "Could not fetch tools: ${e.message ?: e.javaClass.simpleName}"
+                                    status = tr("Could not fetch tools: {0}", e.message ?: e.javaClass.simpleName)
                                 } finally {
                                     loading = false
                                 }
                             }
                         }
-                    ) { Text(if (tools.isEmpty()) "Connect and fetch tools" else "Refresh tools") }
+                    ) { Text(if (tools.isEmpty()) tr("Connect and fetch tools") else tr("Refresh tools")) }
                     if (status.isNotBlank()) Hint(status)
                     tools.forEachIndexed { i, t ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -200,7 +201,7 @@ private fun ExternalEntryEditor(initial: ExternalEntry, onDismiss: () -> Unit, o
                         }
                     }
                     if (tools.count { it.selected } > MAX_TOOLS_PER_SERVER) {
-                        Hint("Only the first $MAX_TOOLS_PER_SERVER selected tools are given to the AI, to keep the prompt short.")
+                        Hint(tr("Only the first {0} selected tools are given to the AI, to keep the prompt short.", MAX_TOOLS_PER_SERVER))
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -219,8 +220,8 @@ private fun ExternalEntryEditor(initial: ExternalEntry, onDismiss: () -> Unit, o
                         )
                     )
                 }
-            ) { Text("Save") }
+            ) { Text(tr("Save")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Cancel")) } }
     )
 }

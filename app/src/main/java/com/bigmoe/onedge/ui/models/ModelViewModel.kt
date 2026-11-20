@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import java.io.File
+import com.bigmoe.onedge.i18n.tr
 
 data class ImportProgress(val name: String, val copiedBytes: Long, val totalBytes: Long)
 
@@ -95,10 +96,10 @@ class ModelViewModel(
                 _uiState.update { it.copy(message = result.message) }
                 refresh()
             } catch (e: CancellationException) {
-                _uiState.update { it.copy(message = "Import cancelled") }
+                _uiState.update { it.copy(message = tr("Import cancelled")) }
                 throw e
             } catch (e: Exception) {
-                _uiState.update { it.copy(message = e.message ?: "Import failed") }
+                _uiState.update { it.copy(message = e.message ?: tr("Import failed")) }
                 refresh()
             } finally {
                 _uiState.update { it.copy(importProgress = null) }
@@ -109,7 +110,7 @@ class ModelViewModel(
     fun removeIncompleteImport(id: String) {
         viewModelScope.launch {
             val removed = modelManager.removeIncompleteImport(id)
-            _uiState.update { it.copy(message = if (removed) "Removed the incomplete import and its app-owned partial copies." else "Could not remove this incomplete import.") }
+            _uiState.update { it.copy(message = if (removed) tr("Removed the incomplete import and its app-owned partial copies.") else tr("Could not remove this incomplete import.")) }
             refresh()
         }
     }
@@ -121,16 +122,16 @@ class ModelViewModel(
     fun registerExistingPath() {
         val path = _uiState.value.existingPathInput.trim()
         if (path.isEmpty()) {
-            _uiState.update { it.copy(message = "Enter an absolute file path first.") }
+            _uiState.update { it.copy(message = tr("Enter an absolute file path first.")) }
             return
         }
         viewModelScope.launch {
             try {
                 val file = modelManager.registerExistingPath(path)
-                _uiState.update { it.copy(message = "Registered without copying: ${file.name}", existingPathInput = "") }
+                _uiState.update { it.copy(message = tr("Registered without copying: {0}", file.name), existingPathInput = "") }
                 refresh()
             } catch (e: Exception) {
-                _uiState.update { it.copy(message = e.message ?: "Could not register the path") }
+                _uiState.update { it.copy(message = e.message ?: tr("Could not register the path")) }
             }
         }
     }
@@ -139,10 +140,10 @@ class ModelViewModel(
         viewModelScope.launch {
             try {
                 modelManager.attachDraft(modelPath, draftPath)
-                _uiState.update { it.copy(message = if (draftPath == null) "Detached the MTP draft." else "Attached ${File(draftPath).name} as the separate MTP draft.") }
+                _uiState.update { it.copy(message = if (draftPath == null) tr("Detached the MTP draft.") else tr("Attached {0} as the separate MTP draft.", File(draftPath).name)) }
                 refresh()
             } catch (e: Exception) {
-                _uiState.update { it.copy(message = e.message ?: "Could not attach the draft") }
+                _uiState.update { it.copy(message = e.message ?: tr("Could not attach the draft")) }
             }
         }
     }
@@ -150,22 +151,22 @@ class ModelViewModel(
     /** Copy a separately selected MTP GGUF into private storage, validate it, then attach it to the chosen target model. */
     fun importAndAttachDraft(resolver: ContentResolver, uri: Uri, modelPath: String) {
         if (importJob?.isActive == true) {
-            _uiState.update { it.copy(message = "Wait for the current import to finish before attaching an MTP draft.") }
+            _uiState.update { it.copy(message = tr("Wait for the current import to finish before attaching an MTP draft.")) }
             return
         }
         importJob = viewModelScope.launch {
-            _uiState.update { it.copy(message = null, importProgress = ImportProgress("MTP draft", 0, 0)) }
+            _uiState.update { it.copy(message = null, importProgress = ImportProgress(tr("MTP draft"), 0, 0)) }
             try {
                 val draft = modelManager.importAndAttachDraft(resolver, uri, modelPath) { copied, total ->
-                    _uiState.update { it.copy(importProgress = ImportProgress("MTP draft", copied, total)) }
+                    _uiState.update { it.copy(importProgress = ImportProgress(tr("MTP draft"), copied, total)) }
                 }
-                _uiState.update { it.copy(message = "Imported and attached ${draft.name} as the separate MTP draft.") }
+                _uiState.update { it.copy(message = tr("Imported and attached {0} as the separate MTP draft.", draft.name)) }
                 refresh()
             } catch (e: CancellationException) {
-                _uiState.update { it.copy(message = "MTP draft import cancelled.") }
+                _uiState.update { it.copy(message = tr("MTP draft import cancelled.")) }
                 throw e
             } catch (e: Exception) {
-                _uiState.update { it.copy(message = e.message ?: "Could not import the MTP draft.") }
+                _uiState.update { it.copy(message = e.message ?: tr("Could not import the MTP draft.")) }
                 refresh()
             } finally {
                 _uiState.update { it.copy(importProgress = null) }
@@ -180,7 +181,7 @@ class ModelViewModel(
     /** Step 1: run the pre-flight checks and ask for confirmation. */
     fun requestLoad(path: String) {
         if (ModelManager.isProjectorName(path)) {
-            _uiState.update { it.copy(message = "A vision projector is loaded together with its text model; choose the text model to load it.") }
+            _uiState.update { it.copy(message = tr("A vision projector is loaded together with its text model; choose the text model to load it.")) }
             return
         }
         viewModelScope.launch {
@@ -243,9 +244,9 @@ class ModelViewModel(
                     settingsDataStore.updateLastModelPath(path)
                     settingsDataStore.updateLastMmprojPath("")
                     val warning = (engineState.value as? EngineState.Ready)?.info?.loadWarning
-                    _uiState.update { it.copy(message = "Loaded WITHOUT vision: the projector ${File(mmprojPath).name} failed ($error)." + (warning?.let { " $it" } ?: "")) }
+                    _uiState.update { it.copy(message = tr("Loaded WITHOUT vision: the projector {0} failed ({1}).", File(mmprojPath).name, error) + (warning?.let { " $it" } ?: "")) }
                 } else {
-                    _uiState.update { it.copy(message = "$textOnly (with the projector: $error)") }
+                    _uiState.update { it.copy(message = tr("{0} (with the projector: {1})", textOnly, error)) }
                 }
             } else {
                 _uiState.update { it.copy(message = error) }
@@ -262,7 +263,7 @@ class ModelViewModel(
             val loaded = (engineController.state.value as? EngineState.Ready)?.info?.path
             if (loaded == path) engineController.unload()
             val ok = modelManager.delete(path)
-            _uiState.update { it.copy(message = if (ok) "Deleted" else "Could not delete the file") }
+            _uiState.update { it.copy(message = if (ok) tr("Deleted") else tr("Could not delete the file")) }
             refresh()
         }
     }
@@ -271,10 +272,10 @@ class ModelViewModel(
         viewModelScope.launch {
             try {
                 val renamed = modelManager.rename(path, name)
-                _uiState.update { it.copy(message = "Renamed to ${renamed.name}") }
+                _uiState.update { it.copy(message = tr("Renamed to {0}", renamed.name)) }
                 refresh()
             } catch (e: Exception) {
-                _uiState.update { it.copy(message = e.message ?: "Rename failed") }
+                _uiState.update { it.copy(message = e.message ?: tr("Rename failed")) }
             }
         }
     }

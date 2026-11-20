@@ -1,0 +1,111 @@
+# Session mode
+
+A fresh `bmoe-cli` process per prompt re-pays two fixed costs every time: the model load (tens
+of seconds for a >RAM model) and the expert-cache warm-up ramp (the LRU cache starts empty, so
+the first tokens miss often and read far more from flash than the steady state — see
+[benchmarks.md](benchmarks.md)). Streaming was meant to avoid exactly this kind of repeated work.
+
+Session mode amortises both. `Session` (`core/include/bmoe/session.h`) loads the model, discovers
+the MoE expert tensors, and initialises the expert source **once**; each `generate()` then runs a
+prompt against that resident state, and the expert LRU cache **survives between calls**, so a
+second prompt starts warm.
+
+```cpp
+std::string err;
+auto s = Session::open(cfg, err);      // model load + capture + source.init — once
+s->generate({.prompt = "..."});        // prefill + decode; cache filled
+s->generate({.prompt = "..."});        // starts warm — no reload, no cold ramp
+```
+
+`run()` (`runtime.h`) is a thin one-shot wrapper over `Session` — open, one generate, close — so
+the byte-identity gates exercise the same machinery an interactive session uses. Gates **S1/S2**
+assert that a second, warm generate produces output identical to the cold one-shot reference:
+warming the cache changes latency, never the bytes.
+
+## Independent prompts vs multi-turn chat
+
+`GenerateRequest::clear_kv` selects between two modes:
+
+- **`true` (new chat / independent prompt):** the KV cache and the engine-held conversation are
+  dropped before the prompt runs. The expert cache stays warm. This is the one-shot path — `run()`
+  always uses it, and the byte-identity gates exercise it.
+- **`false` (continue):** the prompt continues the current conversation. In chat mode the Session
+  owns the conversation (`chat_history`) and re-renders the model's chat template over the *whole*
+  history each turn, so the caller sends only the new user message — not the running transcript.
+
+**A conversation handed over whole.** A front-end that keeps its own record of a chat - a protocol
+whose client resends the history on every request, an edited or regenerated turn - sets
+`GenerateRequest::messages` instead of `prompt`. The list replaces the engine-held conversation and
+its last message is the one answered; with `clear_kv = false` the KV is kept and reused by the
+prefix rule below, so resending what the session already holds costs only the new turn. A turn that
+fails or is cancelled puts the previous conversation back. `GenerateRequest::tools` and
+`tool_choice` describe functions the model may call: they are rendered by the model's own chat
+template and the calls come back in `RunResult::tool_calls`, parsed by llama.cpp's chat layer
+(`core/src/engine/chat_messages.h` is the one adapter between `bmoe/chat.h` and that layer). Once
+a call opens, sampling is held to the grammar the template ships with its tools
+(`detail::ToolGrammar`, `core/src/engine/chat_parse.h`), outside any reasoning span. A finished
+turn the parser reads as nothing comes back as the raw generation.
+
+**KV prefix reuse.** Re-rendering the full history would re-tokenize the entire conversation, but
+most of it is already decoded into the KV. Each turn the engine diffs the freshly rendered tokens
+against `kv_tokens` (the tokens currently in the KV, in order), keeps the common prefix, removes the
+divergent tail with `llama_memory_seq_rm`, and prefills only the suffix. So a follow-up turn pays
+for its own tokens, not a full re-prefill — which matters because prefill is the slow phase on
+device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
+context length after it.
+
+**Context checkpoints.** Not every memory can be cut at an arbitrary position: a recurrent state
+(Mamba, Gated DeltaNet) holds only its latest step, and a sliding-window cache has already dropped what
+fell out of its window, so `llama_memory_seq_rm` refuses a cut inside them. The engine keeps
+checkpoints the way llama.cpp's server does (`--ctx-checkpoints`, default 8 where the server keeps 32,
+since their memory is the expert cache's; `--checkpoint-min-step`, 8192 as there): the part of the state that cannot be cut is copied out through the public
+state API (`llama_state_seq_get_data_ext` with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`, into `common`'s own
+`common_prompt_checkpoint`) at the end of every prompt, and every `min_step` tokens inside a prompt
+prefilled in pieces. A refused cut restores the newest checkpoint at or before the divergence and
+prefills from there (`core/src/engine/context_checkpoints.{h,cpp}`, the same position rule as the
+server's). This is what an agent needs: a client resends the model's answer as text, the template
+renders it back into tokens that need not be the ones sampled, and on a hybrid model the prompt then
+diverged inside the recurrent state on most requests. Nothing asks what kind of model this is: a memory
+that cuts anywhere has no partial state, keeps no checkpoint and never needs one. The cost is memory, the
+size of that state per checkpoint; the first one of a session logs it (`context checkpoints: X MiB each`),
+and `--ctx-checkpoints 0` turns them off. The plan charges that memory before it sizes the expert cache
+(`checkpoint-budget`, [hardware-planning.md](hardware-planning.md#the-memory-ledger)), so a chat that
+fills its checkpoints does not take it from what the cache already holds. A restored state is the state the same tokens computed, so it
+is lossless; gate G22 checks it on the three memory kinds the tiny models cover.
+
+**Fallbacks and costs.** With no checkpoint to restore (none taken yet, or off), a memory that refuses
+the cut is cleared and the whole prompt is prefilled again for that turn (correct, just slower). With
+thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered
+prefix diverges at the last answer and up to one answer's worth of tokens is re-prefilled per turn;
+with thinking **off** (the default) the re-fed suffix is just the new user turn plus a few
+wrapper tokens.
+
+**Reasoning is returned, not discarded.** On a thinking model the Session parses the reasoning span
+out of the raw stream and carries it in its own field (`TokenMetrics`/`RunResult::reasoning`,
+`delta_reasoning` on `BMOE_PROGRESS`, `reasoning` on `BMOE_DONE`) rather than dropping it. The answer text stays free of
+it either way, so the byte-identity gates are unaffected; a caller that wants to show the thinking
+reads the separate field. The parser wiring lives in `core/src/engine/chat_parse.cpp`
+(see [seam.md](seam.md)).
+
+## Cancel
+
+`Session::cancel()` is thread-safe and interrupts an in-flight `generate()` at the next decode
+boundary via llama's abort callback (installed unconditionally at open, so it works in serial and
+overlap alike). It leaves the model and cache intact; the returned `RunResult` has `cancelled =
+true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropping this turn's KV
+and un-appending the user message) so prior turns stay usable and the conversation can continue.
+Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
+
+## Fixed context
+
+`n_ctx` and `n_batch` are baked into the llama context at `open()`, before any prompt is known, so
+size them for the longest prompt + generation the session will serve. A request that would overflow
+`n_ctx` is rejected without tearing the session down.
+
+## CLI and app
+
+`bmoe-cli --session` exposes this over a line protocol (requests on stdin, `BMOE_*` responses on
+stdout — see [telemetry.md](telemetry.md)). The Android example runs one such process per model:
+the first prompt loads the model, later prompts reuse the warm process, and the session is freed on
+an explicit **Unload** or after an idle timeout. Changing the model or any streaming setting
+reopens the session; changing only the prompt, `n_predict`, or the thinking toggle does not.

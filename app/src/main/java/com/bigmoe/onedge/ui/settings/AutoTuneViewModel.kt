@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import com.bigmoe.onedge.i18n.tr
 
 data class AutoUiState(
     val device: DeviceProfile? = null,
@@ -50,6 +51,8 @@ data class AutoUiState(
     val facts: ModelFacts? = null,
     /** Non-null while a measurement runs: what it is doing right now. */
     val busy: String? = null,
+    /** True while [busy] describes a measurement, which can be cancelled (decided here, not by reading the text). */
+    val measuring: Boolean = false,
     val message: String? = null,
     /** True after a save was switched on while a model is loaded: it needs a reload to take effect. */
     val reloadNeeded: Boolean = false,
@@ -149,19 +152,18 @@ class AutoTuneViewModel(
             store.upsert(
                 save.copy(
                     values = lower, measuredTps = null, measuredAt = null,
-                    lastError = "The app was closed while measuring this save (almost certainly out of memory). " +
-                        "Its memory use was lowered automatically; measure it again."
+                    lastError = tr("The app was closed while measuring this save (almost certainly out of memory). Its memory use was lowered automatically; measure it again.")
                 )
             )
-            say("“${save.name}” closed the app last time, so its memory use was lowered.")
+            say(tr("“{0}” closed the app last time, so its memory use was lowered.", save.name))
         } else {
             store.upsert(
                 save.copy(
                     measuredTps = null, measuredAt = null,
-                    lastError = "The app was closed while measuring, even at the lowest settings. This model is too big for this phone to run safely."
+                    lastError = tr("The app was closed while measuring, even at the lowest settings. This model is too big for this phone to run safely.")
                 )
             )
-            say("“${save.name}” is too big for this phone to run safely.")
+            say(tr("“{0}” is too big for this phone to run safely.", save.name))
         }
     }
 
@@ -171,10 +173,10 @@ class AutoTuneViewModel(
         viewModelScope.launch {
             val lower = AutoTuner.safer(save.values)
             if (lower == null) {
-                say("“${save.name}” is already at the lowest memory use.")
+                say(tr("“{0}” is already at the lowest memory use.", save.name))
             } else {
                 store.upsert(save.copy(values = lower, measuredTps = null, measuredAt = null, lastError = null))
-                say("Lowered memory use of “${save.name}”. If it is in use, press Use again to apply it.")
+                say(tr("Lowered memory use of “{0}”. If it is in use, press Use again to apply it.", save.name))
             }
         }
     }
@@ -242,8 +244,8 @@ class AutoTuneViewModel(
     /** Creates exactly one save for the goal selected by the user. */
     fun createSaves(tier: AutoTier) {
         val state = _ui.value
-        val device = state.device ?: return say("Scan the device first.")
-        val facts = state.facts ?: return say("Pick a model first.")
+        val device = state.device ?: return say(tr("Scan the device first."))
+        val facts = state.facts ?: return say(tr("Pick a model first."))
         viewModelScope.launch {
             val values = AutoTuner.plan(device, facts, tier, allowNpu = state.useNpu)
             val fits = AutoTuner.fitsInRam(device, facts, values)
@@ -256,15 +258,15 @@ class AutoTuneViewModel(
                 createdAt = System.currentTimeMillis(),
                 values = values,
                 estTps = AutoTuner.estimateTps(device, facts, tier, values),
-                lastError = if (fits) null else "The initial plan may exceed the conservative RAM estimate; measure only after reviewing the settings."
+                lastError = if (fits) null else tr("The initial plan may exceed the conservative RAM estimate; measure only after reviewing the settings.")
             )
             store.upsert(save)
-            say("Created ${tier.title} settings for ${facts.name}. The speed is an estimate; measure it to verify real performance.")
+            say(tr("Created {0} settings for {1}. The speed is an estimate; measure it to verify real performance.", tier.title, facts.name))
         }
     }
 
     fun rename(id: String, name: String) {
-        viewModelScope.launch { if (!store.rename(id, name)) say("That name isn't valid.") }
+        viewModelScope.launch { if (!store.rename(id, name)) say(tr("That name isn't valid.")) }
     }
 
     fun delete(id: String) {
@@ -279,26 +281,26 @@ class AutoTuneViewModel(
             val identity = ready?.info?.path?.let { ModelProfileIdentity.fromPath(it) }
             if (identity != null && store.autoApplyModelProfilesEnabled.value) {
                 if (!store.setModelProfile(identity, id)) {
-                    say("Couldn't save this model profile. The current settings were left unchanged.")
+                    say(tr("Couldn't save this model profile. The current settings were left unchanged."))
                     return@launch
                 }
                 store.setActive(id)
                 _ui.update { it.copy(reloadNeeded = true) }
-                say("“${save.name}” is now this model's profile. Reload the model to apply it; other models keep their own settings.")
+                say(tr("“{0}” is now this model's profile. Reload the model to apply it; other models keep their own settings.", save.name))
             } else {
                 dataStore.applyTunedValues(save.values)
                 store.setActive(id)
                 val loaded = ready != null
                 _ui.update { it.copy(reloadNeeded = loaded) }
-                say(if (loaded) "“${save.name}” is on. Reload the model to use it."
-                    else "“${save.name}” is on as the global default. It applies the next time a model loads.")
+                say(if (loaded) tr("“{0}” is on. Reload the model to use it.", save.name)
+                    else tr("“{0}” is on as the global default. It applies the next time a model loads.", save.name))
             }
         }
     }
 
     fun setAutoApplyModelProfilesEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            if (!store.setAutoApplyModelProfilesEnabled(enabled)) say("Couldn't save the profile preference.")
+            if (!store.setAutoApplyModelProfilesEnabled(enabled)) say(tr("Couldn't save the profile preference."))
         }
     }
 
@@ -307,11 +309,11 @@ class AutoTuneViewModel(
             val path = (engineController.state.value as? EngineState.Ready)?.info?.path
             val identity = path?.let { ModelProfileIdentity.fromPath(it) }
             if (identity == null) {
-                say("Load a model to reset its profile.")
+                say(tr("Load a model to reset its profile."))
             } else if (store.setModelProfile(identity, null)) {
-                say("Model profile cleared. The next load uses global defaults.")
+                say(tr("Model profile cleared. The next load uses global defaults."))
             } else {
-                say("Couldn't clear this model profile.")
+                say(tr("Couldn't clear this model profile."))
             }
         }
     }
@@ -323,10 +325,10 @@ class AutoTuneViewModel(
             val s = store.settingsForModelPath(ready.info.path, base)
             val draft = if (s.spec == SpecSource.MTP && s.separateMtpDraftEnabled)
                 modelManager.draftForModel(ready.info.path) else null
-            _ui.update { it.copy(reloadNeeded = false, busy = "Reloading the model…") }
+            _ui.update { it.copy(reloadNeeded = false, busy = tr("Reloading the model…")) }
             val err = engineController.loadModel(ready.info.path, s.toLoadConfig(), ready.info.mmprojPath, draft)
-            _ui.update { it.copy(busy = null) }
-            if (err != null) say("Reload failed: ${err.take(200)}")
+            _ui.update { it.copy(measuring = false, busy = null) }
+            if (err != null) say(tr("Reload failed: {0}", err.take(200)))
         }
     }
 
@@ -340,7 +342,7 @@ class AutoTuneViewModel(
                     contentResolver.openOutputStream(uri, "wt")?.use { it.write(AutoSaveCodec.toJson(save).toByteArray()) } != null
                 }.getOrDefault(false)
             }
-            say(if (ok) "Saved “${save.name}” to your chosen file." else "Couldn't write the file.")
+            say(if (ok) tr("Saved “{0}” to your chosen file.", save.name) else tr("Couldn't write the file."))
         }
     }
 
@@ -366,12 +368,12 @@ class AutoTuneViewModel(
             }
             val parsed = text?.let { AutoSaveCodec.parse(it) }
             if (parsed == null) {
-                say("That file isn't a BigMoeOnEdge+ auto save.")
+                say(tr("That file isn't a BigMoeOnEdge+ auto save."))
                 return@launch
             }
             // Always a new save: never overwrite one the user already has.
             store.upsert(parsed.copy(id = UUID.randomUUID().toString(), createdAt = System.currentTimeMillis(), values = AutoTuner.sanitize(parsed.values)))
-            say("Imported “${parsed.name}”.")
+            say(tr("Imported “{0}”.", parsed.name))
         }
     }
 
@@ -390,7 +392,7 @@ class AutoTuneViewModel(
      */
     fun measure(ids: List<String>) {
         if (measureJob?.isActive == true) return
-        val facts = _ui.value.facts ?: return say("Pick a model first.")
+        val facts = _ui.value.facts ?: return say(tr("Pick a model first."))
         val targets = store.saves.value.filter { it.id in ids }
         if (targets.isEmpty()) return
         measureJob = viewModelScope.launch {
@@ -400,7 +402,7 @@ class AutoTuneViewModel(
             try {
                 for ((i, save) in targets.withIndex()) {
                     val label = "${i + 1}/${targets.size}"
-                    _ui.update { it.copy(busy = "Measuring $label: loading the model with “${save.name}”. This can take a while.") }
+                    _ui.update { it.copy(measuring = true, busy = tr("Measuring {0}: loading the model with “{1}”. This can take a while.", label, save.name)) }
                     val config = save.values.applyTo(before).toLoadConfig()
                     val device = _ui.value.device
 
@@ -419,8 +421,7 @@ class AutoTuneViewModel(
                         store.upsert(
                             save.copy(
                                 measuredTps = null, measuredAt = null,
-                                lastError = "Needs about ${gbText(need)} but this phone can safely give about ${gbText(can)}. " +
-                                    "Not measured, to keep the app from being killed. create a new settings profile with a smaller context/cache, or use a smaller model."
+                                lastError = tr("Needs about {0} but this phone can safely give about {1}. Not measured, to keep the app from being killed. create a new settings profile with a smaller context/cache, or use a smaller model.", gbText(need), gbText(can))
                             )
                         )
                         continue
@@ -436,7 +437,7 @@ class AutoTuneViewModel(
                             store.upsert(save.copy(measuredTps = null, measuredAt = null, lastError = loadError.take(300)))
                             continue
                         }
-                        _ui.update { it.copy(busy = "Measuring $label: generating test text with “${save.name}”.") }
+                        _ui.update { it.copy(measuring = true, busy = tr("Measuring {0}: generating test text with “{1}”.", label, save.name)) }
                         val result = runBenchmark()
                         store.upsert(
                             save.copy(
@@ -450,15 +451,15 @@ class AutoTuneViewModel(
                         withContext(NonCancellable) { store.endMeasuring() }
                     }
                 }
-                say(if (done == targets.size) "Measured $done save(s)." else "Measured $done of ${targets.size}. Failed saves show the reason.")
+                say(if (done == targets.size) tr("Measured {0} save(s).", done) else tr("Measured {0} of {1}. Failed saves show the reason.", done, targets.size))
             } catch (e: CancellationException) {
-                say("Measuring cancelled.")
+                say(tr("Measuring cancelled."))
                 throw e
             } catch (e: Throwable) {
-                say("Measuring stopped: ${e.message ?: e.javaClass.simpleName}")
+                say(tr("Measuring stopped: {0}", e.message ?: e.javaClass.simpleName))
             } finally {
                 withContext(NonCancellable) {
-                    _ui.update { it.copy(busy = "Restoring your previous model…") }
+                    _ui.update { it.copy(measuring = false, busy = tr("Restoring your previous model…")) }
                     if (previous != null) {
                         val draft = if (before.spec == SpecSource.MTP && before.separateMtpDraftEnabled)
                             modelManager.draftForModel(previous.path) else null
@@ -466,7 +467,7 @@ class AutoTuneViewModel(
                     } else {
                         engineController.unload()
                     }
-                    _ui.update { it.copy(busy = null) }
+                    _ui.update { it.copy(measuring = false, busy = null) }
                 }
             }
         }
@@ -498,7 +499,7 @@ class AutoTuneViewModel(
         val failure = error
         return when {
             failure != null -> null to failure.take(300)
-            tps <= 0.0 -> null to "The model produced no tokens during the test."
+            tps <= 0.0 -> null to tr("The model produced no tokens during the test.")
             else -> (Math.round(tps * 10) / 10.0) to null
         }
     }

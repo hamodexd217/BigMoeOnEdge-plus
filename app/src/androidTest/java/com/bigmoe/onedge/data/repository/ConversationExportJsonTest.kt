@@ -11,15 +11,13 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 class ConversationExportJsonTest {
     @Test fun jsonExportParsesAndPreservesUnicode() {
         val session = ChatSessionDomainModel("id", "Arabic 🧪", 1L, 2L)
-        val message = ChatMessageDomainModel("message", session.id, MessageRole.USER, "مرحبا
-🙂", 3L)
+        val message = ChatMessageDomainModel("message", session.id, MessageRole.USER, "مرحبا\n🙂", 3L)
         val content = ConversationExportFormatter.create(
             session, listOf(message), emptyList(), ConversationExportFormat.JSON, false
         ).contents
         val parsed = JSONObject(content)
         assertEquals(1, parsed.getInt("schema_version"))
         assertEquals("Arabic 🧪", parsed.getJSONObject("conversation").getString("title"))
-        assertEquals("مرحبا
-🙂", parsed.getJSONArray("messages").getJSONObject(0).getString("content"))
+        assertEquals("مرحبا\n🙂", parsed.getJSONArray("messages").getJSONObject(0).getString("content"))
     }
 }

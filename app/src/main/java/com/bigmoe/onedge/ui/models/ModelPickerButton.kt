@@ -24,6 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bigmoe.onedge.core.EngineState
 import com.bigmoe.onedge.core.ModelManager
+import com.bigmoe.onedge.i18n.tr
 
 /**
  * The chip button in the chat's top bar. Tapping it opens a small list of every registered model: pick one to load
@@ -46,7 +47,7 @@ fun ModelPickerButton(
 
     Box {
         IconButton(onClick = { viewModel.refresh(); open = true }) {
-            Icon(imageVector = Icons.Default.Memory, contentDescription = "Models")
+            Icon(imageVector = Icons.Default.Memory, contentDescription = tr("Models"))
         }
         DropdownMenu(
             expanded = open,
@@ -54,16 +55,16 @@ fun ModelPickerButton(
             modifier = Modifier.widthIn(min = 280.dp, max = 360.dp)
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Text("Models", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Text(tr("Models"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 if (loading) {
-                    Text("Loading a model\u2026", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(tr("Loading a model\u2026"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else if (isGenerating) {
-                    Text("Stop the reply to unload the model.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(tr("Stop the reply to unload the model."), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (models.isEmpty()) {
                 Text(
-                    "No models yet. Add one from the Models page.",
+                    tr("No models yet. Add one from the Models page."),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -75,7 +76,7 @@ fun ModelPickerButton(
                         Column {
                             Text(model.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                ModelManager.formatBytes(model.sizeBytes) + if (isLoaded) " \u2022 Loaded" else "",
+                                ModelManager.formatBytes(model.sizeBytes) + if (isLoaded) tr(" \u2022 Loaded") else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -83,7 +84,7 @@ fun ModelPickerButton(
                     },
                     trailingIcon = {
                         Text(
-                            if (isLoaded) "Unload" else "Load",
+                            if (isLoaded) tr("Unload") else tr("Load"),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -97,7 +98,7 @@ fun ModelPickerButton(
             }
             HorizontalDivider()
             DropdownMenuItem(
-                text = { Text("Manage models\u2026") },
+                text = { Text(tr("Manage models\u2026")) },
                 onClick = { open = false; onManageModels() }
             )
         }

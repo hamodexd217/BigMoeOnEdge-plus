@@ -1,0 +1,330 @@
+# The seam: how we hook llama.cpp without forking it
+
+Everything that connects BigMoeOnEdge to llama.cpp goes through two public mechanisms.
+This file documents the exact contract so it can be re-verified when the submodule is
+updated.
+
+## 1. The eval-callback
+
+`llama_context_params.cb_eval` / `cb_eval_user_data` (public) install a function called by
+`ggml_backend_sched` for every graph node:
+
+- `callback(node, ask=true, ud)` is called for each node. Returning true isolates that
+  node: the scheduler computes it alone, `ggml_backend_synchronize`s, then calls
+  `callback(node, ask=false, ud)`.
+- Returning false groups the node with its neighbours for normal computation (no non-ask
+  callback).
+
+We use both phases:
+
+**Capture phase** (one warm-up decode). `ask` is called for every node, so we scan each
+node's `src[]` for expert weight tensors (`blk.<il>.<suffix>.weight`, where the suffixes are
+the file's own: its 3-D block weights indexed by its expert count, read before the load —
+`ffn_{gate,up,down}_exps` in the split layout, a fused `ffn_gate_up_exps` in others) and record
+the live `ggml_tensor*`. We return false
+throughout — capture observes, it does not isolate. `ggml_tensor` is a public struct, so
+reading `->name`, `->ne`, `->nb` and writing `->data` is public API surface.
+
+**Stream phase** (real generation). We return true for `ffn_moe_topk-<il>`. The
+non-ask callback then hands us that node with the selected expert ids materialized; we
+gather them (stride-aware) and trigger the slice reads.
+
+Materialized does not mean readable in place. On a layer placed on a device with memory of its own
+(a discrete GPU) the routing node lives in that memory and `->data` is the device's address, so
+the ids are copied out with `ggml_backend_tensor_get`, which is valid there because the scheduler
+synchronizes the split's backend before the observing callback. Whether to copy is asked of the
+node's buffer (`ggml_backend_buffer_is_host`), never of the backend's name; unified memory reads
+as host and takes the direct read. The jobs below that read the router's inputs or rewrite its
+output act only on a node in host memory, and a device layer keeps the router's own choice.
+Gate G20 holds this path: the loopback RPC device, whose buffers are not host memory, takes every
+layer's dense part while the experts stream, serial and under `--overlap`. Before the copy existed
+the overlap half hung on every run, waiting for an expert the hook had never been asked for.
+
+Two optional jobs ask for more: the route trace and
+[cache-aware dropping](expert-dropping.md) also want each layer's `ffn_moe_weights*-<il>` chain,
+which is another barrier per node but no new kind of access — same public struct, same read of
+`->data`.
+
+The two lossy routing policies go one step further, and they are the only places the engine
+**writes into** a graph tensor's contents rather than repointing `->data` at its own buffer.
+Dropping, at the terminal node of the weight chain, zeroes a dropped slot's weight and repoints
+that slot's expert id; [substitution](cache-aware-substitution.md), at the `ffn_moe_topk` node,
+rewrites the selected ids toward resident experts. In both cases the tensors are scratch the graph
+produced and has not yet consumed, so this alters the values flowing through the run —
+deliberately, that is what a lossy policy *is* — and never llama.cpp's own state, its weights, or
+its control flow. It stays inside the same callback contract; nothing is patched.
+
+## 2. gguf offsets
+
+`gguf_init_from_file(..., no_alloc=true)` + `gguf_get_data_offset` +
+`gguf_get_tensor_offset` (all public) give each tensor's absolute byte offset in the file,
+without loading any tensor data. We match these to the captured tensors by name.
+
+## 3. The expert-ready hook (fork extension)
+
+Sections 1 and 2 are enough for the *serial* streamer: block on the expert reads, then let
+the layer compute. Overlapping the two — reading a token's experts while the same token's
+expert matmuls are running — needs a wait point that no public API exposes. That is the one
+place where BigMoeOnEdge carries a llama.cpp extension.
+
+**What it is.** A single optional hook, ~25 lines, living on the fork branch
+`bmoe/expert-ready-hook` of `Helldez/llama.cpp` as a single commit on top of the upstream
+pin. It adds nothing to the model files and changes no data layout; it is a callback the
+CPU MoE kernel invokes.
+
+**Exact API and call site.**
+
+```c
+// ggml-cpu.h
+void ggml_cpu_set_expert_ready_hook(ggml_cpu_expert_ready_hook_t hook, void * user_data);
+// and the same setter from the CPU backend's registry, by name:
+ggml_backend_reg_get_proc_address(cpu_reg,
+                                  "ggml_cpu_set_expert_ready_hook");
+```
+
+The engine never links the symbol: it asks the CPU backend's registry for it at run time, the
+way ggml exposes every other backend-specific function (threads, NUMA, the abort callback). That
+is what lets the CPU backend be a module loaded from beside the executable, which is how every
+release is built (`BMOE_BACKEND_MODULES`), and what lets a build on stock upstream run: the
+registry answers null, `expert_ready_hook_available()` says so, and `--overlap` is refused with
+the reason instead of failing to link. The gates that prove `--overlap` byte-identical (G4, G5b,
+S2) skip themselves on such a build, and the build whose job is to prove it passes
+`-DBMOE_GATES_REQUIRE_HOOK=ON`, under which a missing hook is a failure: whether the CPU module a
+build loads carries the hook is decided at run time now, and a bump or a stripped module must not
+be able to retire those gates quietly.
+
+`ggml_compute_forward_mul_mat_id` calls the hook at the top of its per-expert loop, right
+after the "expert not routed this token" skip, before it consumes that expert's weight
+slice. Every compute thread calls it for every routed expert; the hook may block. There is
+**no barrier inside the expert loop**, so a thread blocking on one expert cannot deadlock
+the threadpool — other threads proceed to the experts whose slices are already resident.
+The streamer's hook blocks until the requested expert slice has been read in, then returns.
+When no hook is registered (stock upstream, or `--overlap` off) the call is a single null
+check — zero cost.
+
+**Why it exists.** The topk eval-callback (section 1) is the only public hook near routing,
+and it can only fire *before* the expert matmuls of a layer run — it cannot pause partway
+through them. Overlapping expert reads with expert compute requires a per-expert wait point
+*inside* the kernel, which the public API does not provide. Hence the extension.
+
+**Graceful degradation.** Nothing is detected at configure time. Built against stock upstream
+the whole project compiles and runs - the serial streaming path is unchanged; only `--overlap`
+is affected, and it fails with a clear runtime error instead of silently falling back. The
+server's default for overlap and the `overlap_available` it reports are read from the backend
+that loaded, not from a build flag.
+
+**Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
+ships an equivalent per-expert readiness/residency callback, the branch is dropped and the
+submodule bumps straight back to `ggml-org/llama.cpp`. It is a tide-me-over until the wait
+point is public, not a divergence we intend to maintain.
+
+## The chat glue: llama.cpp `common` (not the streaming seam)
+
+Separate from the two streaming hooks above, `session.cpp` links llama.cpp's `common`
+library for rendering the model's own chat template and parsing reasoning output, driving
+speculative decoding (with `--mtp`), and applying request-level JSON schemas through the
+chat template.
+`common_chat_templates_init` / `common_chat_templates_apply` run the real Jinja template the
+gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
+model rather than hardcoded), and `common_chat_parse` extracts a reasoning model's thinking so
+it can be reported apart from the answer. The parser-params wiring lives in its own translation
+unit, `chat_parse.cpp` — the PEG parser arena has to be copied across explicitly, or `common_chat_parse`
+falls back to a content-only parser (it threw on the first token before the 2026-10-18 base), which is how issue #49 stayed invisible; keeping it separate makes
+that seam unit-testable without a model.
+
+A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
+`enable_thinking` is only a *request* to the template, and many templates never read it, so the
+engine renders the template to find out (three renders at open, no model names involved) and, where
+the flag is inert *and* reasoning is a structural section of the format, asks for a **continuation**
+instead: the `continue_final_message` field of `common_chat_templates_inputs`, plus a synthetic
+trailing assistant message, makes llama.cpp's own per-template handler emit that family's "reasoning
+is over" span into the prompt. This is why no `<think>` or harmony channel marker appears anywhere in
+`core/` — the markers stay upstream, where a submodule bump keeps them current.
+
+Whether the continuation is *binding* is read off `common_chat_params::thinking_start_tag`/
+`thinking_end_tag`: a model that declares a reasoning span owns it, so a pre-closed empty one is a
+suggestion it can decline (LFM2.5 does), while a model that declares none separates reasoning
+structurally and cannot. Both facts come from the loaded model, never from its name.
+`tests/think_control_test.cpp` pins all of it against the vendored templates, again with no model.
+
+### Request-local output constraints
+
+The server maps `response_format` and the top-level `json_schema` field to a serialized schema
+on the generation request. `session.cpp` passes it to
+`common_chat_templates_inputs::json_schema`. `common_chat_templates_apply` builds the grammar
+and parser rule together, including the template's reasoning structure. The returned
+`common_chat_params::grammar` is applied by the existing `detail::ToolGrammar` in
+`chat_parse.cpp`; non-lazy grammars receive the generation prompt before the first generated
+token. Speculative acceptance also checks that grammar before accepting a drafted token.
+
+This shares the template and sampling path used for tools. No code calls the JSON-to-grammar
+converter directly, no second grammar sampler competes with the template's grammar, and the
+request does not change the session's sampling configuration. Each turn creates its own
+constraint state, so a following ordinary request is unaffected. The completed answer is
+validated after chat parsing, with reasoning kept separate; schema compilation and supported
+keywords belong to the pinned upstream implementation. Final validation checks JSON syntax,
+not the full schema. Length limits and cancellation preserve partial output and their finish
+reason. The integration changes neither upstream code nor the streamed-weight layout.
+
+### Context checkpoints
+
+`context_checkpoints.cpp` keeps its checkpoints in `common_prompt_checkpoint`, the type llama.cpp's
+server keeps them in, and copies them with its `update_tgt` / `load_tgt` helpers, which call the public
+`llama_state_seq_*_ext` functions with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`. The restore rule (how far
+back a checkpoint may reach under a sliding window) is the server's, and the MTP driver's own state is
+saved beside it with `common_speculative_get_state`, as the server does. See [session.md](session.md).
+
+### Speculative decoding
+
+Only the MTP source crosses into `common`. The verify half of the loop — the wide batch, the argmax
+acceptance, the KV rollback — is written against public `llama.h` alone, and so is the n-gram draft
+source, which is why `--ngram` needs nothing from `common` at all. `core/include/bmoe/ngram_draft.h`
+does not even include `llama.h`: it is written over `int32_t` token ids, which is what `llama_token`
+is, so the drafting policy stays on the pure-policy side of the seam and is unit-tested with no model
+and no native backend (`tests/ngram_test.cpp`). See [ngram.md](ngram.md).
+
+`--mtp` reaches `common/speculative.h`, which is a header of the same `common` library and
+includes only `llama.h` and `common.h`. The draft/verify orchestration — running the trained MTP
+head, moving hidden states from the target to it, seeding the next draft from the accepted position
+— is entirely upstream's; the engine supplies the loop around it and the two contexts it works on.
+The driver reads its own mirror of a batch's entries (`common_batch`), not the `llama_batch` the
+engine decodes, so the engine copies each batch it hands to `common_speculative_process` into one
+(`to_common_batch` in `session.cpp`): the decode itself stays on the public API.
+Worth stating explicitly because the internals it needs (`llama_set_embeddings_nextn` and the
+`nextn` hidden-state getters) live in `src/llama-ext.h`, a *staging* header: they are used **inside**
+`speculative.cpp`, which is already compiled into the `llama-common` the engine links, so nothing in
+`core/` includes a private header and no in-tree patch is involved.
+
+What the engine does own is the pair of contexts. Self-speculation is one model with two contexts
+over it — the target, and a draft created with `ctx_type = LLAMA_CONTEXT_TYPE_MTP` — and the engine
+builds the draft one itself rather than through `common_speculative_init_from_params`, for a reason
+that belongs to this project: **the eval callback is per-context**. The streamer only sees the MTP
+block's expert layer if the draft context carries the same `cb_eval`, and `init_from_params` derives
+its context parameters from a full `common_params` with no way to inject one. See
+[mtp.md](mtp.md).
+
+Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
+between upstream versions. So a submodule bump may require updating this chat glue in
+`session.cpp` / `chat_parse.cpp` / `thinking_control.cpp`; the build and gates catch a break at
+compile time rather than at runtime (`tests/chat_parse_test.cpp` and
+`tests/think_control_test.cpp` cover these seams directly). This
+trade-off is deliberate and is also noted at the link site in the root `CMakeLists.txt`. The
+gates themselves run with the template off (raw prompt), so they stay deterministic and are
+unaffected by this dependency.
+
+### The capacity fitter: `common/fit.h`
+
+Another consumer of `common` is the hardware planner's first stage. `--auto` calls
+`common_fit_params` — llama.cpp's own capacity fitter, the one behind its `--fit` flag — to place
+weights across the registered devices by projected memory, and reads back which layers kept their
+routed experts on the host and what the placed model reserves there for context and compute. That
+is everything the second stage (the flash tier) needs, and it is the only thing taken from the
+fitter: its host `model` term is not our dense set and is not used for it.
+
+The call lives in exactly one file, `core/src/plan/placement_probe.cpp`, and returns a pure-policy
+struct (`bmoe/placement.h`) with no llama.cpp types in it. The planner accepts `fitted = false` and
+then plans as if there were no devices at all, so if a submodule bump moves the fitter's signature
+the blast radius is that one file and the device axis declines rather than the build failing.
+Note that the fitter refuses to run when `tensor_buft_overrides` is already set, so the
+experts-on-host constraint is not passed in: it is read out of the overrides the fitter writes, and
+enforced by the session, which routes every pattern to the CPU buffer type at load.
+
+## The one ggml behaviour we depend on
+
+That a node marked "needed" is computed and synchronized **before** the non-ask callback,
+and that the batch containing the dependent expert matmul runs **after** the callback
+returns. This is how `ggml_backend_sched` implements the eval-callback today
+(`ggml/src/ggml-backend.cpp`). It is not a stability-guaranteed contract, so:
+
+- the [byte-identity gates](../tests/moe_gates.cpp) assert lossless output, which fails
+  loudly if the ordering ever changes;
+- CI runs the gates on every submodule bump.
+
+## Per-graph placement (`--prefill-device`)
+
+The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on these
+behaviours of the public surface and two naming conventions. All are exercised by gates G16 and G17,
+except where noted:
+
+- **The scheduler assigns a backend per graph, from the weight's buffer.** `ggml_backend_sched` looks
+  at each weight's `tensor->buffer` every time it splits a graph, so rebinding `buffer`, `data` and
+  `extra` (and, for a weight carried to the device in another type, `type` and `nb`) between graphs
+  moves the weight's ops. The rebind happens only between `llama_decode` calls.
+- **Graph reuse skips that decision.** A graph shaped like the previous one is reused without being
+  re-scheduled, so device graphs and CPU graphs are kept to different widths (`--prefill-min-tokens`).
+  A llama.cpp change that reused graphs across shapes would break this; G16 would show it.
+- **`ggml_backend_tensor_set` is where a backend lays weights out its own way.** The arena writes each
+  expert through a per-expert view, and writes each slot tensor once whole at load so the backend
+  records its layout for the tensor the op actually reads.
+- **A buffer's usage is what a backend reads to decide how to hold it.** `ggml_backend_buffer_set_usage`
+  marks a buffer `WEIGHTS` or not, and a backend may lay out and map a `WEIGHTS` buffer for its
+  matmul alone (Hexagon with DMA64 maps it for DMA only, and most of its other kernels then refuse it
+  at run time). So the engine marks only the matmul matrices `WEIGHTS` and puts every other layer weight
+  (norms, biases, scales), as found from the ops the capture graph applies to it, in plain device
+  memory.
+- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
+  `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
+  the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
+  graph it never runs.
+- **Concurrent uploads into one buffer.** The arena's loader threads call `ggml_backend_tensor_set`
+  on different views of the same slot buffer at once. ggml does not document this as thread-safe; it
+  holds for the CPU, RPC and Hexagon backends today because each write touches only its own bytes.
+  The gates cover the CPU (through RPC); on the NPU only a device run does.
+- **Layer weights are named `blk.N.`** The engine selects the weights it moves by that prefix. It is
+  the GGUF tensor naming every architecture in llama.cpp uses, not an API: a model that named its
+  layers otherwise would keep them on the CPU, correct but not faster.
+- **Model state tensors are named `cache_`.** The capture tells the KV and recurrent state apart from
+  weights by the `cache_` prefix llama.cpp's memory modules give them, so the prefill can place the
+  state where both sides can address it. That prefix is internal naming: if upstream renamed it the
+  state would stay in CPU memory, again correct but slower, and `prefill_dev_nodes` in the telemetry
+  would drop. Check it on each bump.
+- **With no devices given, llama.cpp picks them.** `llama_model_params::devices` left null lists every
+  GPU-type device (integrated ones only when no discrete one is found), and the context opens a
+  backend on each, layers or not. The engine keeps that choice only when a layer is placed on a
+  device (`--devices auto`, the default) or when told to (`--devices all`); with nothing placed it
+  passes the CPU alone, because a backend that is merely present takes nodes and rounds wide graphs
+  differently. Where it does keep the choice and there is no `--prefill-device`, it drops a device
+  whose capabilities (`host_buffer`, `buffer_from_host_ptr`) say it cannot reach
+  host memory, and then passes the rest explicitly, repeating that integrated-device rule. If upstream
+  changed its selection, only a build carrying such a device (Hexagon) would see the difference. Not
+  gated: the host build has no such device.
+- **A device that fails to open throws.** Hexagon opens its DSP session in `ggml_backend_dev_init`
+  and throws when it cannot. The engine calls it once before the load, catches that, and keeps the run
+  on the CPU; the backend caches the session, so the context's own init reuses it.
+
+## Upgrading llama.cpp
+
+Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
+rebases that 1-commit branch onto the new upstream tag, re-pushes it, and re-pins:
+
+```bash
+# in a Helldez/llama.cpp checkout: rebase the single hook commit onto the new tag
+git fetch upstream && git checkout bmoe/expert-ready-hook
+git rebase <newer-upstream-tag> && git push --force-with-lease origin bmoe/expert-ready-hook
+
+# in this repo: move the submodule to the rebased commit, rebuild, run the gates
+cd third_party/llama.cpp && git fetch origin && git checkout <rebased-commit>
+cd ../.. && git add third_party/llama.cpp && scripts/build-host.sh
+cd build && ctest --output-on-failure     # gates must stay green
+```
+
+When the sunset condition lands (upstream ships the readiness callback) this collapses back
+to a plain `git checkout <newer-tag>` against `ggml-org/llama.cpp` with no branch to carry.
+Either way the gates are the enforcement. The fragility is not the public
+API but the *internal naming conventions* the seam attaches to — the tensor suffixes and
+the `ffn_moe_topk` node name are how llama.cpp happens to build MoE graphs today, not a
+guaranteed contract, so upstream can rename or restructure them (Gemma 4's fused
+`ffn_gate_up_exps` is one such evolution, absorbed with no change since the layout is read off
+the file's shapes). The gates are the enforcement: a rename breaks byte-identity before merge
+instead of silently corrupting output. Each expert layout has a gate to keep green across a bump.
+
+If a future release moves the two hooks (a stable expert-residency API, say) upstream,
+this seam shrinks further or disappears — `core/` does not change.
+
+Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
+`bmoe/expert-ready-hook-2810-hook`, commit `152dd5c`: the single expert-ready-hook commit
+(section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
+`8ca4060` of 2026-10-28 (132 commits past the previous base, `d88040c` of 2026-10-22). Each bump gets its own fork branch and the
+previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
+`git submodule status` for the current pin).

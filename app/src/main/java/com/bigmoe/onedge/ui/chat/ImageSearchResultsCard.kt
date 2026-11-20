@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
+import com.bigmoe.onedge.i18n.tr
 
 @Composable
 fun ImageSearchResultsCard(body: String, modifier: Modifier = Modifier) {
@@ -47,7 +48,7 @@ fun ImageSearchResultsCard(body: String, modifier: Modifier = Modifier) {
         shape = RoundedCornerShape(16.dp)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Image search", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(tr("Image search"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(results, key = { it.imageUrl }) { item ->
                     Column(Modifier.width(184.dp)) {
@@ -75,7 +76,7 @@ fun ImageSearchResultsCard(body: String, modifier: Modifier = Modifier) {
                     }
                 }
             }
-            Text("Tap a preview to open its source page inside the app.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(tr("Tap a preview to open its source page inside the app."), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -86,13 +87,13 @@ private fun ImagePreview(url: String, modifier: Modifier = Modifier) {
         value = withContext(Dispatchers.IO) { downloadPreview(url) }
     }
     if (bitmap != null) {
-        Image(bitmap = bitmap!!.asImageBitmap(), contentDescription = "Image search preview", modifier = modifier, contentScale = ContentScale.Crop)
+        Image(bitmap = bitmap!!.asImageBitmap(), contentDescription = tr("Image search preview"), modifier = modifier, contentScale = ContentScale.Crop)
     } else {
         Box(
             modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
-            Text("Preview unavailable", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(tr("Preview unavailable"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -105,7 +106,7 @@ private fun downloadPreview(rawUrl: String): Bitmap? {
         connection.connectTimeout = 3500
         connection.readTimeout = 3500
         connection.instanceFollowRedirects = true
-        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) BigMoeOnEdgePlus/0.4")
+        connection.setRequestProperty(tr("User-Agent"), tr("Mozilla/5.0 (Android) BigMoeOnEdgePlus/0.4"))
         if (connection.responseCode !in 200..299) return null
         val bytes = connection.inputStream.use { input ->
             val out = java.io.ByteArrayOutputStream()

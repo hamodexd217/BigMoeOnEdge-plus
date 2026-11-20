@@ -9,8 +9,10 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.bigmoe.onedge.core.CacheMode
+import com.bigmoe.onedge.core.Compaction
 import com.bigmoe.onedge.core.DenseWeights
 import com.bigmoe.onedge.core.DecisionPrefixCache
+import com.bigmoe.onedge.core.KvCacheType
 import com.bigmoe.onedge.core.LoadConfig
 import com.bigmoe.onedge.core.SpecSource
 import com.bigmoe.onedge.core.TunedValues
@@ -94,6 +96,11 @@ data class EngineSettings(
     val decisionPrefixCache: DecisionPrefixCache = DecisionPrefixCache.AUTO,
     /** Preserve the app's existing ability to choose a cache below the engine's 1500 MiB floor. */
     val forceCache: Boolean = true,
+    /** K/V cache element types (engine 0.39). q8_0 halves the cache; f16 is the old behaviour. */
+    val cacheTypeK: KvCacheType = KvCacheType.Q8_0,
+    val cacheTypeV: KvCacheType = KvCacheType.Q8_0,
+    /** Prompt checkpoints kept for hybrid/recurrent models. 0 = off. */
+    val ctxCheckpoints: Int = 3,
     // ---- per-request ----
     // Sampling is sent for each generation; changing these values does not require reopening the model.
     val temperature: Float = 0.7f,
@@ -135,6 +142,10 @@ data class EngineSettings(
     val toolResultChars: Int = DEFAULT_TOOL_RESULT_CHARS,
     /** Reason again after a tool result. Off by default: reasoning tokens are generated at the model's (slow) decode speed. */
     val thinkAfterTools: Boolean = false,
+    /** Fold the oldest messages into a summary when a chat nears the context size (see core/Compaction.kt). */
+    val autoCompactEnabled: Boolean = true,
+    /** Share of the context, in percent, at which that happens. */
+    val autoCompactThresholdPct: Int = Compaction.DEFAULT_THRESHOLD_PCT,
     /** Longest side of pictures sent to the model, in pixels (more = sharper, but many more tokens). */
     val imageMaxDim: Int = 512,
     /** Frames sampled evenly from an attached video. */
@@ -225,7 +236,10 @@ data class EngineSettings(
         ngramMinMatch = ngramMinMatch,
         ngramMaxMatch = ngramMaxMatch,
         decisionPrefixCache = decisionPrefixCache,
-        forceCache = forceCache
+        forceCache = forceCache,
+        cacheTypeK = cacheTypeK,
+        cacheTypeV = cacheTypeV,
+        ctxCheckpoints = ctxCheckpoints
     )
 }
 
@@ -305,6 +319,9 @@ class EngineSettingsDataStore(private val context: Context) {
         val NGRAM_MAX_MATCH = intPreferencesKey("ngram_max_match")
         val DECISION_PREFIX_CACHE = stringPreferencesKey("decision_prefix_cache")
         val FORCE_CACHE = booleanPreferencesKey("force_cache")
+        val CACHE_TYPE_K = stringPreferencesKey("cache_type_k")
+        val CACHE_TYPE_V = stringPreferencesKey("cache_type_v")
+        val CTX_CHECKPOINTS = intPreferencesKey("ctx_checkpoints")
         val MAX_TOKENS = intPreferencesKey("max_tokens")
         val THINKING = booleanPreferencesKey("thinking_enabled_v2")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
@@ -320,6 +337,8 @@ class EngineSettingsDataStore(private val context: Context) {
         val EXTERNAL_TOOLS_JSON = stringPreferencesKey("external_tools_json")
         val TOOL_RESULT_CHARS = intPreferencesKey("tool_result_chars")
         val THINK_AFTER_TOOLS = booleanPreferencesKey("think_after_tools")
+        val AUTO_COMPACT = booleanPreferencesKey("auto_compact_enabled")
+        val AUTO_COMPACT_PCT = intPreferencesKey("auto_compact_threshold_pct")
         val IMAGE_MAX_DIM = intPreferencesKey("image_max_dim")
         val VIDEO_FRAMES = intPreferencesKey("video_frames")
         val LAST_MMPROJ = stringPreferencesKey("last_mmproj_path")
@@ -391,6 +410,9 @@ class EngineSettingsDataStore(private val context: Context) {
             ngramMaxMatch = p[Keys.NGRAM_MAX_MATCH] ?: d.ngramMaxMatch,
             decisionPrefixCache = enumOrDefault(p[Keys.DECISION_PREFIX_CACHE], d.decisionPrefixCache),
             forceCache = p[Keys.FORCE_CACHE] ?: d.forceCache,
+            cacheTypeK = enumOrDefault(p[Keys.CACHE_TYPE_K], d.cacheTypeK),
+            cacheTypeV = enumOrDefault(p[Keys.CACHE_TYPE_V], d.cacheTypeV),
+            ctxCheckpoints = p[Keys.CTX_CHECKPOINTS] ?: d.ctxCheckpoints,
             maxTokens = p[Keys.MAX_TOKENS] ?: d.maxTokens,
             thinkingEnabled = p[Keys.THINKING] ?: d.thinkingEnabled,
             systemPrompt = p[Keys.SYSTEM_PROMPT] ?: d.systemPrompt,
@@ -406,6 +428,9 @@ class EngineSettingsDataStore(private val context: Context) {
             externalToolsJson = p[Keys.EXTERNAL_TOOLS_JSON] ?: d.externalToolsJson,
             toolResultChars = p[Keys.TOOL_RESULT_CHARS] ?: d.toolResultChars,
             thinkAfterTools = p[Keys.THINK_AFTER_TOOLS] ?: d.thinkAfterTools,
+            autoCompactEnabled = p[Keys.AUTO_COMPACT] ?: d.autoCompactEnabled,
+            autoCompactThresholdPct = (p[Keys.AUTO_COMPACT_PCT] ?: d.autoCompactThresholdPct)
+                .coerceIn(Compaction.MIN_THRESHOLD_PCT, Compaction.MAX_THRESHOLD_PCT),
             imageMaxDim = p[Keys.IMAGE_MAX_DIM] ?: d.imageMaxDim,
             videoFrames = p[Keys.VIDEO_FRAMES] ?: d.videoFrames,
             lastMmprojPath = p[Keys.LAST_MMPROJ] ?: d.lastMmprojPath,
@@ -506,6 +531,9 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateNgramMaxMatch(v: Int) = set(Keys.NGRAM_MAX_MATCH, v.coerceIn(1, 64))
     suspend fun updateDecisionPrefixCache(v: DecisionPrefixCache) = set(Keys.DECISION_PREFIX_CACHE, v.name)
     suspend fun updateForceCache(v: Boolean) = set(Keys.FORCE_CACHE, v)
+    suspend fun updateCacheTypeK(v: KvCacheType) = set(Keys.CACHE_TYPE_K, v.name)
+    suspend fun updateCacheTypeV(v: KvCacheType) = set(Keys.CACHE_TYPE_V, v.name)
+    suspend fun updateCtxCheckpoints(v: Int) = set(Keys.CTX_CHECKPOINTS, v.coerceIn(0, 16))
 
     // ---- per request ----
     suspend fun updateMaxTokens(v: Int) = set(Keys.MAX_TOKENS, v)
@@ -523,6 +551,9 @@ class EngineSettingsDataStore(private val context: Context) {
     suspend fun updateExternalToolsJson(v: String) = set(Keys.EXTERNAL_TOOLS_JSON, v)
     suspend fun updateToolResultChars(v: Int) = set(Keys.TOOL_RESULT_CHARS, v.coerceIn(500, 20_000))
     suspend fun updateThinkAfterTools(v: Boolean) = set(Keys.THINK_AFTER_TOOLS, v)
+    suspend fun updateAutoCompactEnabled(v: Boolean) = set(Keys.AUTO_COMPACT, v)
+    suspend fun updateAutoCompactThresholdPct(v: Int) =
+        set(Keys.AUTO_COMPACT_PCT, v.coerceIn(Compaction.MIN_THRESHOLD_PCT, Compaction.MAX_THRESHOLD_PCT))
     suspend fun updateImageMaxDim(v: Int) = set(Keys.IMAGE_MAX_DIM, v.coerceIn(224, 1344))
     suspend fun updateVideoFrames(v: Int) = set(Keys.VIDEO_FRAMES, v.coerceIn(1, 16))
     suspend fun updateLastMmprojPath(v: String) = set(Keys.LAST_MMPROJ, v)
